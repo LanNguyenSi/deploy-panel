@@ -1,0 +1,5 @@
+{
+  "name": "deploy-panel",
+  "private": true,
+  "workspaces": ["backend", "frontend"]
+}

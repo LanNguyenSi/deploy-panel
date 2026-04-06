@@ -1,0 +1,73 @@
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Servers ─────────────────────────────────────────────────────────────────
+
+model Server {
+  id          String   @id @default(uuid())
+  name        String
+  host        String   @unique
+  sshKeyPath  String?
+  relayUrl    String?
+  relayToken  String?
+  status      String   @default("unknown") // unknown, online, offline, no-relay
+  lastSeenAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  apps        App[]
+  deploys     Deploy[]
+
+  @@map("servers")
+}
+
+// ── Apps ─────────────────────────────────────────────────────────────────────
+
+model App {
+  id           String   @id @default(uuid())
+  serverId     String
+  name         String
+  repoUrl      String?
+  branch       String   @default("main")
+  path         String   // path on VPS
+  health       String?  // health endpoint
+  status       String   @default("unknown") // unknown, healthy, unhealthy, deploying
+  lastDeployAt DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  server       Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  deploys      Deploy[]
+
+  @@unique([serverId, name])
+  @@map("apps")
+}
+
+// ── Deploys ─────────────────────────────────────────────────────────────────
+
+model Deploy {
+  id           String   @id @default(uuid())
+  serverId     String
+  appId        String
+  commitBefore String?
+  commitAfter  String?
+  status       String   @default("pending") // pending, running, success, failed, rolled_back
+  duration     Int?     // milliseconds
+  log          String?  // full deploy output
+  triggeredBy  String?  // "panel", "mcp", "api"
+  createdAt    DateTime @default(now())
+
+  server       Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  app          App      @relation(fields: [appId], references: [id], onDelete: Cascade)
+
+  @@index([appId])
+  @@index([serverId])
+  @@map("deploys")
+}
