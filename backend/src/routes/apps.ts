@@ -6,10 +6,12 @@ export const appsRouter = new Hono();
 
 // Helper to extract serverId from parent route
 function getServerId(c: any): string {
-  const id = getServerId(c);
+  const id = c.req.param("serverId");
   if (!id) throw new Error("serverId is required");
   return id;
 }
+
+const APP_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 // GET /api/servers/:serverId/apps — list apps for server
 appsRouter.get("/", async (c) => {
@@ -98,15 +100,35 @@ appsRouter.post("/:name/rollback", async (c) => {
   const name = c.req.param("name");
   const body = await c.req.json().catch(() => ({}));
 
+  const app = await findOrCreateApp(serverId, name);
+  const deploy = await prisma.deploy.create({
+    data: { serverId, appId: app.id, status: "running", triggeredBy: "panel" },
+  });
+
   try {
-    const result = await relayRequest({
+    const result = await relayRequest<{ success?: boolean; commitBefore?: string; commitAfter?: string }>({
       serverId,
       path: `/api/rollback`,
       method: "POST",
       body: { app: name, to_commit: body.to_commit },
     });
-    return c.json(result);
+
+    await prisma.deploy.update({
+      where: { id: deploy.id },
+      data: {
+        status: result.success ? "rolled_back" : "failed",
+        commitBefore: result.commitBefore,
+        commitAfter: result.commitAfter,
+        log: JSON.stringify(result),
+      },
+    });
+
+    return c.json({ deploy: { id: deploy.id, ...result } });
   } catch (err) {
+    await prisma.deploy.update({
+      where: { id: deploy.id },
+      data: { status: "failed", log: err instanceof Error ? err.message : String(err) },
+    });
     if (err instanceof RelayError) return c.json({ error: err.message }, err.status as any);
     throw err;
   }
@@ -148,12 +170,13 @@ appsRouter.get("/:name/preflight", async (c) => {
 });
 
 async function findOrCreateApp(serverId: string, name: string) {
-  const existing = await prisma.app.findUnique({
-    where: { serverId_name: { serverId, name } },
-  });
-  if (existing) return existing;
+  if (!APP_NAME_PATTERN.test(name)) {
+    throw new Error("Invalid app name: must be alphanumeric, hyphens, or underscores");
+  }
 
-  return prisma.app.create({
-    data: { serverId, name, path: `/home/deploy/apps/${name}` },
+  return prisma.app.upsert({
+    where: { serverId_name: { serverId, name } },
+    update: {},
+    create: { serverId, name, path: `/home/deploy/apps/${name}` },
   });
 }
