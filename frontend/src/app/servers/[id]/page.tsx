@@ -12,6 +12,7 @@ export default function ServerDetailPage() {
   const [loading, setLoading] = useState(true);
   const [activeApp, setActiveApp] = useState<string | null>(null);
   const [logs, setLogs] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
   const [preflight, setPreflight] = useState<{ passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> } | null>(null);
 
   async function load() {
@@ -87,8 +88,13 @@ export default function ServerDetailPage() {
         <h1 style={{ fontSize: "var(--text-lg)", fontWeight: 700 }}>
           {serverName || "Server"} — Apps
         </h1>
-        <button onClick={async () => { await syncServer(id); await load(); }} className="btn btn-secondary">
-          Sync from Relay
+        <button onClick={async () => {
+          setSyncing(true);
+          try { await syncServer(id); await load(); }
+          catch (err: any) { alert(`Sync failed: ${err.message}`); }
+          finally { setSyncing(false); }
+        }} disabled={syncing} className="btn btn-secondary">
+          {syncing ? "Syncing..." : "Sync from Relay"}
         </button>
       </div>
 

@@ -37,13 +37,6 @@ syncRouter.post("/:serverId/sync", async (c) => {
     let updated = 0;
 
     for (const relayApp of configuredApps) {
-      // Upsert app record
-      const app = await prisma.app.upsert({
-        where: { serverId_name: { serverId, name: relayApp.name } },
-        update: {},
-        create: { serverId, name: relayApp.name, path: `/apps/${relayApp.name}`, health: relayApp.health },
-      });
-
       // Check if app is actually running via preflight
       let newStatus = "unknown";
       try {
@@ -56,15 +49,21 @@ syncRouter.post("/:serverId/sync", async (c) => {
         newStatus = "offline";
       }
 
-      if (app.status !== newStatus) {
+      // Upsert in a single query — always update health + status
+      const existing = await prisma.app.findUnique({
+        where: { serverId_name: { serverId, name: relayApp.name } },
+      });
+
+      if (existing) {
         await prisma.app.update({
-          where: { id: app.id },
-          data: { status: newStatus },
+          where: { id: existing.id },
+          data: { status: newStatus, health: relayApp.health },
         });
         updated++;
-      }
-
-      if (!app.createdAt || app.createdAt.getTime() > Date.now() - 1000) {
+      } else {
+        await prisma.app.create({
+          data: { serverId, name: relayApp.name, path: `/apps/${relayApp.name}`, health: relayApp.health, status: newStatus },
+        });
         created++;
       }
     }
