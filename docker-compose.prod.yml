@@ -30,6 +30,7 @@ services:
       DATABASE_URL: postgresql://deploy_panel:${POSTGRES_PASSWORD:-deploy_panel_prod}@deploy-panel-db:5432/deploy_panel
       PORT: 3001
       SESSION_SECRET: ${SESSION_SECRET}
+      PANEL_TOKEN: ${PANEL_TOKEN}
       CORS_ORIGINS: https://deploy-panel.opentriologue.ai
       FRONTEND_URL: https://deploy-panel.opentriologue.ai
       NODE_ENV: production
