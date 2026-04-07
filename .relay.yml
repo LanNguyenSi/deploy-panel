@@ -1,0 +1,11 @@
+name: deploy-panel
+health: /api/health
+compose_file: docker-compose.prod.yml
+
+pre_update:
+  - docker compose -f docker-compose.prod.yml build --no-cache
+
+post_update:
+  - docker exec deploy-panel-backend npx prisma db push --schema=backend/prisma/schema.prisma --skip-generate
+
+rollback: true
