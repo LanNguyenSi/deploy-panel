@@ -10,13 +10,19 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([getServers(), getDeploys({ limit: 10 })])
-      .then(([s, d]) => {
-        setServers(s.servers);
-        setDeploys(d.deploys);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
+    function loadAll() {
+      Promise.all([getServers(), getDeploys({ limit: 10 })])
+        .then(([s, d]) => {
+          setServers(s.servers);
+          setDeploys(d.deploys);
+        })
+        .catch(console.error)
+        .finally(() => setLoading(false));
+    }
+
+    loadAll();
+    const interval = setInterval(loadAll, 15000);
+    return () => clearInterval(interval);
   }, []);
 
   if (loading) {
