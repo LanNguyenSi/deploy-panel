@@ -2,13 +2,50 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: deploy_panel
-      POSTGRES_PASSWORD: deploy_panel
-      POSTGRES_DB: deploy_panel
-    ports:
-      - "5433:5432"
+      POSTGRES_USER: ${POSTGRES_USER:-deploy_panel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deploy_panel}
+      POSTGRES_DB: ${POSTGRES_DB:-deploy_panel}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-deploy_panel}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-deploy_panel}:${POSTGRES_PASSWORD:-deploy_panel}@db:5432/${POSTGRES_DB:-deploy_panel}
+      PORT: 3001
+      SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production-min-16-chars}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      NODE_ENV: ${NODE_ENV:-production}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    environment:
+      HOSTNAME: 0.0.0.0
+    restart: unless-stopped
 
 volumes:
   pgdata:
