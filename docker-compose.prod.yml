@@ -1,0 +1,76 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: deploy-panel-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: deploy_panel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deploy_panel_prod}
+      POSTGRES_DB: deploy_panel
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U deploy_panel"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: deploy-panel-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://deploy_panel:${POSTGRES_PASSWORD:-deploy_panel_prod}@deploy-panel-db:5432/deploy_panel
+      PORT: 3001
+      SESSION_SECRET: ${SESSION_SECRET}
+      CORS_ORIGINS: https://deploy-panel.opentriologue.ai
+      FRONTEND_URL: https://deploy-panel.opentriologue.ai
+      NODE_ENV: production
+    networks:
+      - traefik
+      - internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.deploy-panel-api.rule=Host(`deploy-panel.opentriologue.ai`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.deploy-panel-api.entrypoints=websecure"
+      - "traefik.http.routers.deploy-panel-api.tls=true"
+      - "traefik.http.routers.deploy-panel-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.deploy-panel-api.loadbalancer.server.port=3001"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: https://deploy-panel.opentriologue.ai
+    container_name: deploy-panel-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+    networks:
+      - traefik
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.deploy-panel.rule=Host(`deploy-panel.opentriologue.ai`)"
+      - "traefik.http.routers.deploy-panel.entrypoints=websecure"
+      - "traefik.http.routers.deploy-panel.tls=true"
+      - "traefik.http.routers.deploy-panel.tls.certresolver=letsencrypt"
+      - "traefik.http.services.deploy-panel.loadbalancer.server.port=3000"
+
+volumes:
+  pgdata:
+
+networks:
+  traefik:
+    external: true
+  internal:
