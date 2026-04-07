@@ -2,9 +2,11 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { healthRouter } from "./routes/health.js";
+import { authRouter } from "./routes/auth.js";
 import { serversRouter } from "./routes/servers.js";
 import { appsRouter } from "./routes/apps.js";
 import { deploysRouter } from "./routes/deploys.js";
+import { requireAuth } from "./middleware/auth.js";
 
 export function createApp(corsOrigins: string) {
   const app = new Hono();
@@ -25,8 +27,14 @@ export function createApp(corsOrigins: string) {
     }),
   );
 
-  // Public
+  // Public (no auth)
   app.route("/api/health", healthRouter);
+  app.route("/api/auth", authRouter);
+
+  // Protected (require auth)
+  app.use("/api/servers/*", requireAuth);
+  app.use("/api/servers", requireAuth);
+  app.use("/api/deploys", requireAuth);
   app.route("/api/servers", serversRouter);
   app.route("/api/servers/:serverId/apps", appsRouter);
   app.route("/api/deploys", deploysRouter);

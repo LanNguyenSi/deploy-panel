@@ -7,6 +7,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
 
+  if (res.status === 401) {
+    if (typeof window !== "undefined") {
+      window.location.href = "/login";
+    }
+    throw new Error("Authentication required");
+  }
+
   if (!res.ok) {
     const err = (await res.json().catch(() => ({ message: "Request failed" }))) as { message?: string };
     throw new Error(err.message ?? "Request failed");
