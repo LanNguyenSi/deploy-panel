@@ -55,9 +55,9 @@ appsRouter.post("/:name/deploy", async (c) => {
       steps?: unknown[];
     }>({
       serverId,
-      path: `/api/deploy`,
+      path: `/api/apps/${name}/deploy`,
       method: "POST",
-      body: { app: name, branch: body.branch, force: body.force },
+      body: { branch: body.branch, force: body.force },
     });
 
     await prisma.deploy.update({
@@ -108,9 +108,9 @@ appsRouter.post("/:name/rollback", async (c) => {
   try {
     const result = await relayRequest<{ success?: boolean; commitBefore?: string; commitAfter?: string }>({
       serverId,
-      path: `/api/rollback`,
+      path: `/api/apps/${name}/rollback`,
       method: "POST",
-      body: { app: name, to_commit: body.to_commit },
+      body: { to_commit: body.to_commit },
     });
 
     await prisma.deploy.update({
@@ -143,7 +143,7 @@ appsRouter.get("/:name/logs", async (c) => {
   try {
     const result = await relayRequest({
       serverId,
-      path: `/api/logs?app=${encodeURIComponent(name)}&lines=${lines}`,
+      path: `/api/apps/${name}/logs?lines=${lines}`,
     });
     return c.json(result);
   } catch (err) {
@@ -160,7 +160,7 @@ appsRouter.get("/:name/preflight", async (c) => {
   try {
     const result = await relayRequest({
       serverId,
-      path: `/api/preflight?app=${encodeURIComponent(name)}`,
+      path: `/api/apps/${name}/preflight`,
     });
     return c.json(result);
   } catch (err) {
