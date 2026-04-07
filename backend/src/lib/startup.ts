@@ -33,26 +33,28 @@ export async function recoverStuckDeploys(): Promise<void> {
   for (const deploy of stuckDeploys) {
     let newStatus = "interrupted";
 
-    // Try to check health via relay
-    if (deploy.server.relayUrl) {
+    // Try to check the app's actual health via relay
+    if (deploy.server.relayUrl && deploy.app.name) {
       try {
-        const result = await relayRequest<{ status: string }>({
+        const result = await relayRequest<{ app: string; passed: boolean }>({
           serverId: deploy.server.id,
-          path: "/health",
+          path: `/api/apps/${deploy.app.name}/preflight`,
         });
-        if (result.status === "ok") {
+        // If preflight passes (containers running, compose exists), deploy likely succeeded
+        if (result.passed) {
           newStatus = "success";
         }
       } catch {
-        // Relay unreachable — mark as interrupted
+        // Relay unreachable or app not found — mark as interrupted
       }
     }
 
+    const recoveryNote = `\n\n[startup recovery] Marked as ${newStatus} (was stuck on running since ${deploy.createdAt.toISOString()})`;
     await prisma.deploy.update({
       where: { id: deploy.id },
       data: {
         status: newStatus,
-        log: `Recovered on startup: marked as ${newStatus} (was stuck on running since ${deploy.createdAt.toISOString()})`,
+        log: (deploy.log ?? "") + recoveryNote,
       },
     });
 
