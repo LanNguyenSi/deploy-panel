@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { healthRouter } from "./routes/health.js";
 import { serversRouter } from "./routes/servers.js";
+import { appsRouter } from "./routes/apps.js";
 
 export function createApp(corsOrigins: string) {
   const app = new Hono();
@@ -26,6 +27,7 @@ export function createApp(corsOrigins: string) {
   // Public
   app.route("/api/health", healthRouter);
   app.route("/api/servers", serversRouter);
+  app.route("/api/servers/:serverId/apps", appsRouter);
 
   // 404
   app.notFound((c) => c.json({ error: "not_found", message: "Route not found" }, 404));
