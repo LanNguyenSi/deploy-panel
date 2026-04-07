@@ -47,12 +47,18 @@ appsRouter.post("/:name/deploy", async (c) => {
   await prisma.app.update({ where: { id: app.id }, data: { status: "deploying" } });
 
   try {
-    const result = await relayRequest<{
-      success: boolean;
-      commitBefore?: string;
-      commitAfter?: string;
-      durationMs?: number;
-      steps?: unknown[];
+    const response = await relayRequest<{
+      deploy?: { status: string };
+      result?: {
+        success: boolean;
+        commitBefore?: string;
+        commitAfter?: string;
+        durationMs?: number;
+        steps?: unknown[];
+      };
+      success?: boolean;
+      blocked?: boolean;
+      preflight?: unknown;
     }>({
       serverId,
       path: `/api/apps/${name}/deploy`,
@@ -60,10 +66,23 @@ appsRouter.post("/:name/deploy", async (c) => {
       body: { branch: body.branch, force: body.force },
     });
 
+    // Relay returns { deploy: {...}, result: {...} } or { success: false, blocked: true, preflight: {...} }
+    const result = response.result ?? response;
+    const success = result.success ?? false;
+
+    if (response.blocked) {
+      await prisma.deploy.update({
+        where: { id: deploy.id },
+        data: { status: "failed", log: JSON.stringify(response.preflight ?? "blocked by preflight") },
+      });
+      await prisma.app.update({ where: { id: app.id }, data: { status: "unhealthy" } });
+      return c.json({ deploy: { id: deploy.id, ...response } });
+    }
+
     await prisma.deploy.update({
       where: { id: deploy.id },
       data: {
-        status: result.success ? "success" : "failed",
+        status: success ? "success" : "failed",
         commitBefore: result.commitBefore,
         commitAfter: result.commitAfter,
         duration: result.durationMs,
