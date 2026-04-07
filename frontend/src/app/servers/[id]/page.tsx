@@ -35,8 +35,8 @@ export default function ServerDetailPage() {
   async function handleDeploy(name: string) {
     if (!confirm(`Deploy "${name}"?`)) return;
     try {
-      const result = await deployApp(id, name);
-      alert(result.deploy.success ? "Deploy successful!" : "Deploy failed.");
+      const result = await deployApp(id, name, { force: true });
+      alert(result.deploy?.success !== false ? "Deploy successful!" : "Deploy failed.");
       await load();
     } catch (err: any) {
       alert(`Deploy failed: ${err.message}`);
