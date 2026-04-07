@@ -58,3 +58,83 @@ a:hover { text-decoration: underline; }
   margin: 0 auto;
   padding: var(--space-4) var(--space-4) var(--space-8);
 }
+
+/* ── Components ─────────────────────────────────────────────────── */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  transition: border-color 0.15s;
+}
+.card:hover {
+  border-color: var(--border-hover);
+}
+
+.input {
+  background: var(--surface-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-base);
+  color: var(--text);
+  font-size: var(--text-sm);
+  padding: 0.5rem 0.75rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.input:focus {
+  border-color: var(--primary);
+}
+.input::placeholder {
+  color: var(--muted);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0.4rem 0.75rem;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-base);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn:hover {
+  background: var(--surface-secondary);
+  border-color: var(--border-hover);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.btn-primary:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+
+.btn-secondary {
+  background: transparent;
+  border-color: var(--border);
+}
+.btn-secondary:hover {
+  background: var(--surface);
+}
+
+.btn-danger {
+  background: transparent;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+.btn-danger:hover {
+  background: rgba(255, 71, 87, 0.1);
+}
