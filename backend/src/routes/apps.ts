@@ -67,7 +67,7 @@ appsRouter.post("/:name/deploy", async (c) => {
     });
 
     // Relay returns { deploy: {...}, result: {...} } or { success: false, blocked: true, preflight: {...} }
-    const result = response.result ?? response;
+    const result: any = response.result ?? response;
     const success = result.success ?? false;
 
     if (response.blocked) {
