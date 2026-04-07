@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { getServers, createServer, deleteServer, testServer, type ServerWithCount } from "@/lib/api";
 
 export default function ServersPage() {
@@ -65,7 +66,7 @@ export default function ServersPage() {
           {servers.map((s) => (
             <div key={s.id} className="card" style={{ padding: "var(--space-3)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
-                <div style={{ fontWeight: 600 }}>{s.name}</div>
+                <Link href={`/servers/${s.id}`} style={{ fontWeight: 600, color: "var(--accent)", textDecoration: "none" }}>{s.name}</Link>
                 <div style={{ fontSize: "var(--text-sm)", color: "var(--muted)" }}>
                   {s.host} · {s._count.apps} app{s._count.apps !== 1 ? "s" : ""} · <StatusBadge status={s.status} />
                 </div>

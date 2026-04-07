@@ -1,0 +1,157 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
+import Link from "next/link";
+import { getServer, getApps, deployApp, rollbackApp, getAppLogs, getAppPreflight, type AppWithCount } from "@/lib/api";
+
+export default function ServerDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const [serverName, setServerName] = useState("");
+  const [apps, setApps] = useState<AppWithCount[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [activeApp, setActiveApp] = useState<string | null>(null);
+  const [logs, setLogs] = useState<string | null>(null);
+  const [preflight, setPreflight] = useState<{ passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> } | null>(null);
+
+  async function load() {
+    try {
+      const [serverData, appsData] = await Promise.all([
+        getServer(id),
+        getApps(id),
+      ]);
+      setServerName(serverData.server.name);
+      setApps(appsData.apps);
+    } catch (err) {
+      console.error("Failed to load:", err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { load(); }, [id]);
+
+  async function handleDeploy(name: string) {
+    if (!confirm(`Deploy "${name}"?`)) return;
+    try {
+      const result = await deployApp(id, name);
+      alert(result.deploy.success ? "Deploy successful!" : "Deploy failed.");
+      await load();
+    } catch (err: any) {
+      alert(`Deploy failed: ${err.message}`);
+    }
+  }
+
+  async function handleRollback(name: string) {
+    if (!confirm(`Rollback "${name}" to previous version?`)) return;
+    try {
+      await rollbackApp(id, name);
+      alert("Rollback triggered.");
+      await load();
+    } catch (err: any) {
+      alert(`Rollback failed: ${err.message}`);
+    }
+  }
+
+  async function handleLogs(name: string) {
+    setActiveApp(name);
+    setLogs(null);
+    setPreflight(null);
+    try {
+      const result = await getAppLogs(id, name, 100);
+      setLogs(result.logs);
+    } catch (err: any) {
+      setLogs(`Error: ${err.message}`);
+    }
+  }
+
+  async function handlePreflight(name: string) {
+    setActiveApp(name);
+    setPreflight(null);
+    setLogs(null);
+    try {
+      const result = await getAppPreflight(id, name);
+      setPreflight(result);
+    } catch (err: any) {
+      setPreflight({ passed: false, checks: [{ name: "error", passed: false, message: err.message }] });
+    }
+  }
+
+  return (
+    <main className="page-shell">
+      <div style={{ marginBottom: "var(--space-3)" }}>
+        <Link href="/servers" style={{ color: "var(--muted)", fontSize: "var(--text-sm)" }}>← Servers</Link>
+      </div>
+
+      <h1 style={{ fontSize: "var(--text-lg)", fontWeight: 700, marginBottom: "var(--space-4)" }}>
+        {serverName || "Server"} — Apps
+      </h1>
+
+      {loading ? (
+        <p style={{ color: "var(--muted)" }}>Loading...</p>
+      ) : apps.length === 0 ? (
+        <p style={{ color: "var(--muted)" }}>No apps found. Deploy an app via agent-relay to see it here.</p>
+      ) : (
+        <div style={{ display: "grid", gap: "var(--space-3)" }}>
+          {apps.map((app) => (
+            <div key={app.id} className="card" style={{ padding: "var(--space-3)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-2)" }}>
+                <div>
+                  <span style={{ fontWeight: 600 }}>{app.name}</span>
+                  <span style={{ marginLeft: "var(--space-2)", fontSize: "var(--text-sm)", color: "var(--muted)" }}>
+                    {app._count.deploys} deploy{app._count.deploys !== 1 ? "s" : ""}
+                  </span>
+                </div>
+                <StatusBadge status={app.status} />
+              </div>
+              <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
+                <button onClick={() => handleDeploy(app.name)} className="btn btn-primary">Deploy</button>
+                <button onClick={() => handleRollback(app.name)} className="btn btn-secondary">Rollback</button>
+                <button onClick={() => handleLogs(app.name)} className="btn btn-secondary">Logs</button>
+                <button onClick={() => handlePreflight(app.name)} className="btn btn-secondary">Preflight</button>
+              </div>
+
+              {activeApp === app.name && logs !== null && (
+                <pre style={{
+                  marginTop: "var(--space-2)",
+                  padding: "var(--space-2)",
+                  background: "var(--bg-muted, #1a1a2e)",
+                  borderRadius: "var(--radius)",
+                  fontSize: "var(--text-sm)",
+                  overflow: "auto",
+                  maxHeight: "300px",
+                  whiteSpace: "pre-wrap",
+                }}>
+                  {logs}
+                </pre>
+              )}
+
+              {activeApp === app.name && preflight !== null && (
+                <div style={{ marginTop: "var(--space-2)", padding: "var(--space-2)", background: "var(--bg-muted, #1a1a2e)", borderRadius: "var(--radius)" }}>
+                  <div style={{ fontWeight: 600, marginBottom: "var(--space-1)" }}>
+                    Preflight: {preflight.passed ? "✓ Passed" : "✗ Failed"}
+                  </div>
+                  {preflight.checks.map((check, i) => (
+                    <div key={i} style={{ fontSize: "var(--text-sm)", color: check.passed ? "var(--success, #22c55e)" : "var(--danger, #ef4444)" }}>
+                      {check.passed ? "✓" : "✗"} {check.name}: {check.message}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </main>
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const colors: Record<string, string> = {
+    healthy: "#22c55e",
+    unhealthy: "#ef4444",
+    deploying: "#3b82f6",
+    unknown: "#6b7280",
+  };
+  return <span style={{ color: colors[status] ?? colors.unknown, fontWeight: 500 }}>● {status}</span>;
+}

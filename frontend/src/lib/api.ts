@@ -78,3 +78,29 @@ export async function deleteServer(id: string): Promise<void> {
 export async function testServer(id: string): Promise<{ status: string; message?: string }> {
   return request(`/api/servers/${id}/test`, { method: "POST" });
 }
+
+// ── Apps ───────────────────────────────────────────────────────────────────
+
+export interface AppWithCount extends App {
+  _count: { deploys: number };
+}
+
+export async function getApps(serverId: string): Promise<{ apps: AppWithCount[] }> {
+  return request(`/api/servers/${serverId}/apps`);
+}
+
+export async function deployApp(serverId: string, name: string, options?: { branch?: string; force?: boolean }): Promise<{ deploy: { id: string; success: boolean } }> {
+  return request(`/api/servers/${serverId}/apps/${name}/deploy`, { method: "POST", body: JSON.stringify(options ?? {}) });
+}
+
+export async function rollbackApp(serverId: string, name: string, toCommit?: string): Promise<unknown> {
+  return request(`/api/servers/${serverId}/apps/${name}/rollback`, { method: "POST", body: JSON.stringify({ to_commit: toCommit }) });
+}
+
+export async function getAppLogs(serverId: string, name: string, lines = 50): Promise<{ logs: string }> {
+  return request(`/api/servers/${serverId}/apps/${name}/logs?lines=${lines}`);
+}
+
+export async function getAppPreflight(serverId: string, name: string): Promise<{ passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> }> {
+  return request(`/api/servers/${serverId}/apps/${name}/preflight`);
+}
