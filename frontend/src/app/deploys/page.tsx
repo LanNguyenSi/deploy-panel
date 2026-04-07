@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { getDeploys, type DeployWithRelations } from "@/lib/api";
 
 export default function DeploysPage() {
@@ -27,10 +26,6 @@ export default function DeploysPage() {
 
   return (
     <main className="page-shell">
-      <div style={{ marginBottom: "var(--space-3)" }}>
-        <Link href="/" style={{ color: "var(--muted)", fontSize: "var(--text-sm)" }}>← Dashboard</Link>
-      </div>
-
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-4)" }}>
         <h1 style={{ fontSize: "var(--text-lg)", fontWeight: 700 }}>Deploy History</h1>
         <select
