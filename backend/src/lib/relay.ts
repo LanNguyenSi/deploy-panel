@@ -23,7 +23,7 @@ export async function relayRequest<T>(options: RelayRequestOptions): Promise<T> 
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(300_000), // 5 min — deploys can take a while
   });
 
   if (!response.ok) {
