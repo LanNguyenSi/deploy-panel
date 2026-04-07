@@ -37,14 +37,15 @@ syncRouter.post("/:serverId/sync", async (c) => {
     let updated = 0;
 
     for (const relayApp of configuredApps) {
-      // Check if app is actually running via preflight
+      // Check if app containers are running via relay app detail
       let newStatus = "unknown";
       try {
-        const preflight = await relayRequest<{ passed: boolean }>({
+        const detail = await relayRequest<{ app: { containers: string | null } }>({
           serverId,
-          path: `/api/apps/${relayApp.name}/preflight`,
+          path: `/api/apps/${relayApp.name}`,
         });
-        newStatus = preflight.passed ? "healthy" : "unhealthy";
+        // If relay returns app detail with containers info, app is running
+        newStatus = detail.app?.containers ? "healthy" : "unhealthy";
       } catch {
         newStatus = "offline";
       }
