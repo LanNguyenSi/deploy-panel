@@ -108,6 +108,10 @@ export async function getAppLogs(serverId: string, name: string, lines = 50): Pr
   return request(`/api/servers/${serverId}/apps/${name}/logs?lines=${lines}`);
 }
 
+export async function syncServer(serverId: string): Promise<{ synced: boolean; apps: number; created: number; updated: number }> {
+  return request(`/api/servers/${serverId}/sync`, { method: "POST" });
+}
+
 export async function getAppPreflight(serverId: string, name: string): Promise<{ passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> }> {
   return request(`/api/servers/${serverId}/apps/${name}/preflight`);
 }

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getServer, getApps, deployApp, rollbackApp, getAppLogs, getAppPreflight, type AppWithCount } from "@/lib/api";
+import { getServer, getApps, deployApp, rollbackApp, getAppLogs, getAppPreflight, syncServer, type AppWithCount } from "@/lib/api";
 
 export default function ServerDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -83,9 +83,14 @@ export default function ServerDetailPage() {
         <Link href="/servers" style={{ color: "var(--muted)", fontSize: "var(--text-sm)" }}>← Servers</Link>
       </div>
 
-      <h1 style={{ fontSize: "var(--text-lg)", fontWeight: 700, marginBottom: "var(--space-4)" }}>
-        {serverName || "Server"} — Apps
-      </h1>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-4)" }}>
+        <h1 style={{ fontSize: "var(--text-lg)", fontWeight: 700 }}>
+          {serverName || "Server"} — Apps
+        </h1>
+        <button onClick={async () => { await syncServer(id); await load(); }} className="btn btn-secondary">
+          Sync from Relay
+        </button>
+      </div>
 
       {loading ? (
         <p style={{ color: "var(--muted)" }}>Loading...</p>
