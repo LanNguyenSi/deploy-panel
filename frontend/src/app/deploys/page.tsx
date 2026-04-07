@@ -22,7 +22,11 @@ export default function DeploysPage() {
     }
   }
 
-  useEffect(() => { load(); }, [statusFilter]);
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, 15000);
+    return () => clearInterval(interval);
+  }, [statusFilter]);
 
   return (
     <main className="page-shell">
