@@ -3,6 +3,12 @@ import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { prisma } from "../lib/prisma.js";
 
+/** Strip sensitive fields from server objects */
+function sanitizeServer(server: any) {
+  const { relayToken, sshKeyPath, ...safe } = server;
+  return { ...safe, hasRelayToken: !!relayToken };
+}
+
 export const serversRouter = new Hono();
 
 const createServerSchema = z.object({
@@ -22,7 +28,7 @@ serversRouter.get("/", async (c) => {
     include: { _count: { select: { apps: true } } },
   });
 
-  return c.json({ servers });
+  return c.json({ servers: servers.map(sanitizeServer) });
 });
 
 // GET /api/servers/:id — single server
@@ -33,7 +39,7 @@ serversRouter.get("/:id", async (c) => {
   });
 
   if (!server) return c.json({ error: "not_found" }, 404);
-  return c.json({ server });
+  return c.json({ server: sanitizeServer(server) });
 });
 
 // POST /api/servers — add server

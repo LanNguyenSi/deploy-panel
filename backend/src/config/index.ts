@@ -6,6 +6,7 @@ const configSchema = z.object({
   CORS_ORIGINS: z.string().default("http://localhost:3000"),
   FRONTEND_URL: z.string().default("http://localhost:3000"),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  PANEL_TOKEN: z.string().min(1).optional(),
 });
 
 const result = configSchema.safeParse(process.env);
