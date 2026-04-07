@@ -104,3 +104,19 @@ export async function getAppLogs(serverId: string, name: string, lines = 50): Pr
 export async function getAppPreflight(serverId: string, name: string): Promise<{ passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> }> {
   return request(`/api/servers/${serverId}/apps/${name}/preflight`);
 }
+
+// ── Deploys ────────────────────────────────────────────────────────────────
+
+export interface DeployWithRelations extends Deploy {
+  app: { name: string };
+  server: { name: string; host: string };
+}
+
+export async function getDeploys(params?: { serverId?: string; appId?: string; status?: string; limit?: number }): Promise<{ deploys: DeployWithRelations[] }> {
+  const query = new URLSearchParams();
+  if (params?.serverId) query.set("serverId", params.serverId);
+  if (params?.appId) query.set("appId", params.appId);
+  if (params?.status) query.set("status", params.status);
+  if (params?.limit) query.set("limit", String(params.limit));
+  return request(`/api/deploys?${query}`);
+}
