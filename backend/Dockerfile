@@ -9,6 +9,7 @@ COPY backend/src/ backend/src/
 RUN npm run build --workspace=backend
 
 FROM node:22-alpine
+RUN apk add --no-cache openssl
 RUN addgroup -S app && adduser -S app -G app
 WORKDIR /app
 COPY package.json package-lock.json ./
