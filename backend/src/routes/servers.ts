@@ -52,7 +52,7 @@ serversRouter.post("/", zValidator("json", createServerSchema), async (c) => {
   }
 
   const server = await prisma.server.create({ data });
-  return c.json({ server }, 201);
+  return c.json({ server: sanitizeServer(server) }, 201);
 });
 
 // PATCH /api/servers/:id — update server
@@ -62,7 +62,7 @@ serversRouter.patch("/:id", zValidator("json", updateServerSchema), async (c) =>
 
   try {
     const server = await prisma.server.update({ where: { id }, data });
-    return c.json({ server });
+    return c.json({ server: sanitizeServer(server) });
   } catch {
     return c.json({ error: "not_found" }, 404);
   }

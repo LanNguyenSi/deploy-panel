@@ -1,7 +1,13 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
+import { timingSafeEqual } from "node:crypto";
 import { config } from "../config/index.js";
+
+function safeCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
 
 export const authRouter = new Hono();
 
@@ -13,7 +19,7 @@ const loginSchema = z.object({
 authRouter.post("/login", zValidator("json", loginSchema), async (c) => {
   const { token } = c.req.valid("json");
 
-  if (!config.PANEL_TOKEN || token !== config.PANEL_TOKEN) {
+  if (!config.PANEL_TOKEN || !safeCompare(token, config.PANEL_TOKEN)) {
     return c.json({ error: "unauthorized", message: "Invalid token" }, 401);
   }
 
