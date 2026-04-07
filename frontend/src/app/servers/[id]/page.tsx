@@ -30,7 +30,22 @@ export default function ServerDetailPage() {
     }
   }
 
-  useEffect(() => { load(); }, [id]);
+  async function autoSync() {
+    setSyncing(true);
+    try {
+      await syncServer(id);
+      const appsData = await getApps(id);
+      setApps(appsData.apps);
+    } catch {
+      // Silent fail — sync is best-effort
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  useEffect(() => {
+    load().then(() => autoSync());
+  }, [id]);
 
   async function handleDeploy(name: string) {
     if (!confirm(`Deploy "${name}"?`)) return;
