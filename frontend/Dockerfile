@@ -18,6 +18,7 @@ RUN addgroup -S app && adduser -S app -G app
 WORKDIR /app
 COPY --from=builder /app/frontend/.next/standalone ./
 COPY --from=builder /app/frontend/.next/static .next/static/
+COPY --from=builder /app/frontend/public public/
 # Standalone in workspace monorepo needs full node_modules
 COPY --from=deps /app/node_modules node_modules/
 USER app
