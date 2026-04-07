@@ -52,3 +52,29 @@ export interface Deploy {
 export async function getHealth(): Promise<{ status: string }> {
   return request("/api/health");
 }
+
+// ── Servers ────────────────────────────────────────────────────────────────
+
+export interface ServerWithCount extends Server {
+  _count: { apps: number };
+}
+
+export async function getServers(): Promise<{ servers: ServerWithCount[] }> {
+  return request("/api/servers");
+}
+
+export async function getServer(id: string): Promise<{ server: Server & { apps: App[] } }> {
+  return request(`/api/servers/${id}`);
+}
+
+export async function createServer(data: { name: string; host: string; relayUrl?: string; relayToken?: string }): Promise<{ server: Server }> {
+  return request("/api/servers", { method: "POST", body: JSON.stringify(data) });
+}
+
+export async function deleteServer(id: string): Promise<void> {
+  return request(`/api/servers/${id}`, { method: "DELETE" });
+}
+
+export async function testServer(id: string): Promise<{ status: string; message?: string }> {
+  return request(`/api/servers/${id}/test`, { method: "POST" });
+}
