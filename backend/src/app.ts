@@ -6,6 +6,7 @@ import { authRouter } from "./routes/auth.js";
 import { serversRouter } from "./routes/servers.js";
 import { appsRouter } from "./routes/apps.js";
 import { deploysRouter } from "./routes/deploys.js";
+import { syncRouter } from "./routes/sync.js";
 import { requireAuth } from "./middleware/auth.js";
 
 export function createApp(corsOrigins: string) {
@@ -38,6 +39,7 @@ export function createApp(corsOrigins: string) {
   app.route("/api/servers", serversRouter);
   app.route("/api/servers/:serverId/apps", appsRouter);
   app.route("/api/deploys", deploysRouter);
+  app.route("/api/servers", syncRouter);
 
   // 404
   app.notFound((c) => c.json({ error: "not_found", message: "Route not found" }, 404));
