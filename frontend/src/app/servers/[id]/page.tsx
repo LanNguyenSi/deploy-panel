@@ -90,9 +90,10 @@ export default function ServerDetailPage() {
           await load();
         }
       }, 5000);
-    } catch {
+    } catch (err: any) {
       setDeploying(null);
       setDeployLog(null);
+      toast(`Deploy failed: ${err.message ?? "unknown error"}`, "error");
       setApps((prev) => prev.map((a) => a.name === name ? { ...a, status: "unhealthy" } : a));
     }
   }
@@ -143,7 +144,7 @@ export default function ServerDetailPage() {
   return (
     <main className="page-shell">
       <div style={{ marginBottom: "var(--space-4)" }}>
-        <Link href="/servers" style={{ color: "var(--muted)", fontSize: "var(--text-sm)", textDecoration: "none" }}>
+        <Link href="/servers" style={{ color: "var(--muted)", fontSize: "var(--text-sm)" }}>
           ← Back to Servers
         </Link>
       </div>

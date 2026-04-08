@@ -43,18 +43,17 @@ export default function DeploysPage() {
           <h1 className="page-title">Deploy History</h1>
           <p className="page-subtitle">{deploys.length} deployment{deploys.length !== 1 ? "s" : ""}</p>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
-          <div style={{ display: "flex", gap: "var(--space-1)" }}>
-            {statusOptions.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => { setStatusFilter(opt.value); setLoading(true); }}
-                className={`btn btn-sm ${statusFilter === opt.value ? "btn-primary" : "btn-secondary"}`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
+        <div className="filter-group" role="group" aria-label="Filter by status">
+          {statusOptions.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => { setStatusFilter(opt.value); setLoading(true); }}
+              className={`btn btn-sm ${statusFilter === opt.value ? "btn-primary" : "btn-secondary"}`}
+              aria-pressed={statusFilter === opt.value}
+            >
+              {opt.label}
+            </button>
+          ))}
         </div>
       </div>
 

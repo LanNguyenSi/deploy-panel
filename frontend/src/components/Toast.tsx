@@ -56,6 +56,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           return (
             <div
               key={t.id}
+              role="alert"
+              aria-live="polite"
               style={{
                 padding: "0.7rem 1.125rem",
                 borderRadius: "var(--radius-lg)",

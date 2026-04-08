@@ -61,7 +61,7 @@ export default function LoginPage() {
             className="input"
             style={{ padding: "0.7rem 0.875rem", fontSize: "var(--text-base)" }}
           />
-          {error && <p className="login-error">{error}</p>}
+          {error && <p className="form-error">{error}</p>}
           <button
             type="submit"
             disabled={loading}

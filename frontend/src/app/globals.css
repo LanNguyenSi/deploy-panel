@@ -11,8 +11,6 @@
   /* Borders */
   --border: #1e293b;
   --border-hover: #334155;
-  --border-focus: var(--primary);
-
   /* Text */
   --text: #f1f5f9;
   --text-secondary: #94a3b8;
@@ -250,11 +248,6 @@ a:hover { color: var(--primary-hover); }
   border-radius: var(--radius-sm);
 }
 
-.btn-icon {
-  padding: 0.4rem;
-  border-radius: var(--radius);
-}
-
 /* ── Status Badges ──────────────────────────────────────────────── */
 
 .badge {
@@ -476,11 +469,12 @@ a:hover { color: var(--primary-hover); }
 
 .header {
   border-bottom: 1px solid var(--border);
-  background: var(--bg-subtle);
+  background: rgba(15, 20, 32, 0.85);
   position: sticky;
   top: 0;
   z-index: 100;
   backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .header-inner {
@@ -579,7 +573,7 @@ a:hover { color: var(--primary-hover); }
   margin-bottom: var(--space-6);
 }
 
-.login-error {
+.form-error {
   padding: var(--space-3);
   background: var(--danger-muted);
   color: var(--danger);
@@ -631,13 +625,6 @@ a:hover { color: var(--primary-hover); }
 }
 
 /* ── Action groups ──────────────────────────────────────────────── */
-
-.action-group {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
 
 .action-group-secondary {
   display: flex;
@@ -713,16 +700,40 @@ a:hover { color: var(--primary-hover); }
   to { opacity: 1; transform: translateY(0); }
 }
 
-.animate-pulse {
-  animation: pulse 2s ease-in-out infinite;
-}
-
 .animate-fade-in {
   animation: fade-in 0.2s ease-out;
 }
 
 .animate-slide-up {
   animation: slide-up 0.3s ease-out;
+}
+
+/* ── Grid Layouts ───────────────────────────────────────────────── */
+
+.grid-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+}
+
+.grid-two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-6);
+}
+
+.grid-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+/* ── Filter Group ───────────────────────────────────────────────── */
+
+.filter-group {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
 }
 
 /* ── Responsive ─────────────────────────────────────────────────── */
@@ -742,6 +753,31 @@ a:hover { color: var(--primary-hover); }
 
   .stat-value {
     font-size: var(--text-xl);
+  }
+
+  .grid-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .grid-two-col {
+    grid-template-columns: 1fr;
+  }
+
+  .grid-form {
+    grid-template-columns: 1fr;
+  }
+
+  .table th:nth-child(4),
+  .table td:nth-child(4),
+  .table th:nth-child(5),
+  .table td:nth-child(5) {
+    display: none;
+  }
+
+  .action-group-secondary {
+    border-left: none;
+    padding-left: 0;
+    margin-left: 0;
   }
 }
 

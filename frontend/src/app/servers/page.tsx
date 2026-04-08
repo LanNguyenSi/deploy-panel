@@ -95,7 +95,7 @@ export default function ServersPage() {
                 <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
                   <span className={`status-dot status-dot-${s.status}`} />
                   <div>
-                    <Link href={`/servers/${s.id}`} style={{ fontWeight: 600, color: "var(--text)", textDecoration: "none", fontSize: "var(--text-md)" }}>
+                    <Link href={`/servers/${s.id}`} style={{ fontWeight: 600, color: "var(--text)", fontSize: "var(--text-md)" }}>
                       {s.name}
                     </Link>
                     <div style={{ fontSize: "var(--text-sm)", color: "var(--muted)", marginTop: 2 }}>
@@ -149,33 +149,33 @@ function AddServerForm({ onCreated }: { onCreated: () => void }) {
   return (
     <form onSubmit={handleSubmit} className="card" style={{ padding: "var(--space-5)", marginBottom: "var(--space-6)" }}>
       <h3 style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: "var(--space-4)" }}>Add Server</h3>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-3)" }}>
+      <div className="grid-form">
         <div>
-          <label style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
+          <label htmlFor="srv-name" style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
             Server name
           </label>
-          <input type="text" placeholder="e.g. Production VPS" value={name} onChange={(e) => setName(e.target.value)} required className="input" />
+          <input id="srv-name" type="text" placeholder="e.g. Production VPS" value={name} onChange={(e) => setName(e.target.value)} required className="input" />
         </div>
         <div>
-          <label style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
+          <label htmlFor="srv-host" style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
             Host
           </label>
-          <input type="text" placeholder="e.g. 192.168.1.100" value={host} onChange={(e) => setHost(e.target.value)} required className="input" />
+          <input id="srv-host" type="text" placeholder="e.g. 192.168.1.100" value={host} onChange={(e) => setHost(e.target.value)} required className="input" />
         </div>
         <div>
-          <label style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
+          <label htmlFor="srv-relay-url" style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
             Relay URL <span style={{ color: "var(--muted)" }}>(optional)</span>
           </label>
-          <input type="url" placeholder="https://relay.example.com" value={relayUrl} onChange={(e) => setRelayUrl(e.target.value)} className="input" />
+          <input id="srv-relay-url" type="url" placeholder="https://relay.example.com" value={relayUrl} onChange={(e) => setRelayUrl(e.target.value)} className="input" />
         </div>
         <div>
-          <label style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
+          <label htmlFor="srv-relay-token" style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
             Relay token <span style={{ color: "var(--muted)" }}>(optional)</span>
           </label>
-          <input type="text" placeholder="Token" value={relayToken} onChange={(e) => setRelayToken(e.target.value)} className="input" />
+          <input id="srv-relay-token" type="text" placeholder="Token" value={relayToken} onChange={(e) => setRelayToken(e.target.value)} className="input" />
         </div>
       </div>
-      {error && <p className="login-error" style={{ marginTop: "var(--space-3)" }}>{error}</p>}
+      {error && <p className="form-error" style={{ marginTop: "var(--space-3)" }}>{error}</p>}
       <div style={{ marginTop: "var(--space-4)", display: "flex", gap: "var(--space-2)" }}>
         <button type="submit" disabled={submitting} className="btn btn-primary">
           {submitting ? "Adding..." : "Add Server"}

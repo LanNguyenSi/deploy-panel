@@ -39,6 +39,9 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
       {dialog && (
         <div
           className="animate-fade-in"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirm-title"
           style={{
             position: "fixed",
             inset: 0,
@@ -50,6 +53,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
             zIndex: 999,
           }}
           onClick={() => handleClose(false)}
+          onKeyDown={(e) => { if (e.key === "Escape") handleClose(false); }}
         >
           <div
             className="animate-slide-up"
@@ -64,7 +68,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
               boxShadow: "var(--shadow-lg)",
             }}
           >
-            <h3 style={{ fontSize: "var(--text-lg)", fontWeight: 600, marginBottom: "var(--space-2)", letterSpacing: "-0.01em" }}>
+            <h3 id="confirm-title" style={{ fontSize: "var(--text-lg)", fontWeight: 600, marginBottom: "var(--space-2)", letterSpacing: "-0.01em" }}>
               {dialog.title}
             </h3>
             <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", marginBottom: "var(--space-6)", lineHeight: 1.6 }}>

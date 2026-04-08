@@ -34,7 +34,7 @@ export default function DashboardPage() {
             <div className="skeleton" style={{ width: 160, height: 16 }} />
           </div>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "var(--space-3)" }}>
+        <div className="grid-stats">
           {[1, 2, 3].map((i) => (
             <div key={i} className="card skeleton" style={{ height: 96 }} />
           ))}
@@ -57,7 +57,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Stats */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "var(--space-3)", marginBottom: "var(--space-8)" }}>
+      <div className="grid-stats" style={{ marginBottom: "var(--space-8)" }}>
         <div className="card stat-card">
           <div className="stat-value">{servers.length}</div>
           <div className="stat-label">Servers</div>
@@ -80,7 +80,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-6)" }}>
+      <div className="grid-two-col">
         {/* Server cards */}
         <section>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-3)" }}>
@@ -98,7 +98,7 @@ export default function DashboardPage() {
           ) : (
             <div style={{ display: "grid", gap: "var(--space-2)" }}>
               {servers.map((s) => (
-                <Link key={s.id} href={`/servers/${s.id}`} className="card card-interactive" style={{ padding: "var(--space-3) var(--space-4)", textDecoration: "none", display: "block" }}>
+                <Link key={s.id} href={`/servers/${s.id}`} className="card card-interactive" style={{ padding: "var(--space-3) var(--space-4)", display: "block" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
                       <span className={`status-dot status-dot-${s.status}`} />
