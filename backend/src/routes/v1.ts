@@ -222,6 +222,10 @@ v1Router.post("/rollback", async (c) => {
     return c.json({ error: "bad_request", message: "server and app are required" }, 400);
   }
 
+  if (!APP_NAME_PATTERN.test(appName)) {
+    return c.json({ error: "bad_request", message: "Invalid app name" }, 400);
+  }
+
   const srv = await prisma.server.findFirst({
     where: { OR: [{ id: server }, { name: server }] },
   });
@@ -276,10 +280,14 @@ v1Router.post("/rollback", async (c) => {
 v1Router.get("/logs", async (c) => {
   const server = c.req.query("server");
   const appName = c.req.query("app");
-  const lines = Number(c.req.query("lines") ?? 50);
+  const lines = Math.min(Math.max(1, Number(c.req.query("lines")) || 50), 1000);
 
   if (!server || !appName) {
     return c.json({ error: "bad_request", message: "server and app query params are required" }, 400);
+  }
+
+  if (!APP_NAME_PATTERN.test(appName)) {
+    return c.json({ error: "bad_request", message: "Invalid app name" }, 400);
   }
 
   const srv = await prisma.server.findFirst({
