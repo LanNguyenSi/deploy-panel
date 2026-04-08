@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getServer, getApps, deployApp, rollbackApp, getAppLogs, getAppPreflight, syncServer, type AppWithCount } from "@/lib/api";
+import { getServer, getApps, deployApp, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, type AppWithCount } from "@/lib/api";
 
 export default function ServerDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -122,19 +122,40 @@ export default function ServerDetailPage() {
           {apps.map((app) => (
             <div key={app.id} className="card" style={{ padding: "var(--space-3)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-2)" }}>
-                <div>
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
                   <span style={{ fontWeight: 600 }}>{app.name}</span>
-                  <span style={{ marginLeft: "var(--space-2)", fontSize: "var(--text-sm)", color: "var(--muted)" }}>
+                  <TagBadge tag={app.tag} />
+                  <span style={{ fontSize: "var(--text-sm)", color: "var(--muted)" }}>
                     {app._count.deploys} deploy{app._count.deploys !== 1 ? "s" : ""}
                   </span>
                 </div>
                 <StatusBadge status={app.status} />
               </div>
-              <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap", alignItems: "center" }}>
                 <button onClick={() => handleDeploy(app.name)} className="btn btn-primary">Deploy</button>
                 <button onClick={() => handleRollback(app.name)} className="btn btn-secondary">Rollback</button>
                 <button onClick={() => handleLogs(app.name)} className="btn btn-secondary">Logs</button>
                 <button onClick={() => handlePreflight(app.name)} className="btn btn-secondary">Preflight</button>
+                <select
+                  value={app.tag ?? ""}
+                  onChange={async (e) => {
+                    const val = e.target.value || null;
+                    await tagApp(id, app.name, val);
+                    await load();
+                  }}
+                  className="input"
+                  style={{ width: "auto", fontSize: "var(--text-xs)", padding: "0.25rem 0.5rem" }}
+                >
+                  <option value="">No tag</option>
+                  <option value="production">Production</option>
+                  <option value="development">Development</option>
+                  <option value="ignored">Ignored</option>
+                </select>
+                <button onClick={async () => {
+                  if (!confirm(`Hide "${app.name}" from this server?`)) return;
+                  await hideApp(id, app.name);
+                  await load();
+                }} className="btn btn-danger" style={{ fontSize: "var(--text-xs)", padding: "0.25rem 0.5rem" }}>Hide</button>
               </div>
 
               {activeApp === app.name && logs !== null && (
@@ -169,6 +190,21 @@ export default function ServerDetailPage() {
         </div>
       )}
     </main>
+  );
+}
+
+function TagBadge({ tag }: { tag: string | null }) {
+  if (!tag) return null;
+  const styles: Record<string, { bg: string; color: string }> = {
+    production: { bg: "rgba(34,197,94,0.15)", color: "#22c55e" },
+    development: { bg: "rgba(59,130,246,0.15)", color: "#3b82f6" },
+    ignored: { bg: "rgba(107,114,128,0.15)", color: "#6b7280" },
+  };
+  const s = styles[tag] ?? styles.ignored;
+  return (
+    <span style={{ fontSize: "var(--text-xs)", padding: "0.125rem 0.375rem", borderRadius: "4px", background: s.bg, color: s.color, fontWeight: 500 }}>
+      {tag}
+    </span>
   );
 }
 

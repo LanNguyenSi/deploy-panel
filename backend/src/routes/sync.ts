@@ -56,6 +56,9 @@ syncRouter.post("/:serverId/sync", async (c) => {
       });
 
       if (existing) {
+        // Skip ignored apps
+        if (existing.tag === "ignored") continue;
+
         await prisma.app.update({
           where: { id: existing.id },
           data: { status: newStatus, health: relayApp.health },

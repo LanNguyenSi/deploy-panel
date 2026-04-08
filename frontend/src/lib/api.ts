@@ -39,6 +39,7 @@ export interface App {
   name: string;
   status: string;
   health: string | null;
+  tag: string | null;
   lastDeployAt: string | null;
 }
 
@@ -106,6 +107,14 @@ export async function rollbackApp(serverId: string, name: string, toCommit?: str
 
 export async function getAppLogs(serverId: string, name: string, lines = 50): Promise<{ logs: string }> {
   return request(`/api/servers/${serverId}/apps/${name}/logs?lines=${lines}`);
+}
+
+export async function tagApp(serverId: string, name: string, tag: string | null): Promise<{ app: App }> {
+  return request(`/api/servers/${serverId}/apps/${name}/tag`, { method: "PATCH", body: JSON.stringify({ tag }) });
+}
+
+export async function hideApp(serverId: string, name: string): Promise<void> {
+  return request(`/api/servers/${serverId}/apps/${name}`, { method: "DELETE" });
 }
 
 export async function syncServer(serverId: string): Promise<{ synced: boolean; apps: number; created: number; updated: number }> {

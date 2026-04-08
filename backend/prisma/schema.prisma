@@ -39,6 +39,7 @@ model App {
   path         String   // path on VPS
   health       String?  // health endpoint
   status       String   @default("unknown") // unknown, healthy, unhealthy, deploying
+  tag          String?  // production, development, ignored
   lastDeployAt DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
