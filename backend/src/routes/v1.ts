@@ -2,7 +2,10 @@ import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
 
-export const v1Router = new Hono();
+type Env = { Variables: { authType: string; apiKeyName?: string } };
+export const v1Router = new Hono<Env>();
+
+const APP_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
 // ── List servers ─────────────────────────────────────────────────────────────
 
@@ -32,10 +35,10 @@ v1Router.get("/apps", async (c) => {
 
   return c.json({
     apps: apps
-      .filter((a) => (a as any).tag !== "ignored")
+      .filter((a) => a.tag !== "ignored")
       .map((a) => ({
         id: a.id, name: a.name, status: a.status,
-        tag: (a as any).tag ?? null, lastDeployAt: a.lastDeployAt,
+        tag: a.tag ?? null, lastDeployAt: a.lastDeployAt,
         server: { id: a.server.id, name: a.server.name },
       })),
   });
@@ -53,22 +56,27 @@ v1Router.post("/deploy", async (c) => {
     return c.json({ error: "bad_request", message: "server and app are required" }, 400);
   }
 
+  if (!APP_NAME_PATTERN.test(appName)) {
+    return c.json({ error: "bad_request", message: "Invalid app name: must be alphanumeric, dots, hyphens, or underscores" }, 400);
+  }
+
   // Resolve server by name or ID
   const srv = await prisma.server.findFirst({
     where: { OR: [{ id: server }, { name: server }] },
   });
   if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
 
-  // Find or create app
-  const appRecord = await prisma.app.upsert({
-    where: { serverId_name: { serverId: srv.id, name: appName } },
-    update: {},
-    create: { serverId: srv.id, name: appName, path: `/home/deploy/apps/${appName}` },
-  });
+  if (!srv.relayUrl) {
+    return c.json({ error: "unprocessable", message: `Server "${srv.name}" has no relay configured` }, 422);
+  }
 
-  // Determine triggeredBy
-  const authType = (c as any).get("authType") as string | undefined;
-  const triggeredBy = authType === "api_key" ? "api" : authType === "panel" ? "panel" : "panel";
+  // App must already exist — no auto-creation via API
+  const appRecord = await prisma.app.findUnique({
+    where: { serverId_name: { serverId: srv.id, name: appName } },
+  });
+  if (!appRecord) return c.json({ error: "not_found", message: `App "${appName}" not found on server "${srv.name}"` }, 404);
+
+  const triggeredBy = c.get("authType") === "api_key" ? "api" : "panel";
 
   // Create deploy record
   const deploy = await prisma.deploy.create({
@@ -85,7 +93,7 @@ v1Router.post("/deploy", async (c) => {
         serverId: srv.id,
         path: `/api/apps/${appName}/deploy`,
         method: "POST",
-        body: { branch: ref, force: force ?? true },
+        body: { branch: ref, force: force ?? false },
       });
 
       const result: any = response.result ?? response;

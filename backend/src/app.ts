@@ -9,7 +9,7 @@ import { deploysRouter } from "./routes/deploys.js";
 import { syncRouter } from "./routes/sync.js";
 import { v1Router } from "./routes/v1.js";
 import { apiKeysRouter } from "./routes/api-keys.js";
-import { requireAuth } from "./middleware/auth.js";
+import { requireAuth, requirePanelAuth } from "./middleware/auth.js";
 
 export function createApp(corsOrigins: string) {
   const app = new Hono();
@@ -47,9 +47,9 @@ export function createApp(corsOrigins: string) {
   app.use("/api/v1/*", requireAuth);
   app.route("/api/v1", v1Router);
 
-  // API key management (panel token or session only)
-  app.use("/api/api-keys/*", requireAuth);
-  app.use("/api/api-keys", requireAuth);
+  // API key management (panel token or session only — NOT api keys)
+  app.use("/api/api-keys/*", requireAuth, requirePanelAuth);
+  app.use("/api/api-keys", requireAuth, requirePanelAuth);
   app.route("/api/api-keys", apiKeysRouter);
 
   // 404

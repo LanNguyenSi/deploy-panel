@@ -66,3 +66,15 @@ export async function requireAuth(c: Context, next: Next) {
 
   return c.json({ error: "unauthorized", message: "Authentication required" }, 401);
 }
+
+/**
+ * Rejects API key auth — only panel token or session cookie allowed.
+ * Must be used AFTER requireAuth.
+ */
+export async function requirePanelAuth(c: Context, next: Next) {
+  const authType = (c as any).get("authType");
+  if (authType === "api_key") {
+    return c.json({ error: "forbidden", message: "API key management requires panel authentication" }, 403);
+  }
+  return next();
+}
