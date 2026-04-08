@@ -7,6 +7,8 @@ import { serversRouter } from "./routes/servers.js";
 import { appsRouter } from "./routes/apps.js";
 import { deploysRouter } from "./routes/deploys.js";
 import { syncRouter } from "./routes/sync.js";
+import { v1Router } from "./routes/v1.js";
+import { apiKeysRouter } from "./routes/api-keys.js";
 import { requireAuth } from "./middleware/auth.js";
 
 export function createApp(corsOrigins: string) {
@@ -40,6 +42,15 @@ export function createApp(corsOrigins: string) {
   app.route("/api/servers/:serverId/apps", appsRouter);
   app.route("/api/deploys", deploysRouter);
   app.route("/api/servers", syncRouter);
+
+  // API v1 (API key or panel token)
+  app.use("/api/v1/*", requireAuth);
+  app.route("/api/v1", v1Router);
+
+  // API key management (panel token or session only)
+  app.use("/api/api-keys/*", requireAuth);
+  app.use("/api/api-keys", requireAuth);
+  app.route("/api/api-keys", apiKeysRouter);
 
   // 404
   app.notFound((c) => c.json({ error: "not_found", message: "Route not found" }, 404));
