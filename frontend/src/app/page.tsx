@@ -28,113 +28,144 @@ export default function DashboardPage() {
   if (loading) {
     return (
       <main className="page-shell">
-        <p style={{ color: "var(--muted)" }}>Loading dashboard...</p>
+        <div className="page-header">
+          <div>
+            <div className="skeleton" style={{ width: 200, height: 28, marginBottom: "var(--space-2)" }} />
+            <div className="skeleton" style={{ width: 160, height: 16 }} />
+          </div>
+        </div>
+        <div className="grid-stats">
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="card skeleton" style={{ height: 96 }} />
+          ))}
+        </div>
       </main>
     );
   }
 
   const online = servers.filter((s) => s.status === "online").length;
   const totalApps = servers.reduce((sum, s) => sum + s._count.apps, 0);
+  const recentSuccess = deploys.filter((d) => d.status === "success").length;
 
   return (
     <main className="page-shell">
-      <h1 style={{ fontSize: "var(--text-lg)", fontWeight: 700, marginBottom: "var(--space-4)" }}>
-        Deploy Panel
-      </h1>
-
-      {/* Stats */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "var(--space-3)", marginBottom: "var(--space-4)" }}>
-        <StatCard label="Servers" value={servers.length} sub={`${online} online`} />
-        <StatCard label="Apps" value={totalApps} />
-        <StatCard label="Recent Deploys" value={deploys.length} />
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Dashboard</h1>
+          <p className="page-subtitle">Overview of your infrastructure</p>
+        </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-4)" }}>
+      {/* Stats */}
+      <div className="grid-stats" style={{ marginBottom: "var(--space-8)" }}>
+        <div className="card stat-card">
+          <div className="stat-value">{servers.length}</div>
+          <div className="stat-label">Servers</div>
+          {online > 0 && (
+            <div className="stat-sub" style={{ color: "var(--success)" }}>
+              <span className="status-dot status-dot-online" style={{ marginRight: "var(--space-1)", width: 6, height: 6 }} /> {online} online
+            </div>
+          )}
+        </div>
+        <div className="card stat-card">
+          <div className="stat-value">{totalApps}</div>
+          <div className="stat-label">Apps</div>
+        </div>
+        <div className="card stat-card">
+          <div className="stat-value">{deploys.length}</div>
+          <div className="stat-label">Recent Deploys</div>
+          {recentSuccess > 0 && (
+            <div className="stat-sub" style={{ color: "var(--success)" }}>{recentSuccess} successful</div>
+          )}
+        </div>
+      </div>
+
+      <div className="grid-two-col">
         {/* Server cards */}
-        <div>
-          <h2 style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: "var(--space-2)" }}>
-            Servers
-          </h2>
+        <section>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-3)" }}>
+            <h2 style={{ fontSize: "var(--text-md)", fontWeight: 600 }}>Servers</h2>
+            <Link href="/servers" className="btn btn-secondary btn-sm">View all</Link>
+          </div>
           {servers.length === 0 ? (
-            <p style={{ color: "var(--muted)" }}>
-              No servers. <Link href="/servers" style={{ color: "var(--accent)" }}>Add one →</Link>
-            </p>
+            <div className="card empty-state" style={{ padding: "var(--space-8) var(--space-4)" }}>
+              <div className="empty-state-icon">&#9881;</div>
+              <div className="empty-state-title">No servers yet</div>
+              <div className="empty-state-text">
+                <Link href="/servers">Add your first server</Link> to start deploying.
+              </div>
+            </div>
           ) : (
             <div style={{ display: "grid", gap: "var(--space-2)" }}>
               {servers.map((s) => (
-                <Link key={s.id} href={`/servers/${s.id}`} className="card" style={{ padding: "var(--space-2)", textDecoration: "none", display: "block" }}>
+                <Link key={s.id} href={`/servers/${s.id}`} className="card card-interactive" style={{ padding: "var(--space-3) var(--space-4)", display: "block" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div>
-                      <span style={{ fontWeight: 600 }}>{s.name}</span>
-                      <span style={{ marginLeft: "var(--space-2)", fontSize: "var(--text-sm)", color: "var(--muted)" }}>
-                        {s.host}
-                      </span>
+                    <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+                      <span className={`status-dot status-dot-${s.status}`} />
+                      <div>
+                        <div style={{ fontWeight: 600, color: "var(--text)" }}>{s.name}</div>
+                        <div style={{ fontSize: "var(--text-xs)", color: "var(--muted)" }}>
+                          {s.host} · {s._count.apps} app{s._count.apps !== 1 ? "s" : ""}
+                        </div>
+                      </div>
                     </div>
-                    <StatusDot status={s.status} />
-                  </div>
-                  <div style={{ fontSize: "var(--text-sm)", color: "var(--muted)", marginTop: "2px" }}>
-                    {s._count.apps} app{s._count.apps !== 1 ? "s" : ""}
+                    <span className={`badge badge-${s.status === "online" ? "success" : s.status === "offline" ? "danger" : "neutral"}`}>
+                      {s.status}
+                    </span>
                   </div>
                 </Link>
               ))}
             </div>
           )}
-        </div>
+        </section>
 
         {/* Recent deploys */}
-        <div>
-          <h2 style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: "var(--space-2)" }}>
-            Recent Deploys
-          </h2>
+        <section>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-3)" }}>
+            <h2 style={{ fontSize: "var(--text-md)", fontWeight: 600 }}>Recent Deploys</h2>
+            <Link href="/deploys" className="btn btn-secondary btn-sm">View all</Link>
+          </div>
           {deploys.length === 0 ? (
-            <p style={{ color: "var(--muted)" }}>No deployments yet.</p>
+            <div className="card empty-state" style={{ padding: "var(--space-8) var(--space-4)" }}>
+              <div className="empty-state-icon">&#128640;</div>
+              <div className="empty-state-title">No deployments yet</div>
+              <div className="empty-state-text">Deploy an app to see activity here.</div>
+            </div>
           ) : (
-            <div style={{ display: "grid", gap: "var(--space-1)" }}>
-              {deploys.map((d) => (
-                <div key={d.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "var(--text-sm)", padding: "4px 0" }}>
-                  <div>
-                    <StatusDot status={d.status} />
-                    <span style={{ marginLeft: "var(--space-1)" }}>{d.app.name}</span>
-                    <span style={{ color: "var(--muted)", marginLeft: "var(--space-1)" }}>
-                      on {d.server.name}
-                    </span>
+            <div className="card" style={{ overflow: "hidden" }}>
+              {deploys.map((d, i) => (
+                <div
+                  key={d.id}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    padding: "var(--space-3) var(--space-4)",
+                    borderBottom: i < deploys.length - 1 ? "1px solid var(--border)" : "none",
+                    fontSize: "var(--text-sm)",
+                    transition: "background var(--transition-fast)",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+                    <span className={`status-dot status-dot-${d.status}`} />
+                    <div>
+                      <span style={{ fontWeight: 500, color: "var(--text)" }}>{d.app.name}</span>
+                      <span style={{ color: "var(--muted)", marginLeft: "var(--space-2)" }}>
+                        on {d.server.name}
+                      </span>
+                    </div>
                   </div>
-                  <span style={{ color: "var(--muted)" }}>
+                  <span style={{ color: "var(--muted)", fontSize: "var(--text-xs)" }}>
                     {timeAgo(d.createdAt)}
                   </span>
                 </div>
               ))}
             </div>
           )}
-          {deploys.length > 0 && (
-            <Link href="/deploys" style={{ color: "var(--accent)", fontSize: "var(--text-sm)", marginTop: "var(--space-2)", display: "inline-block" }}>
-              View all →
-            </Link>
-          )}
-        </div>
+        </section>
       </div>
     </main>
   );
-}
-
-function StatCard({ label, value, sub }: { label: string; value: number; sub?: string }) {
-  return (
-    <div className="card" style={{ padding: "var(--space-3)", textAlign: "center" }}>
-      <div style={{ fontSize: "var(--text-lg)", fontWeight: 700 }}>{value}</div>
-      <div style={{ fontSize: "var(--text-sm)", color: "var(--muted)" }}>{label}</div>
-      {sub && <div style={{ fontSize: "var(--text-sm)", color: "var(--success, #22c55e)" }}>{sub}</div>}
-    </div>
-  );
-}
-
-function StatusDot({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    online: "#22c55e", success: "#22c55e", healthy: "#22c55e",
-    offline: "#ef4444", failed: "#ef4444", unhealthy: "#ef4444",
-    "no-relay": "#f59e0b", deploying: "#3b82f6", running: "#3b82f6", pending: "#6b7280",
-    rolled_back: "#f59e0b", unknown: "#6b7280",
-  };
-  return <span style={{ color: colors[status] ?? "#6b7280" }}>●</span>;
 }
 
 function timeAgo(dateStr: string): string {

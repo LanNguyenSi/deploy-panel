@@ -7,12 +7,14 @@ import { getServer, getApps, deployApp, getDeployStatus, rollbackApp, getAppLogs
 import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
 
+type Panel = { type: "logs" | "deploy" | "preflight"; app: string };
+
 export default function ServerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [serverName, setServerName] = useState("");
   const [apps, setApps] = useState<AppWithCount[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeApp, setActiveApp] = useState<string | null>(null);
+  const [panel, setPanel] = useState<Panel | null>(null);
   const [logs, setLogs] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [deploying, setDeploying] = useState<string | null>(null);
@@ -57,9 +59,8 @@ export default function ServerDetailPage() {
     const ok = await confirm({ title: "Deploy", message: `Deploy "${name}"?`, confirmLabel: "Deploy" });
     if (!ok) return;
 
-    // Optimistic update + open log panel
     setDeploying(name);
-    setActiveApp(name);
+    setPanel({ type: "deploy", app: name });
     setLogs(null);
     setPreflight(null);
     setDeployLog({ status: "running", steps: [] });
@@ -68,11 +69,9 @@ export default function ServerDetailPage() {
     try {
       const { deploy } = await deployApp(id, name, { force: true });
 
-      // Poll for completion + live steps
       const pollInterval = setInterval(async () => {
         try {
           const { deploy: d } = await getDeployStatus(id, name, deploy.id);
-          // Parse steps from log
           let steps: Array<{ name: string; status: string; durationMs: number }> = [];
           if (d.log) {
             try { steps = JSON.parse(d.log); } catch {}
@@ -94,6 +93,7 @@ export default function ServerDetailPage() {
     } catch (err: any) {
       setDeploying(null);
       setDeployLog(null);
+      toast(`Deploy failed: ${err.message ?? "unknown error"}`, "error");
       setApps((prev) => prev.map((a) => a.name === name ? { ...a, status: "unhealthy" } : a));
     }
   }
@@ -111,7 +111,7 @@ export default function ServerDetailPage() {
   }
 
   async function handleLogs(name: string) {
-    setActiveApp(name);
+    setPanel({ type: "logs", app: name });
     setLogs(null);
     setPreflight(null);
     try {
@@ -123,7 +123,7 @@ export default function ServerDetailPage() {
   }
 
   async function handlePreflight(name: string) {
-    setActiveApp(name);
+    setPanel({ type: "preflight", app: name });
     setPreflight(null);
     setLogs(null);
     try {
@@ -134,124 +134,183 @@ export default function ServerDetailPage() {
     }
   }
 
+  function closePanel() {
+    setPanel(null);
+    setLogs(null);
+    setDeployLog(null);
+    setPreflight(null);
+  }
+
   return (
     <main className="page-shell">
-      <div style={{ marginBottom: "var(--space-3)" }}>
-        <Link href="/servers" style={{ color: "var(--muted)", fontSize: "var(--text-sm)" }}>← Servers</Link>
+      <div style={{ marginBottom: "var(--space-4)" }}>
+        <Link href="/servers" style={{ color: "var(--muted)", fontSize: "var(--text-sm)" }}>
+          ← Back to Servers
+        </Link>
       </div>
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-4)" }}>
-        <h1 style={{ fontSize: "var(--text-lg)", fontWeight: 700 }}>
-          {serverName || "Server"} — Apps
-        </h1>
-        <button onClick={async () => {
-          setSyncing(true);
-          try { await syncServer(id); await load(); }
-          catch (err: any) { toast(`Sync failed: ${err.message}`, "error"); }
-          finally { setSyncing(false); }
-        }} disabled={syncing} className="btn btn-secondary">
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">{serverName || "Server"}</h1>
+          <p className="page-subtitle">{apps.length} app{apps.length !== 1 ? "s" : ""} registered</p>
+        </div>
+        <button
+          onClick={async () => {
+            setSyncing(true);
+            try { await syncServer(id); await load(); toast("Synced successfully", "success"); }
+            catch (err: any) { toast(`Sync failed: ${err.message}`, "error"); }
+            finally { setSyncing(false); }
+          }}
+          disabled={syncing}
+          className="btn btn-secondary"
+        >
           {syncing ? "Syncing..." : "Sync from Relay"}
         </button>
       </div>
 
       {loading ? (
-        <p style={{ color: "var(--muted)" }}>Loading...</p>
+        <div style={{ display: "grid", gap: "var(--space-3)" }}>
+          {[1, 2, 3].map((i) => (
+            <div key={i} className="card skeleton" style={{ height: 100 }} />
+          ))}
+        </div>
       ) : apps.length === 0 ? (
-        <p style={{ color: "var(--muted)" }}>No apps found. Deploy an app via agent-relay to see it here.</p>
+        <div className="card empty-state">
+          <div className="empty-state-icon">&#128230;</div>
+          <div className="empty-state-title">No apps found</div>
+          <div className="empty-state-text">Deploy an app via agent-relay to see it here.</div>
+        </div>
       ) : (
         <div style={{ display: "grid", gap: "var(--space-3)" }}>
           {apps.map((app) => (
-            <div key={app.id} className="card" style={{ padding: "var(--space-3)" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-2)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                  <span style={{ fontWeight: 600 }}>{app.name}</span>
+            <div key={app.id} className="card" style={{ padding: "var(--space-4) var(--space-5)" }}>
+              {/* App header */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-3)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+                  <span className={`status-dot status-dot-${app.status}`} />
+                  <span style={{ fontWeight: 600, fontSize: "var(--text-md)" }}>{app.name}</span>
                   <TagBadge tag={app.tag} />
-                  <span style={{ fontSize: "var(--text-sm)", color: "var(--muted)" }}>
+                  <span style={{ fontSize: "var(--text-xs)", color: "var(--muted)" }}>
                     {app._count.deploys} deploy{app._count.deploys !== 1 ? "s" : ""}
                   </span>
                 </div>
-                <StatusBadge status={app.status} />
+                <span className={`badge badge-${app.status === "healthy" ? "success" : app.status === "unhealthy" ? "danger" : app.status === "deploying" ? "info" : "neutral"}`}>
+                  {app.status}
+                </span>
               </div>
-              <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap", alignItems: "center" }}>
-                <button onClick={() => handleDeploy(app.name)} disabled={deploying === app.name} className="btn btn-primary">
+
+              {/* Action buttons — primary separated from secondary */}
+              <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", flexWrap: "wrap" }}>
+                <button onClick={() => handleDeploy(app.name)} disabled={deploying === app.name} className="btn btn-primary btn-sm">
                   {deploying === app.name ? "Deploying..." : "Deploy"}
                 </button>
-                <button onClick={() => handleRollback(app.name)} className="btn btn-secondary">Rollback</button>
-                <button onClick={() => handleLogs(app.name)} className="btn btn-secondary">Logs</button>
-                <button onClick={() => handlePreflight(app.name)} className="btn btn-secondary">Preflight</button>
-                <select
-                  value={app.tag ?? ""}
-                  onChange={async (e) => {
-                    const val = e.target.value || null;
-                    await tagApp(id, app.name, val);
-                    await load();
-                  }}
-                  className="input"
-                  style={{ width: "auto", fontSize: "var(--text-xs)", padding: "0.25rem 0.5rem" }}
-                >
-                  <option value="">No tag</option>
-                  <option value="production">Production</option>
-                  <option value="development">Development</option>
-                  <option value="ignored">Ignored</option>
-                </select>
-                <button onClick={async () => {
-                  const ok = await confirm({ title: "Hide App", message: `Hide "${app.name}" from this server?`, confirmLabel: "Hide", danger: true });
-                  if (!ok) return;
-                  await hideApp(id, app.name);
-                  toast(`"${app.name}" hidden`, "info");
-                  await load();
-                }} className="btn btn-danger" style={{ fontSize: "var(--text-xs)", padding: "0.25rem 0.5rem" }}>Hide</button>
+
+                <div className="action-group-secondary">
+                  <button onClick={() => handleRollback(app.name)} className="btn btn-secondary btn-sm">Rollback</button>
+                  <button onClick={() => handleLogs(app.name)} className="btn btn-secondary btn-sm">Logs</button>
+                  <button onClick={() => handlePreflight(app.name)} className="btn btn-secondary btn-sm">Preflight</button>
+                </div>
+
+                <div className="action-group-secondary">
+                  <select
+                    value={app.tag ?? ""}
+                    onChange={async (e) => {
+                      const val = e.target.value || null;
+                      await tagApp(id, app.name, val);
+                      await load();
+                    }}
+                    className="select-native"
+                  >
+                    <option value="">No tag</option>
+                    <option value="production">Production</option>
+                    <option value="development">Development</option>
+                    <option value="ignored">Ignored</option>
+                  </select>
+                  <button
+                    onClick={async () => {
+                      const ok = await confirm({ title: "Hide App", message: `Hide "${app.name}" from this server?`, confirmLabel: "Hide", danger: true });
+                      if (!ok) return;
+                      await hideApp(id, app.name);
+                      toast(`"${app.name}" hidden`, "info");
+                      await load();
+                    }}
+                    className="btn btn-danger btn-sm"
+                  >
+                    Hide
+                  </button>
+                </div>
               </div>
 
-              {activeApp === app.name && logs !== null && (
-                <pre style={{
-                  marginTop: "var(--space-2)",
-                  padding: "var(--space-2)",
-                  background: "var(--bg-muted, #1a1a2e)",
-                  borderRadius: "var(--radius)",
-                  fontSize: "var(--text-sm)",
-                  overflow: "auto",
-                  maxHeight: "300px",
-                  whiteSpace: "pre-wrap",
-                }}>
-                  {logs}
-                </pre>
-              )}
-
-              {activeApp === app.name && deployLog !== null && (
-                <div style={{ marginTop: "var(--space-2)", padding: "var(--space-2)", background: "var(--bg-muted, #1a1a2e)", borderRadius: "var(--radius)", fontSize: "var(--text-sm)" }}>
-                  <div style={{ fontWeight: 600, marginBottom: "var(--space-1)", display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
-                    Deploy {deployLog.status === "running" ? (
-                      <span style={{ color: "var(--primary)" }}>running...</span>
-                    ) : deployLog.status === "success" ? (
-                      <span style={{ color: "var(--success)" }}>success</span>
-                    ) : (
-                      <span style={{ color: "var(--danger)" }}>failed</span>
-                    )}
+              {/* Expandable panels */}
+              {panel?.app === app.name && (
+                <div className="animate-slide-up" style={{ marginTop: "var(--space-4)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-2)" }}>
+                    <span style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--text-secondary)" }}>
+                      {panel.type === "logs" && "Application Logs"}
+                      {panel.type === "deploy" && "Deploy Progress"}
+                      {panel.type === "preflight" && "Preflight Checks"}
+                    </span>
+                    <button onClick={closePanel} className="btn btn-secondary btn-sm">Close</button>
                   </div>
-                  {deployLog.steps.length === 0 && deployLog.status === "running" && (
-                    <div style={{ color: "var(--muted)" }}>Waiting for steps...</div>
+
+                  {/* Logs */}
+                  {panel.type === "logs" && (
+                    <pre className="log-panel">
+                      {logs === null ? "Loading logs..." : logs}
+                    </pre>
                   )}
-                  {deployLog.steps.map((step, i) => (
-                    <div key={i} style={{ color: step.status === "success" ? "var(--success, #22c55e)" : step.status === "skipped" ? "var(--muted)" : "var(--danger, #ef4444)", display: "flex", gap: "var(--space-2)" }}>
-                      <span>{step.status === "success" ? "✓" : step.status === "skipped" ? "—" : "✗"}</span>
-                      <span>{step.name}</span>
-                      {step.durationMs > 0 && <span style={{ color: "var(--muted)" }}>({(step.durationMs / 1000).toFixed(1)}s)</span>}
-                    </div>
-                  ))}
-                </div>
-              )}
 
-              {activeApp === app.name && preflight !== null && (
-                <div style={{ marginTop: "var(--space-2)", padding: "var(--space-2)", background: "var(--bg-muted, #1a1a2e)", borderRadius: "var(--radius)" }}>
-                  <div style={{ fontWeight: 600, marginBottom: "var(--space-1)" }}>
-                    Preflight: {preflight.passed ? "✓ Passed" : "✗ Failed"}
-                  </div>
-                  {preflight.checks.map((check, i) => (
-                    <div key={i} style={{ fontSize: "var(--text-sm)", color: check.passed ? "var(--success, #22c55e)" : "var(--danger, #ef4444)" }}>
-                      {check.passed ? "✓" : "✗"} {check.name}: {check.message}
+                  {/* Deploy log */}
+                  {panel.type === "deploy" && deployLog && (
+                    <div className="log-panel" style={{ fontFamily: "inherit", whiteSpace: "normal" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-3)" }}>
+                        <span style={{ fontWeight: 600 }}>Status:</span>
+                        <span className={`badge badge-${deployLog.status === "running" ? "info" : deployLog.status === "success" ? "success" : "danger"}`}>
+                          {deployLog.status}
+                        </span>
+                      </div>
+                      {deployLog.steps.length === 0 && deployLog.status === "running" && (
+                        <div style={{ color: "var(--muted)", fontSize: "var(--text-sm)" }}>Waiting for steps...</div>
+                      )}
+                      <div style={{ display: "grid", gap: "var(--space-1)" }}>
+                        {deployLog.steps.map((step, i) => (
+                          <div key={i} className={`deploy-step deploy-step-${step.status === "success" ? "success" : step.status === "skipped" ? "skipped" : "failed"}`}>
+                            <span className="deploy-step-icon">
+                              {step.status === "success" ? "✓" : step.status === "skipped" ? "—" : "✗"}
+                            </span>
+                            <span style={{ color: "var(--text)" }}>{step.name}</span>
+                            {step.durationMs > 0 && (
+                              <span className="deploy-step-duration">{(step.durationMs / 1000).toFixed(1)}s</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  ))}
+                  )}
+
+                  {/* Preflight */}
+                  {panel.type === "preflight" && preflight && (
+                    <div className="log-panel" style={{ fontFamily: "inherit", whiteSpace: "normal" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-3)" }}>
+                        <span className={`badge badge-${preflight.passed ? "success" : "danger"}`}>
+                          {preflight.passed ? "✓ All checks passed" : "✗ Checks failed"}
+                        </span>
+                      </div>
+                      <div style={{ display: "grid", gap: "var(--space-2)" }}>
+                        {preflight.checks.map((check, i) => (
+                          <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "var(--space-2)", fontSize: "var(--text-sm)" }}>
+                            <span style={{ color: check.passed ? "var(--success)" : "var(--danger)", flexShrink: 0, marginTop: 2 }}>
+                              {check.passed ? "✓" : "✗"}
+                            </span>
+                            <div>
+                              <span style={{ fontWeight: 500, color: "var(--text)" }}>{check.name}</span>
+                              <span style={{ color: "var(--muted)", marginLeft: "var(--space-2)" }}>{check.message}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -264,25 +323,5 @@ export default function ServerDetailPage() {
 
 function TagBadge({ tag }: { tag: string | null }) {
   if (!tag) return null;
-  const styles: Record<string, { bg: string; color: string }> = {
-    production: { bg: "rgba(34,197,94,0.15)", color: "#22c55e" },
-    development: { bg: "rgba(59,130,246,0.15)", color: "#3b82f6" },
-    ignored: { bg: "rgba(107,114,128,0.15)", color: "#6b7280" },
-  };
-  const s = styles[tag] ?? styles.ignored;
-  return (
-    <span style={{ fontSize: "var(--text-xs)", padding: "0.125rem 0.375rem", borderRadius: "4px", background: s.bg, color: s.color, fontWeight: 500 }}>
-      {tag}
-    </span>
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    healthy: "#22c55e",
-    unhealthy: "#ef4444",
-    deploying: "#3b82f6",
-    unknown: "#6b7280",
-  };
-  return <span style={{ color: colors[status] ?? colors.unknown, fontWeight: 500 }}>● {status}</span>;
+  return <span className={`tag tag-${tag}`}>{tag}</span>;
 }
