@@ -6,13 +6,12 @@ function text(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
 }
 
-function error(message: string) {
+function error(e: unknown) {
+  const message = e instanceof Error ? e.message : String(e);
   return { content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }], isError: true as const };
 }
 
 export function registerTools(server: McpServer, client: DeployPanelClient) {
-
-  // ── list_servers ─────────────────────────────────────────────────────────
 
   server.tool(
     "deploy_list_servers",
@@ -22,13 +21,11 @@ export function registerTools(server: McpServer, client: DeployPanelClient) {
       try {
         const result = await client.listServers();
         return text(result.servers);
-      } catch (e: any) {
-        return error(e.message);
+      } catch (e) {
+        return error(e);
       }
     },
   );
-
-  // ── list_apps ────────────────────────────────────────────────────────────
 
   server.tool(
     "deploy_list_apps",
@@ -40,13 +37,11 @@ export function registerTools(server: McpServer, client: DeployPanelClient) {
       try {
         const result = await client.listApps(server);
         return text(result.apps);
-      } catch (e: any) {
-        return error(e.message);
+      } catch (e) {
+        return error(e);
       }
     },
   );
-
-  // ── deploy ───────────────────────────────────────────────────────────────
 
   server.tool(
     "deploy_app",
@@ -66,16 +61,13 @@ export function registerTools(server: McpServer, client: DeployPanelClient) {
           return text({ message: "Deploy started", deployId: deploy.id, status: deploy.status });
         }
 
-        // Poll until done
         const result = await client.pollDeploy(deploy.id);
         return text(result.deploy);
-      } catch (e: any) {
-        return error(e.message);
+      } catch (e) {
+        return error(e);
       }
     },
   );
-
-  // ── deploy_status ────────────────────────────────────────────────────────
 
   server.tool(
     "deploy_status",
@@ -87,13 +79,11 @@ export function registerTools(server: McpServer, client: DeployPanelClient) {
       try {
         const result = await client.getDeployStatus(deploy_id);
         return text(result.deploy);
-      } catch (e: any) {
-        return error(e.message);
+      } catch (e) {
+        return error(e);
       }
     },
   );
-
-  // ── preflight ────────────────────────────────────────────────────────────
 
   server.tool(
     "deploy_preflight",
@@ -106,39 +96,25 @@ export function registerTools(server: McpServer, client: DeployPanelClient) {
       try {
         const result = await client.preflight(server, app);
         return text(result);
-      } catch (e: any) {
-        return error(e.message);
+      } catch (e) {
+        return error(e);
       }
     },
   );
 
-  // ── rollback (uses deploy with previous commit — placeholder) ────────────
-
   server.tool(
     "deploy_rollback",
-    "Rollback an app to its previous version. Note: this triggers a rollback via the relay, not a re-deploy.",
+    "Rollback an app to its previous version via the relay.",
     {
       server: z.string().describe("Server name or ID"),
       app: z.string().describe("App name"),
     },
     async ({ server, app }) => {
       try {
-        // Rollback goes through the panel's existing API (not v1 yet)
-        const res = await fetch(`${client.apiUrl}/api/servers/${server}/apps/${app}/rollback`, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${client.apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: "{}",
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error((err as any).message ?? `HTTP ${res.status}`);
-        }
-        return text(await res.json());
-      } catch (e: any) {
-        return error(e.message);
+        const result = await client.rollback(server, app);
+        return text(result);
+      } catch (e) {
+        return error(e);
       }
     },
   );
