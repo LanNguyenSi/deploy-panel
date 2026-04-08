@@ -130,6 +130,28 @@ serversRouter.post("/:id/test", async (c) => {
   }
 });
 
+// GET /api/servers/:id/system — get CPU/RAM/Disk from relay
+serversRouter.get("/:id/system", async (c) => {
+  const server = await prisma.server.findUnique({ where: { id: c.req.param("id") } });
+  if (!server) return c.json({ error: "not_found" }, 404);
+  if (!server.relayUrl) return c.json({ error: "no_relay" }, 400);
+
+  try {
+    const headers: Record<string, string> = {};
+    if (server.relayToken) headers["Authorization"] = `Bearer ${server.relayToken}`;
+
+    const res = await fetch(`${server.relayUrl}/api/system`, {
+      headers,
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!res.ok) return c.json({ error: "relay_error", status: res.status }, 502);
+    return c.json(await res.json());
+  } catch {
+    return c.json({ error: "unreachable" }, 502);
+  }
+});
+
 // POST /api/servers/:id/install-relay — trigger relay install via SSH
 serversRouter.post("/:id/install-relay", async (c) => {
   const server = await prisma.server.findUnique({ where: { id: c.req.param("id") } });

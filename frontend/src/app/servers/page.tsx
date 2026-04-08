@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getServers, createServer, deleteServer, testServer, type ServerWithCount } from "@/lib/api";
+import { getServers, createServer, deleteServer, testServer, getServerSystem, type ServerWithCount, type SystemMetrics } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
 
@@ -11,6 +11,7 @@ export default function ServersPage() {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
+  const [metrics, setMetrics] = useState<Record<string, SystemMetrics>>({});
   const { toast } = useToast();
   const { confirm } = useConfirm();
 
@@ -18,6 +19,16 @@ export default function ServersPage() {
     try {
       const data = await getServers();
       setServers(data.servers);
+      // Fetch metrics for each server in parallel
+      const metricsMap: Record<string, SystemMetrics> = {};
+      await Promise.allSettled(
+        data.servers.map(async (s) => {
+          try {
+            metricsMap[s.id] = await getServerSystem(s.id);
+          } catch { /* ignore — server may not have relay */ }
+        }),
+      );
+      setMetrics(metricsMap);
     } catch (err) {
       console.error("Failed to load servers:", err);
     } finally {
@@ -25,7 +36,11 @@ export default function ServersPage() {
     }
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   async function handleTest(id: string) {
     setTesting(id);
@@ -115,6 +130,14 @@ export default function ServersPage() {
                   </button>
                 </div>
               </div>
+              {/* Health metrics */}
+              {metrics[s.id] && (
+                <div style={{ display: "flex", gap: "var(--space-4)", marginTop: "var(--space-3)", paddingTop: "var(--space-3)", borderTop: "1px solid var(--border)" }}>
+                  <MetricBar label="CPU" value={metrics[s.id].cpu.usage} max={100} unit="%" />
+                  <MetricBar label="RAM" value={metrics[s.id].memory.usedMb} max={metrics[s.id].memory.totalMb} unit="MB" />
+                  <MetricBar label="Disk" value={parseInt(metrics[s.id].disk.percent)} max={100} unit="%" />
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -182,5 +205,22 @@ function AddServerForm({ onCreated }: { onCreated: () => void }) {
         </button>
       </div>
     </form>
+  );
+}
+
+function MetricBar({ label, value, max, unit }: { label: string; value: number; max: number; unit: string }) {
+  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
+  const color = pct > 90 ? "var(--danger)" : pct > 75 ? "var(--warning)" : "var(--primary)";
+
+  return (
+    <div style={{ flex: 1, minWidth: 80 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: 4 }}>
+        <span>{label}</span>
+        <span>{unit === "MB" ? `${value}/${max} ${unit}` : `${Math.round(pct)}${unit}`}</span>
+      </div>
+      <div style={{ height: 4, background: "var(--border)", borderRadius: 2, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 2, transition: "width 0.3s ease" }} />
+      </div>
+    </div>
   );
 }

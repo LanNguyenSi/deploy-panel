@@ -88,6 +88,17 @@ export async function testServer(id: string): Promise<{ status: string; message?
   return request(`/api/servers/${id}/test`, { method: "POST" });
 }
 
+export interface SystemMetrics {
+  cpu: { usage: number };
+  memory: { usedMb: number; totalMb: number };
+  disk: { used: string; total: string; percent: string };
+  uptime: number;
+}
+
+export async function getServerSystem(id: string): Promise<SystemMetrics> {
+  return request(`/api/servers/${id}/system`);
+}
+
 // ── Apps ───────────────────────────────────────────────────────────────────
 
 export interface AppWithCount extends App {
