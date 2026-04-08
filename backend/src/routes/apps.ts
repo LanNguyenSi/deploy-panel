@@ -16,14 +16,58 @@ const APP_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 // GET /api/servers/:serverId/apps — list apps for server
 appsRouter.get("/", async (c) => {
   const serverId = getServerId(c);
+  const showIgnored = c.req.query("showIgnored") === "true";
+
+  const where: any = { serverId };
+  if (!showIgnored) {
+    where.tag = { not: "ignored" };
+  }
 
   const apps = await prisma.app.findMany({
-    where: { serverId },
+    where,
     orderBy: { name: "asc" },
     include: { _count: { select: { deploys: true } } },
   });
 
   return c.json({ apps });
+});
+
+// PATCH /api/servers/:serverId/apps/:name/tag — update app tag
+appsRouter.patch("/:name/tag", async (c) => {
+  const serverId = getServerId(c);
+  const name = c.req.param("name");
+  const body = await c.req.json();
+  const tag = body.tag; // production, development, ignored, or null
+
+  if (tag && !["production", "development", "ignored"].includes(tag)) {
+    return c.json({ error: "Invalid tag. Use: production, development, ignored, or null" }, 400);
+  }
+
+  try {
+    const app = await prisma.app.update({
+      where: { serverId_name: { serverId, name } },
+      data: { tag: tag || null },
+    });
+    return c.json({ app });
+  } catch {
+    return c.json({ error: "not_found" }, 404);
+  }
+});
+
+// DELETE /api/servers/:serverId/apps/:name — hide app from server view
+appsRouter.delete("/:name", async (c) => {
+  const serverId = getServerId(c);
+  const name = c.req.param("name");
+
+  try {
+    await prisma.app.update({
+      where: { serverId_name: { serverId, name } },
+      data: { tag: "ignored" },
+    });
+    return c.json({ hidden: true });
+  } catch {
+    return c.json({ error: "not_found" }, 404);
+  }
 });
 
 // POST /api/servers/:serverId/apps/:name/deploy — trigger deploy
