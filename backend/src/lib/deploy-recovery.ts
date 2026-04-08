@@ -1,24 +1,45 @@
 import { prisma } from "./prisma.js";
 import { relayRequest } from "./relay.js";
 
-const HEALTH_CHECK_DELAY = 15_000; // wait 15s for container to come up
-const HEALTH_CHECK_RETRIES = 4;    // try 4 times (total ~60s)
-const HEALTH_CHECK_INTERVAL = 10_000;
+const HEALTH_CHECK_DELAY = 20_000;    // wait 20s for containers to come up
+const HEALTH_CHECK_RETRIES = 5;       // try 5 times (total ~80s)
+const HEALTH_CHECK_INTERVAL = 12_000;
+
+interface PreflightCheck {
+  name: string;
+  passed: boolean;
+  message: string;
+  critical?: boolean;
+}
 
 /**
  * When a deploy's relay connection breaks (common during container restarts),
- * verify the deploy by checking the app's health via the relay.
+ * verify the deploy by checking if containers are running via preflight.
  *
- * Returns true if the app is healthy (deploy likely succeeded).
+ * We check critical checks only (containers running, health defined) —
+ * non-critical checks like git_remote_reachable are ignored.
  */
 async function checkAppHealth(serverId: string, appName: string): Promise<boolean> {
   for (let i = 0; i < HEALTH_CHECK_RETRIES; i++) {
     await new Promise((r) => setTimeout(r, i === 0 ? HEALTH_CHECK_DELAY : HEALTH_CHECK_INTERVAL));
     try {
-      const result = await relayRequest<{ passed?: boolean; checks?: unknown[] }>({
+      const result = await relayRequest<{ passed?: boolean; checks?: PreflightCheck[] }>({
         serverId,
         path: `/api/apps/${appName}/preflight`,
       });
+
+      // Check if all CRITICAL checks pass (ignore non-critical like git_remote_reachable)
+      if (result.checks) {
+        const criticalChecks = result.checks.filter((c) => c.critical !== false);
+        const allCriticalPassed = criticalChecks.length > 0 && criticalChecks.every((c) => c.passed);
+        if (allCriticalPassed) return true;
+
+        // If containers are running, that's good enough for recovery
+        const containersRunning = result.checks.find((c) => c.name === "containers_running");
+        if (containersRunning?.passed) return true;
+      }
+
+      // Fallback: if overall passed, great
       if (result.passed) return true;
     } catch {
       // Relay might still be restarting — keep trying
@@ -48,7 +69,10 @@ export async function recoverBrokenDeploy(
       where: { id: deployId },
       data: {
         status: "success",
-        log: JSON.stringify([{ name: "deploy", status: "success", durationMs: 0 }, { name: "recovery", status: "success", durationMs: 0, note: "Connection lost during deploy, verified via health check" }]),
+        log: JSON.stringify([
+          { name: "deploy", status: "success", durationMs: 0 },
+          { name: "recovery", status: "success", durationMs: 0, note: "Connection lost during deploy, verified via health check" },
+        ]),
       },
     }).catch(() => {});
     await prisma.app.update({
