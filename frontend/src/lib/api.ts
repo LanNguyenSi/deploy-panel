@@ -133,6 +133,28 @@ export async function hideApp(serverId: string, name: string): Promise<void> {
   return request(`/api/servers/${serverId}/apps/${name}`, { method: "DELETE" });
 }
 
+// ── API Keys ──────────────────────────────────────────────────────────────
+
+export interface ApiKeyInfo {
+  id: string;
+  name: string;
+  keyPrefix: string;
+  lastUsedAt: string | null;
+  createdAt: string;
+}
+
+export async function getApiKeys(): Promise<{ keys: ApiKeyInfo[] }> {
+  return request("/api/api-keys");
+}
+
+export async function createApiKey(name: string): Promise<{ key: { id: string; name: string; secret: string; prefix: string; createdAt: string }; warning: string }> {
+  return request("/api/api-keys", { method: "POST", body: JSON.stringify({ name }) });
+}
+
+export async function revokeApiKey(id: string): Promise<{ deleted: boolean }> {
+  return request(`/api/api-keys/${id}`, { method: "DELETE" });
+}
+
 export async function syncServer(serverId: string): Promise<{ synced: boolean; apps: number; created: number; updated: number }> {
   return request(`/api/servers/${serverId}/sync`, { method: "POST" });
 }
