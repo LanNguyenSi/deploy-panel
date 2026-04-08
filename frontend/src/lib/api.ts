@@ -137,6 +137,17 @@ export interface DeployWithRelations extends Deploy {
   server: { name: string; host: string };
 }
 
+export interface DeployDetail extends Deploy {
+  app: { name: string; repoUrl: string | null; branch: string };
+  server: { name: string; host: string };
+  steps: Array<{ name: string; status: string; durationMs: number }>;
+  compareUrl: string | null;
+}
+
+export async function getDeployDetail(id: string): Promise<{ deploy: DeployDetail }> {
+  return request(`/api/deploys/${id}`);
+}
+
 // ── Audit ─────────────────────────────────────────────────────────────────
 
 export interface AuditEntry {

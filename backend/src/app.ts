@@ -39,6 +39,7 @@ export function createApp(corsOrigins: string) {
   app.use("/api/servers/*", requireAuth);
   app.use("/api/servers", requireAuth);
   app.use("/api/deploys", requireAuth);
+  app.use("/api/deploys/*", requireAuth);
   app.route("/api/servers", serversRouter);
   app.route("/api/servers/:serverId/apps", appsRouter);
   app.route("/api/deploys", deploysRouter);
