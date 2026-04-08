@@ -97,8 +97,12 @@ export async function getApps(serverId: string): Promise<{ apps: AppWithCount[] 
   return request(`/api/servers/${serverId}/apps`);
 }
 
-export async function deployApp(serverId: string, name: string, options?: { branch?: string; force?: boolean }): Promise<{ deploy: { id: string; success: boolean } }> {
+export async function deployApp(serverId: string, name: string, options?: { branch?: string; force?: boolean }): Promise<{ deploy: { id: string; status: string } }> {
   return request(`/api/servers/${serverId}/apps/${name}/deploy`, { method: "POST", body: JSON.stringify(options ?? {}) });
+}
+
+export async function getDeployStatus(serverId: string, appName: string, deployId: string): Promise<{ deploy: Deploy }> {
+  return request(`/api/servers/${serverId}/apps/${appName}/deploys/${deployId}`);
 }
 
 export async function rollbackApp(serverId: string, name: string, toCommit?: string): Promise<unknown> {
