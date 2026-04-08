@@ -20,7 +20,10 @@ appsRouter.get("/", async (c) => {
 
   const where: any = { serverId };
   if (!showIgnored) {
-    where.tag = { not: "ignored" };
+    where.OR = [
+      { tag: null },
+      { tag: { not: "ignored" } },
+    ];
   }
 
   const apps = await prisma.app.findMany({
