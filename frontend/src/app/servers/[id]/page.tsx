@@ -94,7 +94,7 @@ export default function ServerDetailPage() {
           setDeployLog(null);
           await load();
         }
-      }, 5000);
+      }, 2000); // Fast polling — backend streams steps in real-time
     } catch (err: any) {
       setDeploying(null);
       setDeployLog(null);
