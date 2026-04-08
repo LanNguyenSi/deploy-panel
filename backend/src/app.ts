@@ -8,6 +8,7 @@ import { appsRouter } from "./routes/apps.js";
 import { deploysRouter } from "./routes/deploys.js";
 import { syncRouter } from "./routes/sync.js";
 import { auditRouter } from "./routes/audit.js";
+import { scheduledRouter } from "./routes/scheduled.js";
 import { v1Router } from "./routes/v1.js";
 import { apiKeysRouter } from "./routes/api-keys.js";
 import { requireAuth, requirePanelAuth } from "./middleware/auth.js";
@@ -48,6 +49,11 @@ export function createApp(corsOrigins: string) {
   // Audit log
   app.use("/api/audit", requireAuth);
   app.route("/api/audit", auditRouter);
+
+  // Scheduled deploys
+  app.use("/api/scheduled", requireAuth);
+  app.use("/api/scheduled/*", requireAuth);
+  app.route("/api/scheduled", scheduledRouter);
 
   // API v1 (API key or panel token)
   app.use("/api/v1/*", requireAuth);
