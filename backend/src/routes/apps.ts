@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
+import { audit, getActor } from "../lib/audit.js";
 
 export const appsRouter = new Hono();
 
@@ -93,6 +94,8 @@ appsRouter.post("/:name/deploy", async (c) => {
 
   await prisma.app.update({ where: { id: app.id }, data: { status: "deploying" } });
 
+  audit("deploy", `${name} on server ${serverId}`, `deployId: ${deploy.id}`, getActor(c));
+
   // Return immediately — run deploy in background
   const deployId = deploy.id;
 
@@ -181,6 +184,8 @@ appsRouter.post("/:name/rollback", async (c) => {
   const deploy = await prisma.deploy.create({
     data: { serverId, appId: app.id, status: "running", triggeredBy: "panel" },
   });
+
+  audit("rollback", `${name} on server ${serverId}`, `deployId: ${deploy.id}`, getActor(c));
 
   try {
     const result = await relayRequest<{ success?: boolean; commitBefore?: string; commitAfter?: string }>({

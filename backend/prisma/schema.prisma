@@ -85,3 +85,18 @@ model Deploy {
   @@index([serverId])
   @@map("deploys")
 }
+
+// ── Audit Log ───────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  action    String   // deploy, rollback, server.create, server.delete, app.tag, app.hide, login, logout, api_key.create, api_key.revoke
+  target    String?  // e.g. "deploy-panel on VPS-01" or "VPS-01 (Stone)"
+  detail    String?  // extra info like commit hash, status, etc.
+  actor     String?  // "panel", "api:github-actions", "session"
+  createdAt DateTime @default(now())
+
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
+import { audit } from "../lib/audit.js";
 
 type Env = { Variables: { authType: string; apiKeyName?: string } };
 export const v1Router = new Hono<Env>();
@@ -84,6 +85,8 @@ v1Router.post("/deploy", async (c) => {
   });
 
   await prisma.app.update({ where: { id: appRecord.id }, data: { status: "deploying" } });
+
+  audit("deploy", `${appName} on ${srv.name}`, `deployId: ${deploy.id}, via: ${triggeredBy}`, triggeredBy === "api" ? `api:${(c as any).get?.("apiKeyName") ?? "unknown"}` : "panel");
 
   // Fire and forget
   const deployId = deploy.id;
