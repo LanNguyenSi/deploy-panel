@@ -59,40 +59,61 @@ export default function ServersPage() {
 
   return (
     <main className="page-shell">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-4)" }}>
-        <h1 style={{ fontSize: "var(--text-lg)", fontWeight: 700 }}>Servers</h1>
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Servers</h1>
+          <p className="page-subtitle">{servers.length} server{servers.length !== 1 ? "s" : ""} configured</p>
+        </div>
         <button onClick={() => setShowForm(!showForm)} className="btn btn-primary">
           {showForm ? "Cancel" : "+ Add Server"}
         </button>
       </div>
 
-      {showForm && <AddServerForm onCreated={() => { setShowForm(false); toast("Server added", "success"); load(); }} />}
+      {showForm && (
+        <div className="animate-slide-up">
+          <AddServerForm onCreated={() => { setShowForm(false); toast("Server added", "success"); load(); }} />
+        </div>
+      )}
 
       {loading ? (
         <div style={{ display: "grid", gap: "var(--space-3)" }}>
           {[1, 2].map((i) => (
-            <div key={i} className="card animate-pulse" style={{ padding: "var(--space-3)", height: 64 }} />
+            <div key={i} className="card skeleton" style={{ height: 80 }} />
           ))}
         </div>
       ) : servers.length === 0 ? (
-        <p style={{ color: "var(--muted)" }}>No servers configured. Add one to get started.</p>
+        <div className="card empty-state">
+          <div className="empty-state-icon">&#9881;</div>
+          <div className="empty-state-title">No servers configured</div>
+          <div className="empty-state-text">Add a server to start managing your deployments.</div>
+        </div>
       ) : (
         <div style={{ display: "grid", gap: "var(--space-3)" }}>
           {servers.map((s) => (
-            <div key={s.id} className="card" style={{ padding: "var(--space-3)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <Link href={`/servers/${s.id}`} style={{ fontWeight: 600, color: "var(--primary)", textDecoration: "none" }}>{s.name}</Link>
-                <div style={{ fontSize: "var(--text-sm)", color: "var(--muted)" }}>
-                  {s.host} · {s._count.apps} app{s._count.apps !== 1 ? "s" : ""} · <StatusBadge status={s.status} />
+            <div key={s.id} className="card" style={{ padding: "var(--space-4) var(--space-5)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+                  <span className={`status-dot status-dot-${s.status}`} />
+                  <div>
+                    <Link href={`/servers/${s.id}`} style={{ fontWeight: 600, color: "var(--text)", textDecoration: "none", fontSize: "var(--text-md)" }}>
+                      {s.name}
+                    </Link>
+                    <div style={{ fontSize: "var(--text-sm)", color: "var(--muted)", marginTop: 2 }}>
+                      {s.host} · {s._count.apps} app{s._count.apps !== 1 ? "s" : ""}
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div style={{ display: "flex", gap: "var(--space-2)" }}>
-                <button onClick={() => handleTest(s.id)} disabled={testing === s.id} className="btn btn-secondary">
-                  {testing === s.id ? "Testing..." : "Test"}
-                </button>
-                <button onClick={() => handleDelete(s.id, s.name)} className="btn btn-danger">
-                  Delete
-                </button>
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                  <span className={`badge badge-${s.status === "online" ? "success" : s.status === "offline" ? "danger" : s.status === "no-relay" ? "warning" : "neutral"}`}>
+                    {s.status}
+                  </span>
+                  <button onClick={() => handleTest(s.id)} disabled={testing === s.id} className="btn btn-secondary btn-sm">
+                    {testing === s.id ? "Testing..." : "Test"}
+                  </button>
+                  <button onClick={() => handleDelete(s.id, s.name)} className="btn btn-danger btn-sm">
+                    Delete
+                  </button>
+                </div>
               </div>
             </div>
           ))}
@@ -100,16 +121,6 @@ export default function ServersPage() {
       )}
     </main>
   );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    online: "#22c55e",
-    offline: "#ef4444",
-    "no-relay": "#f59e0b",
-    unknown: "#6b7280",
-  };
-  return <span style={{ color: colors[status] ?? colors.unknown, fontWeight: 500 }}>● {status}</span>;
 }
 
 function AddServerForm({ onCreated }: { onCreated: () => void }) {
@@ -136,19 +147,40 @@ function AddServerForm({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="card" style={{ padding: "var(--space-3)", marginBottom: "var(--space-4)", display: "grid", gap: "var(--space-2)" }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-2)" }}>
-        <input type="text" placeholder="Server name" value={name} onChange={(e) => setName(e.target.value)} required className="input" />
-        <input type="text" placeholder="Host (e.g. 192.168.1.100)" value={host} onChange={(e) => setHost(e.target.value)} required className="input" />
+    <form onSubmit={handleSubmit} className="card" style={{ padding: "var(--space-5)", marginBottom: "var(--space-6)" }}>
+      <h3 style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: "var(--space-4)" }}>Add Server</h3>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-3)" }}>
+        <div>
+          <label style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
+            Server name
+          </label>
+          <input type="text" placeholder="e.g. Production VPS" value={name} onChange={(e) => setName(e.target.value)} required className="input" />
+        </div>
+        <div>
+          <label style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
+            Host
+          </label>
+          <input type="text" placeholder="e.g. 192.168.1.100" value={host} onChange={(e) => setHost(e.target.value)} required className="input" />
+        </div>
+        <div>
+          <label style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
+            Relay URL <span style={{ color: "var(--muted)" }}>(optional)</span>
+          </label>
+          <input type="url" placeholder="https://relay.example.com" value={relayUrl} onChange={(e) => setRelayUrl(e.target.value)} className="input" />
+        </div>
+        <div>
+          <label style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
+            Relay token <span style={{ color: "var(--muted)" }}>(optional)</span>
+          </label>
+          <input type="text" placeholder="Token" value={relayToken} onChange={(e) => setRelayToken(e.target.value)} className="input" />
+        </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-2)" }}>
-        <input type="url" placeholder="Relay URL (optional)" value={relayUrl} onChange={(e) => setRelayUrl(e.target.value)} className="input" />
-        <input type="text" placeholder="Relay token (optional)" value={relayToken} onChange={(e) => setRelayToken(e.target.value)} className="input" />
+      {error && <p className="login-error" style={{ marginTop: "var(--space-3)" }}>{error}</p>}
+      <div style={{ marginTop: "var(--space-4)", display: "flex", gap: "var(--space-2)" }}>
+        <button type="submit" disabled={submitting} className="btn btn-primary">
+          {submitting ? "Adding..." : "Add Server"}
+        </button>
       </div>
-      {error && <p style={{ color: "var(--danger)", fontSize: "var(--text-sm)" }}>{error}</p>}
-      <button type="submit" disabled={submitting} className="btn btn-primary" style={{ justifySelf: "start" }}>
-        {submitting ? "Adding..." : "Add Server"}
-      </button>
     </form>
   );
 }

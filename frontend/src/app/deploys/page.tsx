@@ -28,76 +28,102 @@ export default function DeploysPage() {
     return () => clearInterval(interval);
   }, [statusFilter]);
 
+  const statusOptions = [
+    { value: "", label: "All statuses" },
+    { value: "success", label: "Success" },
+    { value: "failed", label: "Failed" },
+    { value: "rolled_back", label: "Rolled back" },
+    { value: "running", label: "Running" },
+  ];
+
   return (
     <main className="page-shell">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-4)" }}>
-        <h1 style={{ fontSize: "var(--text-lg)", fontWeight: 700 }}>Deploy History</h1>
-        <select
-          value={statusFilter}
-          onChange={(e) => { setStatusFilter(e.target.value); setLoading(true); }}
-          className="input"
-          style={{ width: "auto" }}
-        >
-          <option value="">All statuses</option>
-          <option value="success">Success</option>
-          <option value="failed">Failed</option>
-          <option value="rolled_back">Rolled back</option>
-          <option value="running">Running</option>
-        </select>
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Deploy History</h1>
+          <p className="page-subtitle">{deploys.length} deployment{deploys.length !== 1 ? "s" : ""}</p>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+          <div style={{ display: "flex", gap: "var(--space-1)" }}>
+            {statusOptions.map((opt) => (
+              <button
+                key={opt.value}
+                onClick={() => { setStatusFilter(opt.value); setLoading(true); }}
+                className={`btn btn-sm ${statusFilter === opt.value ? "btn-primary" : "btn-secondary"}`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {loading ? (
-        <p style={{ color: "var(--muted)" }}>Loading...</p>
+        <div style={{ display: "grid", gap: "var(--space-2)" }}>
+          {[1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className="skeleton" style={{ height: 48 }} />
+          ))}
+        </div>
       ) : deploys.length === 0 ? (
-        <p style={{ color: "var(--muted)" }}>No deployments found.</p>
+        <div className="card empty-state">
+          <div className="empty-state-icon">&#128640;</div>
+          <div className="empty-state-title">No deployments found</div>
+          <div className="empty-state-text">
+            {statusFilter ? "Try a different filter." : "Deploy an app to see history here."}
+          </div>
+        </div>
       ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ borderBottom: "1px solid var(--border, #333)", textAlign: "left" }}>
-              <th style={{ padding: "var(--space-2)", fontSize: "var(--text-sm)", color: "var(--muted)" }}>Status</th>
-              <th style={{ padding: "var(--space-2)", fontSize: "var(--text-sm)", color: "var(--muted)" }}>App</th>
-              <th style={{ padding: "var(--space-2)", fontSize: "var(--text-sm)", color: "var(--muted)" }}>Server</th>
-              <th style={{ padding: "var(--space-2)", fontSize: "var(--text-sm)", color: "var(--muted)" }}>Commit</th>
-              <th style={{ padding: "var(--space-2)", fontSize: "var(--text-sm)", color: "var(--muted)" }}>Duration</th>
-              <th style={{ padding: "var(--space-2)", fontSize: "var(--text-sm)", color: "var(--muted)" }}>When</th>
-            </tr>
-          </thead>
-          <tbody>
-            {deploys.map((d) => (
-              <tr key={d.id} style={{ borderBottom: "1px solid var(--border, #222)" }}>
-                <td style={{ padding: "var(--space-2)" }}>
-                  <StatusBadge status={d.status} />
-                </td>
-                <td style={{ padding: "var(--space-2)", fontWeight: 500 }}>{d.app.name}</td>
-                <td style={{ padding: "var(--space-2)", color: "var(--muted)" }}>{d.server.name}</td>
-                <td style={{ padding: "var(--space-2)", fontFamily: "monospace", fontSize: "var(--text-sm)" }}>
-                  {d.commitAfter ? d.commitAfter.slice(0, 7) : "—"}
-                </td>
-                <td style={{ padding: "var(--space-2)", color: "var(--muted)", fontSize: "var(--text-sm)" }}>
-                  {d.duration ? `${(d.duration / 1000).toFixed(1)}s` : "—"}
-                </td>
-                <td style={{ padding: "var(--space-2)", color: "var(--muted)", fontSize: "var(--text-sm)" }}>
-                  {timeAgo(d.createdAt)}
-                </td>
+        <div className="card" style={{ overflow: "hidden" }}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>App</th>
+                <th>Server</th>
+                <th>Commit</th>
+                <th>Duration</th>
+                <th>When</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {deploys.map((d) => (
+                <tr key={d.id} style={{ cursor: "default" }}>
+                  <td>
+                    <StatusBadge status={d.status} />
+                  </td>
+                  <td style={{ fontWeight: 500, color: "var(--text)" }}>{d.app.name}</td>
+                  <td style={{ color: "var(--text-secondary)" }}>{d.server.name}</td>
+                  <td>
+                    <code style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", background: "var(--bg-subtle)", padding: "0.125rem 0.375rem", borderRadius: "var(--radius-sm)" }}>
+                      {d.commitAfter ? d.commitAfter.slice(0, 7) : "—"}
+                    </code>
+                  </td>
+                  <td style={{ color: "var(--muted)" }}>
+                    {d.duration ? `${(d.duration / 1000).toFixed(1)}s` : "—"}
+                  </td>
+                  <td style={{ color: "var(--muted)" }}>
+                    {timeAgo(d.createdAt)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </main>
   );
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const styles: Record<string, { color: string; label: string }> = {
-    success: { color: "#22c55e", label: "Success" },
-    failed: { color: "#ef4444", label: "Failed" },
-    rolled_back: { color: "#f59e0b", label: "Rolled back" },
-    running: { color: "#3b82f6", label: "Running" },
-    pending: { color: "#6b7280", label: "Pending" },
+  const map: Record<string, { className: string; label: string }> = {
+    success: { className: "badge-success", label: "Success" },
+    failed: { className: "badge-danger", label: "Failed" },
+    rolled_back: { className: "badge-warning", label: "Rolled back" },
+    running: { className: "badge-info", label: "Running" },
+    pending: { className: "badge-neutral", label: "Pending" },
   };
-  const s = styles[status] ?? { color: "#6b7280", label: status };
-  return <span style={{ color: s.color, fontWeight: 500, fontSize: "var(--text-sm)" }}>● {s.label}</span>;
+  const s = map[status] ?? { className: "badge-neutral", label: status };
+  return <span className={`badge ${s.className}`}>{s.label}</span>;
 }
 
 function timeAgo(dateStr: string): string {

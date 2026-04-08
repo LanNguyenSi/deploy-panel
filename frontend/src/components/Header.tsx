@@ -16,31 +16,31 @@ export default function Header() {
     router.push("/login");
   }
 
+  function navClass(path: string) {
+    const active = path === "/" ? pathname === "/" : pathname.startsWith(path);
+    return `nav-link${active ? " nav-link-active" : ""}`;
+  }
+
   return (
-    <header style={{
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      padding: "var(--space-3) var(--space-4)",
-      borderBottom: "1px solid var(--border)",
-      marginBottom: "var(--space-4)",
-      maxWidth: 1100,
-      margin: "0 auto",
-    }}>
-      <nav style={{ display: "flex", gap: "var(--space-4)", alignItems: "center" }}>
-        <Link href="/" style={{ fontWeight: 700, fontSize: "var(--text-md)", color: "var(--text)", textDecoration: "none" }}>
-          Deploy Panel
-        </Link>
-        <Link href="/servers" style={{ color: pathname.startsWith("/servers") ? "var(--primary)" : "var(--muted)", textDecoration: "none", fontSize: "var(--text-sm)" }}>
-          Servers
-        </Link>
-        <Link href="/deploys" style={{ color: pathname === "/deploys" ? "var(--primary)" : "var(--muted)", textDecoration: "none", fontSize: "var(--text-sm)" }}>
-          Deploys
-        </Link>
-      </nav>
-      <button onClick={handleLogout} className="btn btn-secondary" style={{ fontSize: "var(--text-sm)" }}>
-        Logout
-      </button>
+    <header className="header">
+      <div className="header-inner">
+        <nav className="nav">
+          <Link href="/" className="nav-brand">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 28" width="24" height="24">
+              <rect width="28" height="28" rx="6" fill="var(--primary)" />
+              <path d="M7 11l7-3.5 7 3.5v6l-7 3.5-7-3.5z" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round" />
+              <path d="M14 17.5v-6.5M7 11l7 3 7-3" fill="none" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round" />
+            </svg>
+            <span>Deploy Panel</span>
+          </Link>
+          <Link href="/" className={navClass("/")}>Dashboard</Link>
+          <Link href="/servers" className={navClass("/servers")}>Servers</Link>
+          <Link href="/deploys" className={navClass("/deploys")}>Deploys</Link>
+        </nav>
+        <button onClick={handleLogout} className="btn btn-secondary btn-sm">
+          Logout
+        </button>
+      </div>
     </header>
   );
 }
