@@ -114,6 +114,24 @@ export async function deployApp(serverId: string, name: string, options?: { bran
   return request(`/api/servers/${serverId}/apps/${name}/deploy`, { method: "POST", body: JSON.stringify(options ?? {}) });
 }
 
+// Default matches single-deploy semantics: preflight is NOT bypassed
+// unless the caller explicitly opts in. The earlier `force = true`
+// default meant one click silently skipped preflight for every app in
+// the batch — exactly the scenario where preflight matters most.
+// Callers that really want to bypass preflight for a bulk must pass true.
+export async function bulkDeploy(
+  serverId: string,
+  apps: string[],
+  force = false,
+): Promise<{
+  deploys: Array<{ app: string; deployId: string; status: string; error?: string }>;
+}> {
+  return request(`/api/servers/${serverId}/apps/bulk-deploy`, {
+    method: "POST",
+    body: JSON.stringify({ apps, force }),
+  });
+}
+
 export async function getDeployStatus(serverId: string, appName: string, deployId: string): Promise<{ deploy: Deploy }> {
   return request(`/api/servers/${serverId}/apps/${appName}/deploys/${deployId}`);
 }
