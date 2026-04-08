@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
+import { recoverBrokenDeploy } from "../lib/deploy-recovery.js";
 import { audit, getActor } from "../lib/audit.js";
 
 export const appsRouter = new Hono();
@@ -152,14 +153,9 @@ appsRouter.post("/:name/deploy", async (c) => {
         },
       });
     } catch (err) {
-      await prisma.deploy.update({
-        where: { id: deployId },
-        data: { status: "failed", log: err instanceof Error ? err.message : String(err) },
-      }).catch(() => {});
-      await prisma.app.update({
-        where: { id: app.id },
-        data: { status: "unhealthy" },
-      }).catch(() => {});
+      const errMsg = err instanceof Error ? err.message : String(err);
+      // Connection likely broke during container restart — try health recovery
+      recoverBrokenDeploy(deployId, app.id, serverId, name, errMsg);
     }
   })();
 

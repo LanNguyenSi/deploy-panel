@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
+import { recoverBrokenDeploy } from "../lib/deploy-recovery.js";
 import { audit } from "../lib/audit.js";
 
 type Env = { Variables: { authType: string; apiKeyName?: string } };
@@ -127,14 +128,8 @@ v1Router.post("/deploy", async (c) => {
         data: { status: success ? "healthy" : "unhealthy", lastDeployAt: new Date() },
       });
     } catch (err) {
-      await prisma.deploy.update({
-        where: { id: deployId },
-        data: { status: "failed", log: err instanceof Error ? err.message : String(err) },
-      }).catch(() => {});
-      await prisma.app.update({
-        where: { id: appRecord.id },
-        data: { status: "unhealthy" },
-      }).catch(() => {});
+      const errMsg = err instanceof Error ? err.message : String(err);
+      recoverBrokenDeploy(deployId, appRecord.id, srv.id, appName, errMsg);
     }
   })();
 
