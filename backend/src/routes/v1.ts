@@ -172,6 +172,141 @@ v1Router.get("/deploy/:id", async (c) => {
   });
 });
 
+// ── Deploy History ──────────────────────────────────────────────────────────
+
+v1Router.get("/deploys", async (c) => {
+  const serverId = c.req.query("server_id");
+  const appId = c.req.query("app_id");
+  const status = c.req.query("status");
+  const limit = Math.min(Number(c.req.query("limit") ?? 50), 200);
+
+  const where: Record<string, string> = {};
+  if (serverId) where.serverId = serverId;
+  if (appId) where.appId = appId;
+  if (status) where.status = status;
+
+  const deploys = await prisma.deploy.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    include: {
+      app: { select: { name: true } },
+      server: { select: { name: true } },
+    },
+  });
+
+  return c.json({
+    deploys: deploys.map((d) => ({
+      id: d.id,
+      server: d.server.name,
+      app: d.app.name,
+      status: d.status,
+      commitBefore: d.commitBefore,
+      commitAfter: d.commitAfter,
+      duration: d.duration,
+      triggeredBy: d.triggeredBy,
+      createdAt: d.createdAt,
+    })),
+  });
+});
+
+// ── Rollback ────────────────────────────────────────────────────────────────
+
+v1Router.post("/rollback", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const { server, app: appName, to_commit } = body as {
+    server?: string; app?: string; to_commit?: string;
+  };
+
+  if (!server || !appName) {
+    return c.json({ error: "bad_request", message: "server and app are required" }, 400);
+  }
+
+  if (!APP_NAME_PATTERN.test(appName)) {
+    return c.json({ error: "bad_request", message: "Invalid app name" }, 400);
+  }
+
+  const srv = await prisma.server.findFirst({
+    where: { OR: [{ id: server }, { name: server }] },
+  });
+  if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
+
+  const appRecord = await prisma.app.findUnique({
+    where: { serverId_name: { serverId: srv.id, name: appName } },
+  });
+  if (!appRecord) return c.json({ error: "not_found", message: `App "${appName}" not found` }, 404);
+
+  const triggeredBy = c.get("authType") === "api_key" ? "api" : "panel";
+
+  const deploy = await prisma.deploy.create({
+    data: { serverId: srv.id, appId: appRecord.id, status: "running", triggeredBy },
+  });
+
+  audit("rollback", `${appName} on ${srv.name}`, `deployId: ${deploy.id}, via: v1 api`, triggeredBy === "api" ? `api:${c.get("apiKeyName") ?? "unknown"}` : "panel");
+
+  // Fire and forget
+  const deployId = deploy.id;
+  (async () => {
+    try {
+      const result = await relayRequest<{ success?: boolean; commitBefore?: string; commitAfter?: string }>({
+        serverId: srv.id,
+        path: `/api/apps/${appName}/rollback`,
+        method: "POST",
+        body: { to_commit },
+      });
+
+      await prisma.deploy.update({
+        where: { id: deployId },
+        data: {
+          status: result.success ? "rolled_back" : "failed",
+          commitBefore: result.commitBefore,
+          commitAfter: result.commitAfter,
+          log: JSON.stringify(result),
+        },
+      });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      recoverBrokenDeploy(deployId, appRecord.id, srv.id, appName, errMsg);
+    }
+  })();
+
+  return c.json({
+    deploy: { id: deployId, status: "running", server: srv.name, app: appName, triggeredBy },
+  }, 202);
+});
+
+// ── Logs ────────────────────────────────────────────────────────────────────
+
+v1Router.get("/logs", async (c) => {
+  const server = c.req.query("server");
+  const appName = c.req.query("app");
+  const lines = Math.min(Math.max(1, Number(c.req.query("lines")) || 50), 1000);
+
+  if (!server || !appName) {
+    return c.json({ error: "bad_request", message: "server and app query params are required" }, 400);
+  }
+
+  if (!APP_NAME_PATTERN.test(appName)) {
+    return c.json({ error: "bad_request", message: "Invalid app name" }, 400);
+  }
+
+  const srv = await prisma.server.findFirst({
+    where: { OR: [{ id: server }, { name: server }] },
+  });
+  if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
+
+  try {
+    const result = await relayRequest({
+      serverId: srv.id,
+      path: `/api/apps/${appName}/logs?lines=${lines}`,
+    });
+    return c.json(result);
+  } catch (err) {
+    if (err instanceof RelayError) return c.json({ error: err.message }, err.status as any);
+    throw err;
+  }
+});
+
 // ── Preflight ────────────────────────────────────────────────────────────────
 
 v1Router.post("/preflight", async (c) => {
