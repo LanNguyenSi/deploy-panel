@@ -6,6 +6,7 @@ import Link from "next/link";
 import { getServer, getApps, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, type AppWithCount } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
+import { requestPermission, notifyDeployResult } from "@/lib/notifications";
 
 type Panel = { type: "logs" | "deploy" | "preflight"; app: string };
 
@@ -56,6 +57,7 @@ export default function ServerDetailPage() {
   }, [id]);
 
   async function handleDeploy(name: string) {
+    requestPermission(); // Ask once, browser remembers the answer
     const ok = await confirm({ title: "Deploy", message: `Deploy "${name}"?`, confirmLabel: "Deploy" });
     if (!ok) return;
 
@@ -81,6 +83,7 @@ export default function ServerDetailPage() {
           if (d.status !== "running") {
             clearInterval(pollInterval);
             setDeploying(null);
+            notifyDeployResult(name, d.status);
             await load();
           }
         } catch {
