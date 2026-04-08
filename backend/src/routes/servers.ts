@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { prisma } from "../lib/prisma.js";
+import { audit, getActor } from "../lib/audit.js";
 
 /** Strip sensitive fields from server objects */
 function sanitizeServer(server: any) {
@@ -52,6 +53,7 @@ serversRouter.post("/", zValidator("json", createServerSchema), async (c) => {
   }
 
   const server = await prisma.server.create({ data });
+  audit("server.create", `${server.name} (${server.host})`, undefined, getActor(c));
   return c.json({ server: sanitizeServer(server) }, 201);
 });
 
@@ -73,7 +75,8 @@ serversRouter.delete("/:id", async (c) => {
   const id = c.req.param("id");
 
   try {
-    await prisma.server.delete({ where: { id } });
+    const server = await prisma.server.delete({ where: { id } });
+    audit("server.delete", `${server.name} (${server.host})`, undefined, getActor(c));
     return c.json({ deleted: true });
   } catch {
     return c.json({ error: "not_found" }, 404);

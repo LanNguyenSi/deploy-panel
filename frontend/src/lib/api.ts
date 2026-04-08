@@ -137,6 +137,27 @@ export interface DeployWithRelations extends Deploy {
   server: { name: string; host: string };
 }
 
+// ── Audit ─────────────────────────────────────────────────────────────────
+
+export interface AuditEntry {
+  id: string;
+  action: string;
+  target: string | null;
+  detail: string | null;
+  actor: string | null;
+  createdAt: string;
+}
+
+export async function getAuditLog(params?: { action?: string; limit?: number; offset?: number }): Promise<{ entries: AuditEntry[]; total: number }> {
+  const query = new URLSearchParams();
+  if (params?.action) query.set("action", params.action);
+  if (params?.limit) query.set("limit", String(params.limit));
+  if (params?.offset) query.set("offset", String(params.offset));
+  return request(`/api/audit?${query}`);
+}
+
+// ── Deploys ────────────────────────────────────────────────────────────────
+
 export async function getDeploys(params?: { serverId?: string; appId?: string; status?: string; limit?: number }): Promise<{ deploys: DeployWithRelations[] }> {
   const query = new URLSearchParams();
   if (params?.serverId) query.set("serverId", params.serverId);

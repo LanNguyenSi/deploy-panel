@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { randomBytes } from "node:crypto";
 import { prisma } from "../lib/prisma.js";
 import { hashApiKey } from "../middleware/auth.js";
+import { audit } from "../lib/audit.js";
 
 export const apiKeysRouter = new Hono();
 
@@ -33,6 +34,8 @@ apiKeysRouter.post("/", async (c) => {
     data: { name: name.trim(), keyHash, keyPrefix },
   });
 
+  audit("api_key.create", apiKey.name, `prefix: ${keyPrefix}`, "panel");
+
   // Return the full key ONCE — it's never shown again
   return c.json({
     key: {
@@ -51,7 +54,8 @@ apiKeysRouter.delete("/:id", async (c) => {
   const id = c.req.param("id");
 
   try {
-    await prisma.apiKey.delete({ where: { id } });
+    const key = await prisma.apiKey.delete({ where: { id } });
+    audit("api_key.revoke", key.name, `prefix: ${key.keyPrefix}`, "panel");
     return c.json({ deleted: true });
   } catch {
     return c.json({ error: "not_found", message: "API key not found" }, 404);

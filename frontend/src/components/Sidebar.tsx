@@ -103,6 +103,13 @@ export default function Sidebar() {
               </svg>
               Deploys
             </Link>
+            <Link href="/audit" className={navClass("/audit")}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M4 2h8a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" strokeWidth="1.2" />
+                <path d="M6 5h4M6 8h4M6 11h2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              </svg>
+              Audit Log
+            </Link>
           </nav>
         </div>
 
