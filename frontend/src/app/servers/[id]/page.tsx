@@ -13,7 +13,8 @@ export default function ServerDetailPage() {
   const [activeApp, setActiveApp] = useState<string | null>(null);
   const [logs, setLogs] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
-  const [deploying, setDeploying] = useState<string | null>(null); // app name currently deploying
+  const [deploying, setDeploying] = useState<string | null>(null);
+  const [deployLog, setDeployLog] = useState<{ status: string; steps: Array<{ name: string; status: string; durationMs: number }> } | null>(null);
   const [preflight, setPreflight] = useState<{ passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> } | null>(null);
 
   async function load() {
@@ -51,18 +52,29 @@ export default function ServerDetailPage() {
   async function handleDeploy(name: string) {
     if (!confirm(`Deploy "${name}"?`)) return;
 
-    // Optimistic update
+    // Optimistic update + open log panel
     setDeploying(name);
+    setActiveApp(name);
+    setLogs(null);
+    setPreflight(null);
+    setDeployLog({ status: "running", steps: [] });
     setApps((prev) => prev.map((a) => a.name === name ? { ...a, status: "deploying" } : a));
 
     try {
       const { deploy } = await deployApp(id, name, { force: true });
 
-      // Poll for completion
+      // Poll for completion + live steps
       const pollInterval = setInterval(async () => {
         try {
-          const { deploy: status } = await getDeployStatus(id, name, deploy.id);
-          if (status.status !== "running") {
+          const { deploy: d } = await getDeployStatus(id, name, deploy.id);
+          // Parse steps from log
+          let steps: Array<{ name: string; status: string; durationMs: number }> = [];
+          if (d.log) {
+            try { steps = JSON.parse(d.log); } catch {}
+          }
+          setDeployLog({ status: d.status, steps });
+
+          if (d.status !== "running") {
             clearInterval(pollInterval);
             setDeploying(null);
             await load();
@@ -70,11 +82,13 @@ export default function ServerDetailPage() {
         } catch {
           clearInterval(pollInterval);
           setDeploying(null);
+          setDeployLog(null);
           await load();
         }
       }, 5000);
     } catch (err: any) {
       setDeploying(null);
+      setDeployLog(null);
       setApps((prev) => prev.map((a) => a.name === name ? { ...a, status: "unhealthy" } : a));
     }
   }
@@ -194,6 +208,30 @@ export default function ServerDetailPage() {
                 }}>
                   {logs}
                 </pre>
+              )}
+
+              {activeApp === app.name && deployLog !== null && (
+                <div style={{ marginTop: "var(--space-2)", padding: "var(--space-2)", background: "var(--bg-muted, #1a1a2e)", borderRadius: "var(--radius)", fontSize: "var(--text-sm)" }}>
+                  <div style={{ fontWeight: 600, marginBottom: "var(--space-1)", display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                    Deploy {deployLog.status === "running" ? (
+                      <span style={{ color: "var(--primary)" }}>running...</span>
+                    ) : deployLog.status === "success" ? (
+                      <span style={{ color: "var(--success)" }}>success</span>
+                    ) : (
+                      <span style={{ color: "var(--danger)" }}>failed</span>
+                    )}
+                  </div>
+                  {deployLog.steps.length === 0 && deployLog.status === "running" && (
+                    <div style={{ color: "var(--muted)" }}>Waiting for steps...</div>
+                  )}
+                  {deployLog.steps.map((step, i) => (
+                    <div key={i} style={{ color: step.status === "success" ? "var(--success, #22c55e)" : step.status === "skipped" ? "var(--muted)" : "var(--danger, #ef4444)", display: "flex", gap: "var(--space-2)" }}>
+                      <span>{step.status === "success" ? "✓" : step.status === "skipped" ? "—" : "✗"}</span>
+                      <span>{step.name}</span>
+                      {step.durationMs > 0 && <span style={{ color: "var(--muted)" }}>({(step.durationMs / 1000).toFixed(1)}s)</span>}
+                    </div>
+                  ))}
+                </div>
               )}
 
               {activeApp === app.name && preflight !== null && (

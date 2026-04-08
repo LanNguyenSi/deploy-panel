@@ -51,6 +51,7 @@ export interface Deploy {
   commitAfter: string | null;
   status: string;
   duration: number | null;
+  log: string | null;
   triggeredBy: string | null;
   createdAt: string;
 }
