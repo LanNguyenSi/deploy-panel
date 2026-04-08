@@ -1,7 +1,7 @@
 import { prisma } from "./prisma.js";
 import { relayRequest } from "./relay.js";
 
-const STUCK_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+const STUCK_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes (reduced — deploy-recovery handles the immediate case)
 
 /**
  * On startup, find deploys stuck on "running" for more than 5 minutes.
