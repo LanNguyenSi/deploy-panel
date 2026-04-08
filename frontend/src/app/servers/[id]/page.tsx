@@ -8,6 +8,7 @@ import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { requestPermission, notifyDeployResult } from "@/lib/notifications";
 import { isPinned, togglePin } from "@/lib/pinned";
+import { scheduleDeploy } from "@/lib/api";
 
 type Panel = { type: "logs" | "deploy" | "preflight"; app: string };
 
@@ -111,6 +112,17 @@ export default function ServerDetailPage() {
       await load();
     } catch (err: any) {
       toast(`Rollback failed: ${err.message}`, "error");
+    }
+  }
+
+  async function handleSchedule(name: string) {
+    const when = prompt("Schedule deploy for (ISO datetime, e.g. 2026-04-09T02:00):");
+    if (!when) return;
+    try {
+      await scheduleDeploy(id, name, new Date(when).toISOString());
+      toast(`Deploy scheduled for ${name}`, "success");
+    } catch (err: any) {
+      toast(`Schedule failed: ${err.message}`, "error");
     }
   }
 
@@ -220,6 +232,7 @@ export default function ServerDetailPage() {
                   <button onClick={() => handleRollback(app.name)} className="btn btn-secondary btn-sm">Rollback</button>
                   <button onClick={() => handleLogs(app.name)} className="btn btn-secondary btn-sm">Logs</button>
                   <button onClick={() => handlePreflight(app.name)} className="btn btn-secondary btn-sm">Preflight</button>
+                  <button onClick={() => handleSchedule(app.name)} className="btn btn-secondary btn-sm">Schedule</button>
                 </div>
 
                 <div className="action-group-secondary">

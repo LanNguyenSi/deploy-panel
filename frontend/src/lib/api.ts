@@ -133,6 +133,32 @@ export async function hideApp(serverId: string, name: string): Promise<void> {
   return request(`/api/servers/${serverId}/apps/${name}`, { method: "DELETE" });
 }
 
+// ── Scheduled Deploys ─────────────────────────────────────────────────────
+
+export interface ScheduledDeployInfo {
+  id: string;
+  serverId: string;
+  appName: string;
+  scheduledFor: string;
+  force: boolean;
+  status: string;
+  deployId: string | null;
+  createdAt: string;
+  server: { name: string };
+}
+
+export async function getScheduledDeploys(status = "pending"): Promise<{ scheduled: ScheduledDeployInfo[] }> {
+  return request(`/api/scheduled?status=${status}`);
+}
+
+export async function scheduleDeploy(server: string, app: string, scheduledFor: string, force = false): Promise<{ scheduled: ScheduledDeployInfo }> {
+  return request("/api/scheduled", { method: "POST", body: JSON.stringify({ server, app, scheduledFor, force }) });
+}
+
+export async function cancelScheduledDeploy(id: string): Promise<{ cancelled: boolean }> {
+  return request(`/api/scheduled/${id}`, { method: "DELETE" });
+}
+
 // ── API Keys ──────────────────────────────────────────────────────────────
 
 export interface ApiKeyInfo {

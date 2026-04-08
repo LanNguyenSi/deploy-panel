@@ -2,6 +2,7 @@ import { serve } from "@hono/node-server";
 import { config } from "./config/index.js";
 import { createApp } from "./app.js";
 import { recoverStuckDeploys } from "./lib/startup.js";
+import { startScheduler } from "./lib/scheduler.js";
 
 const app = createApp(config.CORS_ORIGINS);
 
@@ -14,4 +15,6 @@ serve({ fetch: app.fetch, port: config.PORT }, async (info) => {
   } catch (err) {
     console.error("[startup] Failed to recover stuck deploys:", err);
   }
+
+  startScheduler();
 });

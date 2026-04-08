@@ -22,8 +22,9 @@ model Server {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  apps        App[]
-  deploys     Deploy[]
+  apps             App[]
+  deploys          Deploy[]
+  scheduledDeploys ScheduledDeploy[]
 
   @@map("servers")
 }
@@ -99,4 +100,23 @@ model AuditLog {
   @@index([action])
   @@index([createdAt])
   @@map("audit_logs")
+}
+
+// ── Scheduled Deploys ───────────────────────────────────────────────────────
+
+model ScheduledDeploy {
+  id        String   @id @default(uuid())
+  serverId  String
+  appName   String
+  scheduledFor DateTime
+  force     Boolean  @default(false)
+  status    String   @default("pending") // pending, triggered, cancelled
+  deployId  String?  // linked deploy once triggered
+  createdAt DateTime @default(now())
+
+  server    Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@index([scheduledFor])
+  @@index([status])
+  @@map("scheduled_deploys")
 }
