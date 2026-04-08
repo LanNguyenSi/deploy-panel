@@ -76,6 +76,11 @@ export default function DeploysPage() {
         </div>
       </div>
 
+      {/* Duration trend chart */}
+      {!loading && deploys.filter((d) => d.duration).length >= 3 && (
+        <DurationChart deploys={deploys} />
+      )}
+
       {loading ? (
         <div style={{ display: "grid", gap: "var(--space-2)" }}>
           {[1, 2, 3, 4, 5].map((i) => (
@@ -139,6 +144,69 @@ export default function DeploysPage() {
         </div>
       )}
     </main>
+  );
+}
+
+function DurationChart({ deploys }: { deploys: DeployWithRelations[] }) {
+  // Take deploys with duration, reverse to chronological order
+  const withDuration = deploys
+    .filter((d) => d.duration && d.duration > 0)
+    .reverse()
+    .slice(-30);
+
+  if (withDuration.length < 3) return null;
+
+  const durations = withDuration.map((d) => d.duration! / 1000);
+  const max = Math.max(...durations);
+  const min = Math.min(...durations);
+  const avg = durations.reduce((s, v) => s + v, 0) / durations.length;
+
+  const W = 600;
+  const H = 80;
+  const PAD = 2;
+  const step = (W - PAD * 2) / (durations.length - 1);
+
+  const points = durations.map((d, i) => {
+    const x = PAD + i * step;
+    const y = max === min ? H / 2 : PAD + (1 - (d - min) / (max - min)) * (H - PAD * 2);
+    return `${x},${y}`;
+  });
+
+  const polyline = points.join(" ");
+  // Gradient area
+  const area = `${PAD},${H} ${polyline} ${PAD + (durations.length - 1) * step},${H}`;
+
+  return (
+    <div className="card" style={{ padding: "var(--space-4) var(--space-5)", marginBottom: "var(--space-4)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-3)" }}>
+        <h3 style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--text-secondary)" }}>Deploy Duration Trend</h3>
+        <div style={{ display: "flex", gap: "var(--space-4)", fontSize: "var(--text-xs)", color: "var(--muted)" }}>
+          <span>Avg: <strong style={{ color: "var(--text-secondary)" }}>{avg.toFixed(1)}s</strong></span>
+          <span>Min: <strong style={{ color: "var(--success)" }}>{min.toFixed(1)}s</strong></span>
+          <span>Max: <strong style={{ color: "var(--warning)" }}>{max.toFixed(1)}s</strong></span>
+        </div>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: 80 }}>
+        <defs>
+          <linearGradient id="duration-fill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.2" />
+            <stop offset="100%" stopColor="var(--primary)" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <polygon points={area} fill="url(#duration-fill)" />
+        <polyline points={polyline} fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        {/* Dots on each point */}
+        {durations.map((d, i) => {
+          const x = PAD + i * step;
+          const y = max === min ? H / 2 : PAD + (1 - (d - min) / (max - min)) * (H - PAD * 2);
+          return (
+            <circle key={i} cx={x} cy={y} r="3" fill="var(--surface)" stroke="var(--primary)" strokeWidth="1.5">
+              <title>{withDuration[i].app.name}: {d.toFixed(1)}s</title>
+            </circle>
+          );
+        })}
+      </svg>
+    </div>
   );
 }
 
