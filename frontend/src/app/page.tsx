@@ -2,14 +2,21 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getServers, getDeploys, type ServerWithCount, type DeployWithRelations } from "@/lib/api";
+import { getServers, getDeploys, deployApp, type ServerWithCount, type DeployWithRelations } from "@/lib/api";
+import { getPinnedApps, type PinnedApp } from "@/lib/pinned";
+import { useToast } from "@/components/Toast";
+import { useConfirm } from "@/components/ConfirmDialog";
 
 export default function DashboardPage() {
   const [servers, setServers] = useState<ServerWithCount[]>([]);
   const [deploys, setDeploys] = useState<DeployWithRelations[]>([]);
   const [loading, setLoading] = useState(true);
+  const [pinned, setPinned] = useState<PinnedApp[]>([]);
+  const { toast } = useToast();
+  const { confirm } = useConfirm();
 
   useEffect(() => {
+    setPinned(getPinnedApps());
     function loadAll() {
       Promise.all([getServers(), getDeploys({ limit: 10 })])
         .then(([s, d]) => {
@@ -79,6 +86,38 @@ export default function DashboardPage() {
           )}
         </div>
       </div>
+
+      {/* Pinned apps — quick deploy */}
+      {pinned.length > 0 && (
+        <section style={{ marginBottom: "var(--space-6)" }}>
+          <h2 style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: "var(--space-3)" }}>Pinned Apps</h2>
+          <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
+            {pinned.map((p) => (
+              <div key={`${p.serverId}-${p.appName}`} className="card" style={{ padding: "var(--space-3) var(--space-4)", display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+                <div>
+                  <div style={{ fontWeight: 500, fontSize: "var(--text-sm)" }}>{p.appName}</div>
+                  <div style={{ fontSize: "var(--text-xs)", color: "var(--muted)" }}>{p.serverName}</div>
+                </div>
+                <button
+                  onClick={async () => {
+                    const ok = await confirm({ title: "Deploy", message: `Deploy "${p.appName}" on ${p.serverName}?`, confirmLabel: "Deploy" });
+                    if (!ok) return;
+                    try {
+                      await deployApp(p.serverId, p.appName, { force: true });
+                      toast(`Deploy started: ${p.appName}`, "success");
+                    } catch (err: any) {
+                      toast(`Failed: ${err.message}`, "error");
+                    }
+                  }}
+                  className="btn btn-primary btn-sm"
+                >
+                  Deploy
+                </button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <div className="grid-two-col">
         {/* Server cards */}

@@ -7,6 +7,7 @@ import { getServer, getApps, deployApp, getDeployStatus, rollbackApp, getAppLogs
 import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { requestPermission, notifyDeployResult } from "@/lib/notifications";
+import { isPinned, togglePin } from "@/lib/pinned";
 
 type Panel = { type: "logs" | "deploy" | "preflight"; app: string };
 
@@ -192,6 +193,13 @@ export default function ServerDetailPage() {
                 <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
                   <span className={`status-dot status-dot-${app.status}`} />
                   <span style={{ fontWeight: 600, fontSize: "var(--text-md)" }}>{app.name}</span>
+                  <button
+                    onClick={() => { togglePin(id, serverName, app.name); setApps([...apps]); }}
+                    title={isPinned(id, app.name) ? "Unpin from dashboard" : "Pin to dashboard"}
+                    style={{ background: "none", border: "none", cursor: "pointer", fontSize: "var(--text-sm)", color: isPinned(id, app.name) ? "var(--warning)" : "var(--muted)", padding: 0 }}
+                  >
+                    {isPinned(id, app.name) ? "★" : "☆"}
+                  </button>
                   <TagBadge tag={app.tag} />
                   <span style={{ fontSize: "var(--text-xs)", color: "var(--muted)" }}>
                     {app._count.deploys} deploy{app._count.deploys !== 1 ? "s" : ""}
