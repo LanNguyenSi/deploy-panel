@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getServer, getApps, deployApp, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, type AppWithCount } from "@/lib/api";
+import { getServer, getApps, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, type AppWithCount } from "@/lib/api";
 
 export default function ServerDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -13,6 +13,7 @@ export default function ServerDetailPage() {
   const [activeApp, setActiveApp] = useState<string | null>(null);
   const [logs, setLogs] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [deploying, setDeploying] = useState<string | null>(null); // app name currently deploying
   const [preflight, setPreflight] = useState<{ passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> } | null>(null);
 
   async function load() {
@@ -49,12 +50,32 @@ export default function ServerDetailPage() {
 
   async function handleDeploy(name: string) {
     if (!confirm(`Deploy "${name}"?`)) return;
+
+    // Optimistic update
+    setDeploying(name);
+    setApps((prev) => prev.map((a) => a.name === name ? { ...a, status: "deploying" } : a));
+
     try {
-      const result = await deployApp(id, name, { force: true });
-      alert(result.deploy?.success !== false ? "Deploy successful!" : "Deploy failed.");
-      await load();
+      const { deploy } = await deployApp(id, name, { force: true });
+
+      // Poll for completion
+      const pollInterval = setInterval(async () => {
+        try {
+          const { deploy: status } = await getDeployStatus(id, name, deploy.id);
+          if (status.status !== "running") {
+            clearInterval(pollInterval);
+            setDeploying(null);
+            await load();
+          }
+        } catch {
+          clearInterval(pollInterval);
+          setDeploying(null);
+          await load();
+        }
+      }, 5000);
     } catch (err: any) {
-      alert(`Deploy failed: ${err.message}`);
+      setDeploying(null);
+      setApps((prev) => prev.map((a) => a.name === name ? { ...a, status: "unhealthy" } : a));
     }
   }
 
@@ -132,7 +153,9 @@ export default function ServerDetailPage() {
                 <StatusBadge status={app.status} />
               </div>
               <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap", alignItems: "center" }}>
-                <button onClick={() => handleDeploy(app.name)} className="btn btn-primary">Deploy</button>
+                <button onClick={() => handleDeploy(app.name)} disabled={deploying === app.name} className="btn btn-primary">
+                  {deploying === app.name ? "Deploying..." : "Deploy"}
+                </button>
                 <button onClick={() => handleRollback(app.name)} className="btn btn-secondary">Rollback</button>
                 <button onClick={() => handleLogs(app.name)} className="btn btn-secondary">Logs</button>
                 <button onClick={() => handlePreflight(app.name)} className="btn btn-secondary">Preflight</button>
