@@ -102,6 +102,10 @@ export async function deployApp(serverId: string, name: string, options?: { bran
   return request(`/api/servers/${serverId}/apps/${name}/deploy`, { method: "POST", body: JSON.stringify(options ?? {}) });
 }
 
+export async function bulkDeploy(serverId: string, apps: string[], force = true): Promise<{ deploys: Array<{ app: string; deployId: string; status: string }> }> {
+  return request(`/api/servers/${serverId}/apps/bulk-deploy`, { method: "POST", body: JSON.stringify({ apps, force }) });
+}
+
 export async function getDeployStatus(serverId: string, appName: string, deployId: string): Promise<{ deploy: Deploy }> {
   return request(`/api/servers/${serverId}/apps/${appName}/deploys/${deployId}`);
 }

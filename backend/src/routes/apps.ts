@@ -247,6 +247,67 @@ appsRouter.get("/:name/preflight", async (c) => {
   }
 });
 
+// POST /api/servers/:serverId/apps/bulk-deploy — deploy multiple apps
+appsRouter.post("/bulk-deploy", async (c) => {
+  const serverId = getServerId(c);
+  const body = await c.req.json().catch(() => ({}));
+  const { apps: appNames, force } = body as { apps?: string[]; force?: boolean };
+
+  if (!appNames || appNames.length === 0) {
+    return c.json({ error: "bad_request", message: "apps array is required" }, 400);
+  }
+
+  const results: Array<{ app: string; deployId: string; status: string }> = [];
+
+  for (const name of appNames) {
+    const app = await findOrCreateApp(serverId, name);
+    const deploy = await prisma.deploy.create({
+      data: { serverId, appId: app.id, status: "running", triggeredBy: "panel" },
+    });
+
+    audit("deploy", `${name} (bulk) on server ${serverId}`, `deployId: ${deploy.id}`, getActor(c));
+
+    results.push({ app: name, deployId: deploy.id, status: "running" });
+
+    // Fire and forget per app
+    const deployId = deploy.id;
+    (async () => {
+      try {
+        await prisma.app.update({ where: { id: app.id }, data: { status: "deploying" } });
+        const response = await relayRequest<any>({
+          serverId,
+          path: `/api/apps/${name}/deploy`,
+          method: "POST",
+          body: { force: force ?? true },
+        });
+
+        const result: any = response.result ?? response;
+        const success = result.success ?? false;
+
+        await prisma.deploy.update({
+          where: { id: deployId },
+          data: {
+            status: success ? "success" : "failed",
+            commitBefore: result.commitBefore,
+            commitAfter: result.commitAfter,
+            duration: result.durationMs,
+            log: JSON.stringify(result.steps ?? []),
+          },
+        });
+        await prisma.app.update({
+          where: { id: app.id },
+          data: { status: success ? "healthy" : "unhealthy", lastDeployAt: new Date() },
+        });
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        recoverBrokenDeploy(deployId, app.id, serverId, name, errMsg);
+      }
+    })();
+  }
+
+  return c.json({ deploys: results }, 202);
+});
+
 async function findOrCreateApp(serverId: string, name: string) {
   if (!APP_NAME_PATTERN.test(name)) {
     throw new Error("Invalid app name: must be alphanumeric, hyphens, or underscores");
