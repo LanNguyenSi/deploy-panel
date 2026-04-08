@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
-import { recoverBrokenDeploy } from "../lib/deploy-recovery.js";
+import { streamDeploy } from "../lib/stream-deploy.js";
 import { audit, getActor } from "../lib/audit.js";
 
 export const appsRouter = new Hono();
@@ -97,69 +97,21 @@ appsRouter.post("/:name/deploy", async (c) => {
 
   audit("deploy", `${name} on server ${serverId}`, `deployId: ${deploy.id}`, getActor(c));
 
-  // Return immediately — run deploy in background
-  const deployId = deploy.id;
+  // Get relay info for streaming
+  const server = await prisma.server.findUnique({ where: { id: serverId } });
 
-  // Fire and forget — don't await
-  (async () => {
-    try {
-      const response = await relayRequest<{
-        deploy?: { status: string };
-        result?: {
-          success: boolean;
-          commitBefore?: string;
-          commitAfter?: string;
-          durationMs?: number;
-          steps?: unknown[];
-        };
-        success?: boolean;
-        blocked?: boolean;
-        preflight?: unknown;
-      }>({
-        serverId,
-        path: `/api/apps/${name}/deploy`,
-        method: "POST",
-        body: { branch: body.branch, force: body.force },
-      });
+  // Fire and forget — stream deploy steps in real-time
+  streamDeploy({
+    serverId,
+    deployId: deploy.id,
+    appId: app.id,
+    appName: name,
+    relayUrl: server?.relayUrl ?? "",
+    relayToken: server?.relayToken ?? null,
+    body: { branch: body.branch, force: body.force },
+  });
 
-      const result: any = response.result ?? response;
-      const success = result.success ?? false;
-
-      if (response.blocked) {
-        await prisma.deploy.update({
-          where: { id: deployId },
-          data: { status: "failed", log: JSON.stringify(response.preflight ?? "blocked by preflight") },
-        });
-        await prisma.app.update({ where: { id: app.id }, data: { status: "unhealthy" } });
-        return;
-      }
-
-      await prisma.deploy.update({
-        where: { id: deployId },
-        data: {
-          status: success ? "success" : "failed",
-          commitBefore: result.commitBefore,
-          commitAfter: result.commitAfter,
-          duration: result.durationMs,
-          log: JSON.stringify(result.steps ?? []),
-        },
-      });
-
-      await prisma.app.update({
-        where: { id: app.id },
-        data: {
-          status: success ? "healthy" : "unhealthy",
-          lastDeployAt: new Date(),
-        },
-      });
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      // Connection likely broke during container restart — try health recovery
-      recoverBrokenDeploy(deployId, app.id, serverId, name, errMsg);
-    }
-  })();
-
-  return c.json({ deploy: { id: deployId, status: "running" } }, 202);
+  return c.json({ deploy: { id: deploy.id, status: "running" } }, 202);
 });
 
 // GET /api/deploys/:id — get single deploy status (for polling)
