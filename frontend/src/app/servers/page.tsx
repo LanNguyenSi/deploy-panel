@@ -3,12 +3,16 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { getServers, createServer, deleteServer, testServer, type ServerWithCount } from "@/lib/api";
+import { useToast } from "@/components/Toast";
+import { useConfirm } from "@/components/ConfirmDialog";
 
 export default function ServersPage() {
   const [servers, setServers] = useState<ServerWithCount[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
+  const { toast } = useToast();
+  const { confirm } = useConfirm();
 
   async function load() {
     try {
@@ -27,22 +31,29 @@ export default function ServersPage() {
     setTesting(id);
     try {
       const result = await testServer(id);
-      alert(`Status: ${result.status}${result.message ? ` — ${result.message}` : ""}`);
+      toast(`Server ${result.status}${result.message ? ` — ${result.message}` : ""}`, result.status === "online" ? "success" : "error");
       await load();
     } catch (err: any) {
-      alert(`Test failed: ${err.message}`);
+      toast(`Test failed: ${err.message}`, "error");
     } finally {
       setTesting(null);
     }
   }
 
   async function handleDelete(id: string, name: string) {
-    if (!confirm(`Delete server "${name}"? This also removes all associated apps and deploy history.`)) return;
+    const ok = await confirm({
+      title: "Delete Server",
+      message: `Delete "${name}"? This also removes all associated apps and deploy history.`,
+      confirmLabel: "Delete",
+      danger: true,
+    });
+    if (!ok) return;
     try {
       await deleteServer(id);
+      toast(`Server "${name}" deleted`, "success");
       await load();
     } catch (err: any) {
-      alert(`Delete failed: ${err.message}`);
+      toast(`Delete failed: ${err.message}`, "error");
     }
   }
 
@@ -55,10 +66,14 @@ export default function ServersPage() {
         </button>
       </div>
 
-      {showForm && <AddServerForm onCreated={() => { setShowForm(false); load(); }} />}
+      {showForm && <AddServerForm onCreated={() => { setShowForm(false); toast("Server added", "success"); load(); }} />}
 
       {loading ? (
-        <p style={{ color: "var(--muted)" }}>Loading...</p>
+        <div style={{ display: "grid", gap: "var(--space-3)" }}>
+          {[1, 2].map((i) => (
+            <div key={i} className="card animate-pulse" style={{ padding: "var(--space-3)", height: 64 }} />
+          ))}
+        </div>
       ) : servers.length === 0 ? (
         <p style={{ color: "var(--muted)" }}>No servers configured. Add one to get started.</p>
       ) : (
@@ -66,7 +81,7 @@ export default function ServersPage() {
           {servers.map((s) => (
             <div key={s.id} className="card" style={{ padding: "var(--space-3)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
-                <Link href={`/servers/${s.id}`} style={{ fontWeight: 600, color: "var(--accent)", textDecoration: "none" }}>{s.name}</Link>
+                <Link href={`/servers/${s.id}`} style={{ fontWeight: 600, color: "var(--primary)", textDecoration: "none" }}>{s.name}</Link>
                 <div style={{ fontSize: "var(--text-sm)", color: "var(--muted)" }}>
                   {s.host} · {s._count.apps} app{s._count.apps !== 1 ? "s" : ""} · <StatusBadge status={s.status} />
                 </div>
@@ -94,13 +109,7 @@ function StatusBadge({ status }: { status: string }) {
     "no-relay": "#f59e0b",
     unknown: "#6b7280",
   };
-  const color = colors[status] ?? colors.unknown;
-
-  return (
-    <span style={{ color, fontWeight: 500 }}>
-      ● {status}
-    </span>
-  );
+  return <span style={{ color: colors[status] ?? colors.unknown, fontWeight: 500 }}>● {status}</span>;
 }
 
 function AddServerForm({ onCreated }: { onCreated: () => void }) {
@@ -117,12 +126,7 @@ function AddServerForm({ onCreated }: { onCreated: () => void }) {
     setError(null);
 
     try {
-      await createServer({
-        name,
-        host,
-        relayUrl: relayUrl || undefined,
-        relayToken: relayToken || undefined,
-      });
+      await createServer({ name, host, relayUrl: relayUrl || undefined, relayToken: relayToken || undefined });
       onCreated();
     } catch (err: any) {
       setError(err.message);
@@ -134,28 +138,12 @@ function AddServerForm({ onCreated }: { onCreated: () => void }) {
   return (
     <form onSubmit={handleSubmit} className="card" style={{ padding: "var(--space-3)", marginBottom: "var(--space-4)", display: "grid", gap: "var(--space-2)" }}>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-2)" }}>
-        <input
-          type="text" placeholder="Server name" value={name}
-          onChange={(e) => setName(e.target.value)} required
-          className="input"
-        />
-        <input
-          type="text" placeholder="Host (e.g. 192.168.1.100)" value={host}
-          onChange={(e) => setHost(e.target.value)} required
-          className="input"
-        />
+        <input type="text" placeholder="Server name" value={name} onChange={(e) => setName(e.target.value)} required className="input" />
+        <input type="text" placeholder="Host (e.g. 192.168.1.100)" value={host} onChange={(e) => setHost(e.target.value)} required className="input" />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-2)" }}>
-        <input
-          type="url" placeholder="Relay URL (optional)" value={relayUrl}
-          onChange={(e) => setRelayUrl(e.target.value)}
-          className="input"
-        />
-        <input
-          type="text" placeholder="Relay token (optional)" value={relayToken}
-          onChange={(e) => setRelayToken(e.target.value)}
-          className="input"
-        />
+        <input type="url" placeholder="Relay URL (optional)" value={relayUrl} onChange={(e) => setRelayUrl(e.target.value)} className="input" />
+        <input type="text" placeholder="Relay token (optional)" value={relayToken} onChange={(e) => setRelayToken(e.target.value)} className="input" />
       </div>
       {error && <p style={{ color: "var(--danger)", fontSize: "var(--text-sm)" }}>{error}</p>}
       <button type="submit" disabled={submitting} className="btn btn-primary" style={{ justifySelf: "start" }}>

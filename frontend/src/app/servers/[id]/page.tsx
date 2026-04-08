@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { getServer, getApps, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, type AppWithCount } from "@/lib/api";
+import { useToast } from "@/components/Toast";
+import { useConfirm } from "@/components/ConfirmDialog";
 
 export default function ServerDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -16,6 +18,8 @@ export default function ServerDetailPage() {
   const [deploying, setDeploying] = useState<string | null>(null);
   const [deployLog, setDeployLog] = useState<{ status: string; steps: Array<{ name: string; status: string; durationMs: number }> } | null>(null);
   const [preflight, setPreflight] = useState<{ passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> } | null>(null);
+  const { toast } = useToast();
+  const { confirm } = useConfirm();
 
   async function load() {
     try {
@@ -50,7 +54,8 @@ export default function ServerDetailPage() {
   }, [id]);
 
   async function handleDeploy(name: string) {
-    if (!confirm(`Deploy "${name}"?`)) return;
+    const ok = await confirm({ title: "Deploy", message: `Deploy "${name}"?`, confirmLabel: "Deploy" });
+    if (!ok) return;
 
     // Optimistic update + open log panel
     setDeploying(name);
@@ -94,13 +99,14 @@ export default function ServerDetailPage() {
   }
 
   async function handleRollback(name: string) {
-    if (!confirm(`Rollback "${name}" to previous version?`)) return;
+    const ok = await confirm({ title: "Rollback", message: `Rollback "${name}" to previous version?`, confirmLabel: "Rollback", danger: true });
+    if (!ok) return;
     try {
       await rollbackApp(id, name);
-      alert("Rollback triggered.");
+      toast("Rollback triggered", "success");
       await load();
     } catch (err: any) {
-      alert(`Rollback failed: ${err.message}`);
+      toast(`Rollback failed: ${err.message}`, "error");
     }
   }
 
@@ -141,7 +147,7 @@ export default function ServerDetailPage() {
         <button onClick={async () => {
           setSyncing(true);
           try { await syncServer(id); await load(); }
-          catch (err: any) { alert(`Sync failed: ${err.message}`); }
+          catch (err: any) { toast(`Sync failed: ${err.message}`, "error"); }
           finally { setSyncing(false); }
         }} disabled={syncing} className="btn btn-secondary">
           {syncing ? "Syncing..." : "Sync from Relay"}
@@ -189,8 +195,10 @@ export default function ServerDetailPage() {
                   <option value="ignored">Ignored</option>
                 </select>
                 <button onClick={async () => {
-                  if (!confirm(`Hide "${app.name}" from this server?`)) return;
+                  const ok = await confirm({ title: "Hide App", message: `Hide "${app.name}" from this server?`, confirmLabel: "Hide", danger: true });
+                  if (!ok) return;
                   await hideApp(id, app.name);
+                  toast(`"${app.name}" hidden`, "info");
                   await load();
                 }} className="btn btn-danger" style={{ fontSize: "var(--text-xs)", padding: "0.25rem 0.5rem" }}>Hide</button>
               </div>
