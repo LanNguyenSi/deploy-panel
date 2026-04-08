@@ -51,6 +51,19 @@ model App {
   @@map("apps")
 }
 
+// ── API Keys ────────────────────────────────────────────────────────────────
+
+model ApiKey {
+  id         String   @id @default(uuid())
+  name       String   // e.g. "github-actions-prod"
+  keyHash    String   @unique // SHA-256 hash of the key
+  keyPrefix  String   // first 8 chars for display (dp_xxxx...)
+  lastUsedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  @@map("api_keys")
+}
+
 // ── Deploys ─────────────────────────────────────────────────────────────────
 
 model Deploy {
