@@ -1,0 +1,141 @@
+name: "Deploy Panel — Deploy"
+description: "Deploy an app via Deploy Panel API with preflight checks and status polling"
+branding:
+  icon: "upload-cloud"
+  color: "green"
+
+inputs:
+  url:
+    description: "Deploy Panel URL (e.g. https://deploy-panel.opentriologue.ai)"
+    required: true
+  api-key:
+    description: "Deploy Panel API key (dp_...)"
+    required: true
+  server:
+    description: "Server name or ID"
+    required: true
+  app:
+    description: "App name"
+    required: true
+  preflight:
+    description: "Run preflight checks before deploying (true/false)"
+    required: false
+    default: "true"
+  force:
+    description: "Force deploy even if preflight fails (true/false)"
+    required: false
+    default: "false"
+  wait:
+    description: "Wait for deploy to complete (true/false)"
+    required: false
+    default: "true"
+  timeout:
+    description: "Max seconds to wait for deploy completion"
+    required: false
+    default: "300"
+
+outputs:
+  deploy-id:
+    description: "Deploy ID"
+    value: ${{ steps.deploy.outputs.deploy_id }}
+  status:
+    description: "Final deploy status (success/failed/running)"
+    value: ${{ steps.poll.outputs.status }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Preflight checks
+      if: inputs.preflight == 'true'
+      id: preflight
+      shell: bash
+      env:
+        PANEL_URL: ${{ inputs.url }}
+        API_KEY: ${{ inputs.api-key }}
+        SERVER: ${{ inputs.server }}
+        APP: ${{ inputs.app }}
+      run: |
+        echo "::group::Preflight checks"
+        RESULT=$(curl -sf -X POST "$PANEL_URL/api/v1/preflight" \
+          -H "Authorization: Bearer $API_KEY" \
+          -H "Content-Type: application/json" \
+          -d "{\"server\": \"$SERVER\", \"app\": \"$APP\"}")
+
+        echo "$RESULT" | jq -r '.checks[]? | "\(if .passed then "✅" else "❌" end) \(.name): \(.message)"' 2>/dev/null || echo "$RESULT"
+
+        PASSED=$(echo "$RESULT" | jq -r '.passed // false')
+        if [ "$PASSED" != "true" ] && [ "${{ inputs.force }}" != "true" ]; then
+          echo "::error::Preflight checks failed. Use force: true to deploy anyway."
+          exit 1
+        fi
+        echo "::endgroup::"
+
+    - name: Trigger deploy
+      id: deploy
+      shell: bash
+      env:
+        PANEL_URL: ${{ inputs.url }}
+        API_KEY: ${{ inputs.api-key }}
+        SERVER: ${{ inputs.server }}
+        APP: ${{ inputs.app }}
+        FORCE: ${{ inputs.force }}
+      run: |
+        RESULT=$(curl -sf -X POST "$PANEL_URL/api/v1/deploy" \
+          -H "Authorization: Bearer $API_KEY" \
+          -H "Content-Type: application/json" \
+          -d "{\"server\": \"$SERVER\", \"app\": \"$APP\", \"force\": $FORCE}")
+
+        DEPLOY_ID=$(echo "$RESULT" | jq -r '.deploy.id')
+        echo "Deploy started: $DEPLOY_ID"
+        echo "deploy_id=$DEPLOY_ID" >> "$GITHUB_OUTPUT"
+
+    - name: Wait for completion
+      if: inputs.wait == 'true'
+      id: poll
+      shell: bash
+      env:
+        PANEL_URL: ${{ inputs.url }}
+        API_KEY: ${{ inputs.api-key }}
+        DEPLOY_ID: ${{ steps.deploy.outputs.deploy_id }}
+        TIMEOUT: ${{ inputs.timeout }}
+      run: |
+        echo "Waiting for deploy $DEPLOY_ID..."
+        ELAPSED=0
+        INTERVAL=10
+        while [ $ELAPSED -lt $TIMEOUT ]; do
+          RESULT=$(curl -sf "$PANEL_URL/api/v1/deploy/$DEPLOY_ID" \
+            -H "Authorization: Bearer $API_KEY")
+
+          STATUS=$(echo "$RESULT" | jq -r '.deploy.status')
+
+          if [ "$STATUS" != "running" ]; then
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
+            echo "::group::Deploy result"
+            echo "$RESULT" | jq -r '.deploy.steps[]? | "\(if .status == "success" then "✅" else "❌" end) \(.name) (\(.durationMs / 1000)s)"' 2>/dev/null || true
+            echo "::endgroup::"
+
+            if [ "$STATUS" = "success" ]; then
+              echo "✅ Deploy successful"
+              exit 0
+            else
+              echo "::error::Deploy failed with status: $STATUS"
+              exit 1
+            fi
+          fi
+
+          sleep $INTERVAL
+          ELAPSED=$((ELAPSED + INTERVAL))
+        done
+
+        echo "status=timeout" >> "$GITHUB_OUTPUT"
+        echo "::error::Deploy timed out after ${TIMEOUT}s"
+        exit 1
+
+    - name: Set status (no-wait)
+      if: inputs.wait != 'true'
+      id: nowait
+      shell: bash
+      run: |
+        echo "status=running" >> "$GITHUB_OUTPUT"
+        echo "Deploy started (not waiting for completion)"
