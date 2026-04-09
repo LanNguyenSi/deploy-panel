@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
 import { recoverBrokenDeploy } from "../lib/deploy-recovery.js";
+import { streamDeploy } from "../lib/stream-deploy.js";
 import { audit } from "../lib/audit.js";
 
 type Env = { Variables: { authType: string; apiKeyName?: string } };
@@ -89,52 +90,19 @@ v1Router.post("/deploy", async (c) => {
 
   audit("deploy", `${appName} on ${srv.name}`, `deployId: ${deploy.id}, via: ${triggeredBy}`, triggeredBy === "api" ? `api:${(c as any).get?.("apiKeyName") ?? "unknown"}` : "panel");
 
-  // Fire and forget
-  const deployId = deploy.id;
-  (async () => {
-    try {
-      const response = await relayRequest<any>({
-        serverId: srv.id,
-        path: `/api/apps/${appName}/deploy`,
-        method: "POST",
-        body: { branch: ref, force: force ?? false },
-      });
-
-      const result: any = response.result ?? response;
-      const success = result.success ?? false;
-
-      if (response.blocked) {
-        await prisma.deploy.update({
-          where: { id: deployId },
-          data: { status: "failed", log: JSON.stringify(response.preflight ?? "blocked by preflight") },
-        });
-        await prisma.app.update({ where: { id: appRecord.id }, data: { status: "unhealthy" } });
-        return;
-      }
-
-      await prisma.deploy.update({
-        where: { id: deployId },
-        data: {
-          status: success ? "success" : "failed",
-          commitBefore: result.commitBefore,
-          commitAfter: result.commitAfter,
-          duration: result.durationMs,
-          log: JSON.stringify(result.steps ?? []),
-        },
-      });
-
-      await prisma.app.update({
-        where: { id: appRecord.id },
-        data: { status: success ? "healthy" : "unhealthy", lastDeployAt: new Date() },
-      });
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      recoverBrokenDeploy(deployId, appRecord.id, srv.id, appName, errMsg);
-    }
-  })();
+  // Fire and forget — use streamDeploy for live step updates in DB
+  streamDeploy({
+    serverId: srv.id,
+    deployId: deploy.id,
+    appId: appRecord.id,
+    appName,
+    relayUrl: srv.relayUrl,
+    relayToken: srv.relayToken,
+    body: { branch: ref, force: force ?? false },
+  });
 
   return c.json({
-    deploy: { id: deployId, status: "running", server: srv.name, app: appName, triggeredBy },
+    deploy: { id: deploy.id, status: "running", server: srv.name, app: appName, triggeredBy },
   }, 202);
 });
 
