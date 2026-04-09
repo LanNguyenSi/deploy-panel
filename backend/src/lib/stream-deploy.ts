@@ -32,6 +32,29 @@ export async function streamDeploy(opts: {
       throw new Error(`Relay returned ${res.status}`);
     }
 
+    // Relay may return JSON instead of SSE if it doesn't support streaming.
+    // Detect via content-type and handle as a completed deploy.
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      const data = await res.json() as any;
+      const success = Boolean(data?.result?.success || data?.deploy?.status === "success");
+      await prisma.deploy.update({
+        where: { id: deployId },
+        data: {
+          status: success ? "success" : "failed",
+          commitBefore: data?.result?.commitBefore ?? data?.deploy?.commitBefore ?? null,
+          commitAfter: data?.result?.commitAfter ?? data?.deploy?.commitAfter ?? null,
+          duration: data?.result?.durationMs ?? data?.deploy?.durationMs ?? null,
+          log: JSON.stringify(data?.result?.steps ?? data?.deploy?.steps ?? []),
+        },
+      });
+      await prisma.app.update({
+        where: { id: appId },
+        data: { status: success ? "healthy" : "unhealthy", lastDeployAt: new Date() },
+      });
+      return;
+    }
+
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
