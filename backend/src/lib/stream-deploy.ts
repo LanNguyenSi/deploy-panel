@@ -36,16 +36,31 @@ export async function streamDeploy(opts: {
     // Detect via content-type and handle as a completed deploy.
     const contentType = res.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
-      const data = await res.json() as any;
-      const success = Boolean(data?.result?.success || data?.deploy?.status === "success");
+      let data: any;
+      try {
+        data = await res.json();
+      } catch {
+        await prisma.deploy.update({ where: { id: deployId }, data: { status: "failed", log: "Relay returned invalid JSON" } });
+        await prisma.app.update({ where: { id: appId }, data: { status: "unhealthy" } });
+        return;
+      }
+
+      if (!data?.result && !data?.deploy) {
+        console.warn(`[stream-deploy] Unrecognized JSON shape from relay for ${appName}`);
+      }
+
+      const success = data?.result?.success === true || data?.deploy?.status === "success";
+      const rawDuration = data?.result?.durationMs ?? data?.deploy?.durationMs;
+      const duration = typeof rawDuration === "number" ? Math.round(rawDuration) : null;
+
       await prisma.deploy.update({
         where: { id: deployId },
         data: {
           status: success ? "success" : "failed",
           commitBefore: data?.result?.commitBefore ?? data?.deploy?.commitBefore ?? null,
           commitAfter: data?.result?.commitAfter ?? data?.deploy?.commitAfter ?? null,
-          duration: data?.result?.durationMs ?? data?.deploy?.durationMs ?? null,
-          log: JSON.stringify(data?.result?.steps ?? data?.deploy?.steps ?? []),
+          duration,
+          log: JSON.stringify(data?.result?.steps ?? data?.deploy?.steps ?? [{ name: "deploy", status: success ? "success" : "failed", note: "JSON fallback" }]),
         },
       });
       await prisma.app.update({
