@@ -32,6 +32,44 @@ export async function streamDeploy(opts: {
       throw new Error(`Relay returned ${res.status}`);
     }
 
+    // Relay may return JSON instead of SSE if it doesn't support streaming.
+    // Detect via content-type and handle as a completed deploy.
+    const contentType = res.headers.get("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      let data: any;
+      try {
+        data = await res.json();
+      } catch {
+        await prisma.deploy.update({ where: { id: deployId }, data: { status: "failed", log: "Relay returned invalid JSON" } });
+        await prisma.app.update({ where: { id: appId }, data: { status: "unhealthy" } });
+        return;
+      }
+
+      if (!data?.result && !data?.deploy) {
+        console.warn(`[stream-deploy] Unrecognized JSON shape from relay for ${appName}`);
+      }
+
+      const success = data?.result?.success === true || data?.deploy?.status === "success";
+      const rawDuration = data?.result?.durationMs ?? data?.deploy?.durationMs;
+      const duration = typeof rawDuration === "number" ? Math.round(rawDuration) : null;
+
+      await prisma.deploy.update({
+        where: { id: deployId },
+        data: {
+          status: success ? "success" : "failed",
+          commitBefore: data?.result?.commitBefore ?? data?.deploy?.commitBefore ?? null,
+          commitAfter: data?.result?.commitAfter ?? data?.deploy?.commitAfter ?? null,
+          duration,
+          log: JSON.stringify(data?.result?.steps ?? data?.deploy?.steps ?? [{ name: "deploy", status: success ? "success" : "failed", note: "JSON fallback" }]),
+        },
+      });
+      await prisma.app.update({
+        where: { id: appId },
+        data: { status: success ? "healthy" : "unhealthy", lastDeployAt: new Date() },
+      });
+      return;
+    }
+
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
