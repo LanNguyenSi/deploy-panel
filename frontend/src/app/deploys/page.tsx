@@ -1,20 +1,35 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { getDeploys, getDeployDetail, type DeployWithRelations, type DeployDetail } from "@/lib/api";
 
 export default function DeploysPage() {
   const [deploys, setDeploys] = useState<DeployWithRelations[]>([]);
+  const [chartDeploys, setChartDeploys] = useState<DeployWithRelations[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<string>("");
+  const [page, setPage] = useState(0);
+  const limit = 25;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<DeployDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
   async function load() {
     try {
-      const data = await getDeploys({ status: statusFilter || undefined, limit: 100 });
+      const [data, chartData] = await Promise.all([
+        getDeploys({ status: statusFilter || undefined, limit, offset: page * limit }),
+        page === 0 && !statusFilter
+          ? getDeploys({ limit: 100 })
+          : Promise.resolve(null),
+      ]);
       setDeploys(data.deploys);
+      setTotal(data.total);
+      if (chartData) setChartDeploys(chartData.deploys);
+      // Auto-recover if current page is empty but there are results
+      if (data.deploys.length === 0 && data.total > 0 && page > 0) {
+        setPage(Math.max(0, Math.ceil(data.total / limit) - 1));
+      }
     } catch (err) {
       console.error("Failed to load deploys:", err);
     } finally {
@@ -23,10 +38,11 @@ export default function DeploysPage() {
   }
 
   useEffect(() => {
+    setLoading(true);
     load();
     const interval = setInterval(load, 15000);
     return () => clearInterval(interval);
-  }, [statusFilter]);
+  }, [statusFilter, page]);
 
   async function toggleDetail(id: string) {
     if (expandedId === id) {
@@ -60,13 +76,13 @@ export default function DeploysPage() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Deploy History</h1>
-          <p className="page-subtitle">{deploys.length} deployment{deploys.length !== 1 ? "s" : ""}</p>
+          <p className="page-subtitle">{total} deployment{total !== 1 ? "s" : ""}</p>
         </div>
         <div className="filter-group" role="group" aria-label="Filter by status">
           {statusOptions.map((opt) => (
             <button
               key={opt.value}
-              onClick={() => { setStatusFilter(opt.value); setLoading(true); }}
+              onClick={() => { setStatusFilter(opt.value); setPage(0); setLoading(true); }}
               className={`btn btn-sm ${statusFilter === opt.value ? "btn-primary" : "btn-secondary"}`}
               aria-pressed={statusFilter === opt.value}
             >
@@ -77,8 +93,8 @@ export default function DeploysPage() {
       </div>
 
       {/* Duration trend chart */}
-      {!loading && deploys.filter((d) => d.duration).length >= 3 && (
-        <DurationChart deploys={deploys} />
+      {!loading && chartDeploys.filter((d) => d.duration).length >= 3 && (
+        <DurationChart deploys={chartDeploys} />
       )}
 
       {loading ? (
@@ -96,52 +112,75 @@ export default function DeploysPage() {
           </div>
         </div>
       ) : (
-        <div className="card" style={{ overflow: "hidden" }}>
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Status</th>
-                <th>App</th>
-                <th>Server</th>
-                <th>Commit</th>
-                <th>Duration</th>
-                <th>When</th>
-              </tr>
-            </thead>
-            <tbody>
-              {deploys.map((d) => (
-                <>
-                  <tr
-                    key={d.id}
-                    onClick={() => toggleDetail(d.id)}
-                    style={{ cursor: "pointer" }}
-                    className={expandedId === d.id ? "row-expanded" : ""}
-                  >
-                    <td><StatusBadge status={d.status} /></td>
-                    <td style={{ fontWeight: 500, color: "var(--text)" }}>{d.app.name}</td>
-                    <td style={{ color: "var(--text-secondary)" }}>{d.server.name}</td>
-                    <td>
-                      <code style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", background: "var(--bg-subtle)", padding: "0.125rem 0.375rem", borderRadius: "var(--radius-sm)" }}>
-                        {d.commitAfter ? d.commitAfter.slice(0, 7) : "—"}
-                      </code>
-                    </td>
-                    <td style={{ color: "var(--muted)" }}>
-                      {d.duration ? `${(d.duration / 1000).toFixed(1)}s` : "—"}
-                    </td>
-                    <td style={{ color: "var(--muted)" }}>{timeAgo(d.createdAt)}</td>
-                  </tr>
-                  {expandedId === d.id && (
-                    <tr key={`${d.id}-detail`}>
-                      <td colSpan={6} style={{ padding: 0, borderBottom: "1px solid var(--border)" }}>
-                        <DeployDetailPanel detail={detail} loading={detailLoading} />
+        <>
+          <div className="card" style={{ overflow: "hidden" }}>
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Status</th>
+                  <th>App</th>
+                  <th>Server</th>
+                  <th>Commit</th>
+                  <th>Duration</th>
+                  <th>When</th>
+                </tr>
+              </thead>
+              <tbody>
+                {deploys.map((d) => (
+                  <Fragment key={d.id}>
+                    <tr
+                      onClick={() => toggleDetail(d.id)}
+                      style={{ cursor: "pointer" }}
+                      className={expandedId === d.id ? "row-expanded" : ""}
+                    >
+                      <td><StatusBadge status={d.status} /></td>
+                      <td style={{ fontWeight: 500, color: "var(--text)" }}>{d.app.name}</td>
+                      <td style={{ color: "var(--text-secondary)" }}>{d.server.name}</td>
+                      <td>
+                        <code style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", background: "var(--bg-subtle)", padding: "0.125rem 0.375rem", borderRadius: "var(--radius-sm)" }}>
+                          {d.commitAfter ? d.commitAfter.slice(0, 7) : "—"}
+                        </code>
                       </td>
+                      <td style={{ color: "var(--muted)" }}>
+                        {d.duration ? `${(d.duration / 1000).toFixed(1)}s` : "—"}
+                      </td>
+                      <td style={{ color: "var(--muted)" }}>{timeAgo(d.createdAt)}</td>
                     </tr>
-                  )}
-                </>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                    {expandedId === d.id && (
+                      <tr key={`${d.id}-detail`}>
+                        <td colSpan={6} style={{ padding: 0, borderBottom: "1px solid var(--border)" }}>
+                          <DeployDetailPanel detail={detail} loading={detailLoading} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {total > limit && (
+            <div style={{ display: "flex", justifyContent: "center", gap: "var(--space-2)", marginTop: "var(--space-4)" }}>
+              <button
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+                className="btn btn-secondary btn-sm"
+              >
+                Previous
+              </button>
+              <span style={{ fontSize: "var(--text-sm)", color: "var(--muted)", display: "flex", alignItems: "center" }}>
+                Page {page + 1} of {Math.ceil(total / limit)}
+              </span>
+              <button
+                onClick={() => setPage((p) => p + 1)}
+                disabled={(page + 1) * limit >= total}
+                className="btn btn-secondary btn-sm"
+              >
+                Next
+              </button>
+            </div>
+          )}
+        </>
       )}
     </main>
   );

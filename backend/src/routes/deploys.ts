@@ -8,24 +8,29 @@ deploysRouter.get("/", async (c) => {
   const serverId = c.req.query("serverId");
   const appId = c.req.query("appId");
   const status = c.req.query("status");
-  const limit = Math.min(Number(c.req.query("limit") ?? 50), 200);
+  const limit = Math.min(Number(c.req.query("limit")) || 50, 200);
+  const offset = Math.max(Number(c.req.query("offset")) || 0, 0);
 
   const where: any = {};
   if (serverId) where.serverId = serverId;
   if (appId) where.appId = appId;
   if (status) where.status = status;
 
-  const deploys = await prisma.deploy.findMany({
-    where,
-    orderBy: { createdAt: "desc" },
-    take: limit,
-    include: {
-      app: { select: { name: true } },
-      server: { select: { name: true, host: true } },
-    },
-  });
+  const [deploys, total] = await Promise.all([
+    prisma.deploy.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      skip: offset,
+      include: {
+        app: { select: { name: true } },
+        server: { select: { name: true, host: true } },
+      },
+    }),
+    prisma.deploy.count({ where }),
+  ]);
 
-  return c.json({ deploys });
+  return c.json({ deploys, total });
 });
 
 // GET /api/deploys/:id — single deploy detail with steps and commit info
