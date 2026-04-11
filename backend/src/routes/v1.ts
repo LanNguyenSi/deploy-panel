@@ -147,21 +147,26 @@ v1Router.get("/deploys", async (c) => {
   const appId = c.req.query("app_id");
   const status = c.req.query("status");
   const limit = Math.min(Number(c.req.query("limit") ?? 50), 200);
+  const offset = Math.max(Number(c.req.query("offset") ?? 0), 0);
 
   const where: Record<string, string> = {};
   if (serverId) where.serverId = serverId;
   if (appId) where.appId = appId;
   if (status) where.status = status;
 
-  const deploys = await prisma.deploy.findMany({
-    where,
-    orderBy: { createdAt: "desc" },
-    take: limit,
-    include: {
-      app: { select: { name: true } },
-      server: { select: { name: true } },
-    },
-  });
+  const [deploys, total] = await Promise.all([
+    prisma.deploy.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      skip: offset,
+      include: {
+        app: { select: { name: true } },
+        server: { select: { name: true } },
+      },
+    }),
+    prisma.deploy.count({ where }),
+  ]);
 
   return c.json({
     deploys: deploys.map((d) => ({
@@ -175,6 +180,7 @@ v1Router.get("/deploys", async (c) => {
       triggeredBy: d.triggeredBy,
       createdAt: d.createdAt,
     })),
+    total,
   });
 });
 
