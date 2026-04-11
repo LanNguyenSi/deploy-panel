@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { getDeploys, getDeployDetail, type DeployWithRelations, type DeployDetail } from "@/lib/api";
 
 export default function DeploysPage() {
   const [deploys, setDeploys] = useState<DeployWithRelations[]>([]);
+  const [chartDeploys, setChartDeploys] = useState<DeployWithRelations[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<string>("");
@@ -16,9 +17,19 @@ export default function DeploysPage() {
 
   async function load() {
     try {
-      const data = await getDeploys({ status: statusFilter || undefined, limit, offset: page * limit });
+      const [data, chartData] = await Promise.all([
+        getDeploys({ status: statusFilter || undefined, limit, offset: page * limit }),
+        page === 0 && !statusFilter
+          ? getDeploys({ limit: 100 })
+          : Promise.resolve(null),
+      ]);
       setDeploys(data.deploys);
       setTotal(data.total);
+      if (chartData) setChartDeploys(chartData.deploys);
+      // Auto-recover if current page is empty but there are results
+      if (data.deploys.length === 0 && data.total > 0 && page > 0) {
+        setPage(Math.max(0, Math.ceil(data.total / limit) - 1));
+      }
     } catch (err) {
       console.error("Failed to load deploys:", err);
     } finally {
@@ -27,6 +38,7 @@ export default function DeploysPage() {
   }
 
   useEffect(() => {
+    setLoading(true);
     load();
     const interval = setInterval(load, 15000);
     return () => clearInterval(interval);
@@ -81,8 +93,8 @@ export default function DeploysPage() {
       </div>
 
       {/* Duration trend chart */}
-      {!loading && deploys.filter((d) => d.duration).length >= 3 && (
-        <DurationChart deploys={deploys} />
+      {!loading && chartDeploys.filter((d) => d.duration).length >= 3 && (
+        <DurationChart deploys={chartDeploys} />
       )}
 
       {loading ? (
@@ -115,9 +127,8 @@ export default function DeploysPage() {
               </thead>
               <tbody>
                 {deploys.map((d) => (
-                  <>
+                  <Fragment key={d.id}>
                     <tr
-                      key={d.id}
                       onClick={() => toggleDetail(d.id)}
                       style={{ cursor: "pointer" }}
                       className={expandedId === d.id ? "row-expanded" : ""}
@@ -142,7 +153,7 @@ export default function DeploysPage() {
                         </td>
                       </tr>
                     )}
-                  </>
+                  </Fragment>
                 ))}
               </tbody>
             </table>

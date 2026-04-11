@@ -146,8 +146,8 @@ v1Router.get("/deploys", async (c) => {
   const serverId = c.req.query("server_id");
   const appId = c.req.query("app_id");
   const status = c.req.query("status");
-  const limit = Math.min(Number(c.req.query("limit") ?? 50), 200);
-  const offset = Math.max(Number(c.req.query("offset") ?? 0), 0);
+  const limit = Math.min(Number(c.req.query("limit")) || 50, 200);
+  const offset = Math.max(Number(c.req.query("offset")) || 0, 0);
 
   const where: Record<string, string> = {};
   if (serverId) where.serverId = serverId;

@@ -8,8 +8,8 @@ deploysRouter.get("/", async (c) => {
   const serverId = c.req.query("serverId");
   const appId = c.req.query("appId");
   const status = c.req.query("status");
-  const limit = Math.min(Number(c.req.query("limit") ?? 50), 200);
-  const offset = Math.max(Number(c.req.query("offset") ?? 0), 0);
+  const limit = Math.min(Number(c.req.query("limit")) || 50, 200);
+  const offset = Math.max(Number(c.req.query("offset")) || 0, 0);
 
   const where: any = {};
   if (serverId) where.serverId = serverId;
