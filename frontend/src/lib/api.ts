@@ -228,11 +228,12 @@ export async function getAuditLog(params?: { action?: string; limit?: number; of
 
 // ── Deploys ────────────────────────────────────────────────────────────────
 
-export async function getDeploys(params?: { serverId?: string; appId?: string; status?: string; limit?: number }): Promise<{ deploys: DeployWithRelations[] }> {
+export async function getDeploys(params?: { serverId?: string; appId?: string; status?: string; limit?: number; offset?: number }): Promise<{ deploys: DeployWithRelations[]; total: number }> {
   const query = new URLSearchParams();
   if (params?.serverId) query.set("serverId", params.serverId);
   if (params?.appId) query.set("appId", params.appId);
   if (params?.status) query.set("status", params.status);
   if (params?.limit) query.set("limit", String(params.limit));
+  if (params?.offset != null) query.set("offset", String(params.offset));
   return request(`/api/deploys?${query}`);
 }
