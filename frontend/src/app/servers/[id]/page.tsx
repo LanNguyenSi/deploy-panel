@@ -6,9 +6,10 @@ import Link from "next/link";
 import { getServer, getApps, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, setAppLiveUrl, type AppWithCount } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
+import { usePrompt } from "@/components/PromptDialog";
+import { useScheduleDialog } from "@/components/ScheduleDialog";
 import { requestPermission, notifyDeployResult } from "@/lib/notifications";
 import { isPinned, togglePin } from "@/lib/pinned";
-import { scheduleDeploy } from "@/lib/api";
 
 type Panel = { type: "logs" | "deploy" | "preflight"; app: string };
 
@@ -25,6 +26,8 @@ export default function ServerDetailPage() {
   const [preflight, setPreflight] = useState<{ passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> } | null>(null);
   const { toast } = useToast();
   const { confirm } = useConfirm();
+  const { prompt: promptDialog } = usePrompt();
+  const scheduleDialog = useScheduleDialog();
 
   async function load() {
     try {
@@ -116,23 +119,33 @@ export default function ServerDetailPage() {
   }
 
   async function handleSchedule(name: string) {
-    const when = prompt("Schedule deploy for (ISO datetime, e.g. 2026-04-09T02:00):");
-    if (!when) return;
-    try {
-      await scheduleDeploy(id, name, new Date(when).toISOString());
-      toast(`Deploy scheduled for ${name}`, "success");
-    } catch (err: any) {
-      toast(`Schedule failed: ${err.message}`, "error");
-    }
+    // All the UX — datetime picker, presets, timezone display, pending
+    // list, force flag — lives inside ScheduleDialog. The call site is
+    // just a one-liner await.
+    await scheduleDialog(id, name);
   }
 
   async function handleEditLiveUrl(app: AppWithCount) {
-    // window.prompt keeps the diff small and matches the existing
-    // Schedule flow above. Empty string / cancel clears the field.
-    const next = prompt(
-      `Public URL for "${app.name}" (empty to clear):`,
-      app.liveUrl ?? "",
-    );
+    const next = await promptDialog({
+      title: `Live URL for "${app.name}"`,
+      label: "Public URL (empty to clear)",
+      initialValue: app.liveUrl ?? "",
+      placeholder: "https://example.com",
+      confirmLabel: "Save",
+      validate: (v) => {
+        const trimmed = v.trim();
+        if (!trimmed) return null; // empty is allowed — clears the field
+        try {
+          const u = new URL(trimmed);
+          if (u.protocol !== "http:" && u.protocol !== "https:") {
+            return "Must start with http:// or https://";
+          }
+          return null;
+        } catch {
+          return "Not a valid URL";
+        }
+      },
+    });
     if (next === null) return; // user cancelled
     const trimmed = next.trim();
     try {
