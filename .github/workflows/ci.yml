@@ -46,3 +46,75 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker compose build
+
+  smoke:
+    # Runtime guard against the class of regression that caused the
+    # 2026-04-12 production incident: silent schema drift between the
+    # Prisma client and the live database. The static checks above
+    # (typecheck, build, compose build) all pass for such a drift —
+    # only a running stack + real DB-backed query catches it.
+    #
+    # Spins up db + backend from the PR's code, waits for health,
+    # runs scripts/smoke-check.sh, and fails the job if any hard
+    # check trips.
+    #
+    # Gated on the cheap static jobs so a typo doesn't burn ~4min of
+    # docker build + compose bring-up before surfacing.
+    needs: [backend-typecheck, frontend-typecheck, frontend-build, docker]
+    runs-on: ubuntu-latest
+    env:
+      # A throwaway token for the CI stack only. Never used outside
+      # this runner — the backend restarts with this value for the
+      # duration of the job and tears down immediately after.
+      PANEL_TOKEN: ci-smoke-check-token-do-not-use-in-prod
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write CI .env
+        run: |
+          cat > .env <<'EOF'
+          POSTGRES_USER=deploy_panel
+          POSTGRES_PASSWORD=ci_postgres_password
+          POSTGRES_DB=deploy_panel
+          SESSION_SECRET=ci-session-secret-long-enough-to-pass-min-16
+          NODE_ENV=production
+          EOF
+
+      - name: Start db + backend
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml \
+            up -d --build db backend
+
+      - name: Wait for backend /api/health
+        run: |
+          # Poll /api/health every second for up to 120s. Cold start
+          # on a loaded runner eats ~30s for next build alone, and the
+          # entrypoint now runs `prisma db push` with retries before
+          # Hono binds — give headroom. Healthy response exits early.
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:3001/api/health >/dev/null 2>&1; then
+              echo "backend healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "backend did not become healthy within 120s" >&2
+          exit 1
+
+      - name: Run smoke check
+        env:
+          DEPLOY_PANEL_URL: http://localhost:3001
+        run: ./scripts/smoke-check.sh
+
+      - name: Dump backend logs on failure
+        if: failure()
+        run: |
+          echo '=== backend logs (last 500 lines) ==='
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml logs --tail=500 --no-color backend
+          echo '=== db logs (last 500 lines) ==='
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml logs --tail=500 --no-color db
+
+      - name: Teardown
+        if: always()
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v

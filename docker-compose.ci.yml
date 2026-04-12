@@ -1,0 +1,25 @@
+# CI-only compose overlay.
+#
+# Layers on top of docker-compose.yml to:
+#   - publish the backend port to the host, so a runner-side script
+#     (scripts/smoke-check.sh) can reach it on localhost without going
+#     through a sidecar or docker exec
+#   - inject PANEL_TOKEN into the backend environment, which the base
+#     compose file intentionally does not forward (production uses a
+#     separate env-file mechanism)
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --build db backend
+#
+# Do NOT use in production. The port publish is a security concern
+# in any network the host isn't already firewalling at the edge.
+
+services:
+  backend:
+    ports:
+      # Bind to loopback only: the runner doesn't need this port
+      # reachable from anywhere else, and making that explicit
+      # matches the warning in the comment above.
+      - "127.0.0.1:3001:3001"
+    environment:
+      PANEL_TOKEN: ${PANEL_TOKEN}
