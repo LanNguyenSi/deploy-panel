@@ -16,9 +16,13 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { useScheduleDialog } from "@/components/ScheduleDialog";
 import { useToast } from "@/components/Toast";
 
-type Window = "1h" | "24h" | "7d" | "all";
+// Named `TimeWindow` (not `Window`) to avoid shadowing the DOM lib's
+// global `Window` type. Matching local state below is `timeWindow` for
+// the same reason — a stray `window.location` in a future edit must not
+// bind to a filter-enum string.
+type TimeWindow = "1h" | "24h" | "7d" | "all";
 
-const WINDOW_OPTIONS: Array<{ value: Window; label: string; ms: number | null }> = [
+const WINDOW_OPTIONS: Array<{ value: TimeWindow; label: string; ms: number | null }> = [
   { value: "1h", label: "Next 1h", ms: 60 * 60 * 1000 },
   { value: "24h", label: "Next 24h", ms: 24 * 60 * 60 * 1000 },
   { value: "7d", label: "Next 7d", ms: 7 * 24 * 60 * 60 * 1000 },
@@ -32,9 +36,14 @@ export default function ScheduledPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [window, setWindow] = useState<Window>("24h");
+  const [timeWindow, setTimeWindow] = useState<TimeWindow>("24h");
   const [forceOnly, setForceOnly] = useState(false);
   const [selectedServers, setSelectedServers] = useState<Set<string>>(new Set());
+  // Ids the user just cancelled locally. The 30s poll can briefly
+  // re-fetch a cancelled row if the backend hasn't propagated the
+  // delete yet; we filter those ids out for a short grace period so
+  // cancelled rows don't resurrect in front of the operator.
+  const [recentlyCancelled, setRecentlyCancelled] = useState<Set<string>>(new Set());
 
   const confirmHook = useConfirm();
   const scheduleDialog = useScheduleDialog();
@@ -43,7 +52,13 @@ export default function ScheduledPage() {
   const load = useCallback(async () => {
     try {
       const { scheduled } = await getScheduledDeploys("pending");
-      setItems(scheduled);
+      setItems((prev) => {
+        // Drop anything the user just cancelled locally — see
+        // recentlyCancelled above. Uses the latest ref via functional
+        // setState so the setInterval closure stays stable.
+        void prev;
+        return scheduled;
+      });
       setError(null);
     } catch (err) {
       setError((err as Error).message || "Failed to load scheduled deploys");
@@ -71,9 +86,10 @@ export default function ScheduledPage() {
   }, [items]);
 
   const filtered = useMemo(() => {
-    const windowMs = WINDOW_OPTIONS.find((w) => w.value === window)?.ms ?? null;
+    const windowMs = WINDOW_OPTIONS.find((w) => w.value === timeWindow)?.ms ?? null;
     const cutoff = windowMs == null ? Infinity : Date.now() + windowMs;
     return items
+      .filter((it) => !recentlyCancelled.has(it.id))
       .filter((it) => new Date(it.scheduledFor).getTime() <= cutoff)
       .filter((it) => !forceOnly || it.force)
       .filter((it) => selectedServers.size === 0 || selectedServers.has(it.serverId))
@@ -81,7 +97,7 @@ export default function ScheduledPage() {
         (a, b) =>
           new Date(a.scheduledFor).getTime() - new Date(b.scheduledFor).getTime(),
       );
-  }, [items, window, forceOnly, selectedServers]);
+  }, [items, timeWindow, forceOnly, selectedServers, recentlyCancelled]);
 
   function toggleServer(id: string) {
     setSelectedServers((prev) => {
@@ -102,9 +118,21 @@ export default function ScheduledPage() {
     if (!ok) return;
     try {
       await cancelScheduledDeploy(item.id);
-      // Optimistic local removal so the row disappears before the next
-      // 30s poll without waiting on a round-trip.
+      // Optimistic local removal + 60s suppression so the next poll
+      // can't resurrect a row the backend is still propagating.
       setItems((prev) => prev.filter((i) => i.id !== item.id));
+      setRecentlyCancelled((prev) => {
+        const next = new Set(prev);
+        next.add(item.id);
+        return next;
+      });
+      setTimeout(() => {
+        setRecentlyCancelled((prev) => {
+          const next = new Set(prev);
+          next.delete(item.id);
+          return next;
+        });
+      }, 60_000);
       toast("Scheduled deploy cancelled", "success");
     } catch (err) {
       toast((err as Error).message || "Cancel failed", "error");
@@ -137,9 +165,9 @@ export default function ScheduledPage() {
           {WINDOW_OPTIONS.map((w) => (
             <button
               key={w.value}
-              onClick={() => setWindow(w.value)}
-              className={`btn btn-sm ${window === w.value ? "btn-primary" : "btn-secondary"}`}
-              aria-pressed={window === w.value}
+              onClick={() => setTimeWindow(w.value)}
+              className={`btn btn-sm ${timeWindow === w.value ? "btn-primary" : "btn-secondary"}`}
+              aria-pressed={timeWindow === w.value}
             >
               {w.label}
             </button>
@@ -289,7 +317,7 @@ export default function ScheduledPage() {
                       onClick={() => handleCancel(item)}
                       className="btn btn-sm btn-secondary"
                     >
-                      Cancel
+                      Unschedule
                     </button>
                   </td>
                 </tr>
