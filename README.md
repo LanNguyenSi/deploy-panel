@@ -190,6 +190,18 @@ The compose stack includes:
 
 The backend waits for the database health check before starting. The frontend waits for the backend health check before starting. Only the frontend port is published to the host by default.
 
+### Post-deploy smoke check
+
+After a deploy, run the smoke check to verify the critical paths (auth, Prisma-backed queries, fleet reachability) against the running instance:
+
+```bash
+DEPLOY_PANEL_URL=https://deploy-panel.example.com \
+PANEL_TOKEN=... \
+./scripts/smoke-check.sh
+```
+
+Exits 0 on success. Unlike `/api/health` (which only proves the Hono process is up), this script exercises real DB queries via Prisma, so schema drift surfaces immediately. Dependencies: `curl`, `jq`.
+
 ## Data Model
 
 - **Server** -- VPS instances with host, SSH key path, relay URL/token, and connection status (`unknown`, `online`, `offline`, `no-relay`)
