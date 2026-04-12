@@ -17,6 +17,9 @@
 services:
   backend:
     ports:
-      - "3001:3001"
+      # Bind to loopback only: the runner doesn't need this port
+      # reachable from anywhere else, and making that explicit
+      # matches the warning in the comment above.
+      - "127.0.0.1:3001:3001"
     environment:
       PANEL_TOKEN: ${PANEL_TOKEN}
