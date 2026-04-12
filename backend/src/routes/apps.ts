@@ -250,6 +250,109 @@ appsRouter.get("/:name/preflight", async (c) => {
   }
 });
 
+// POST /api/servers/:serverId/apps/bulk-deploy — deploy multiple apps in parallel.
+//
+// Delegates the actual relay round-trip + deploy-row bookkeeping to
+// `streamDeploy()`, the same helper the single-deploy endpoint uses.
+// The earlier implementation reinvented the wheel (inline `relayRequest`
+// + manual prisma updates + ad-hoc error recovery), which diverged from
+// the single-deploy path in three ways:
+//
+//   - no step streaming / SSE, so the UI saw deploys as frozen
+//   - `app.status = "deploying"` was written inside the fire-and-forget
+//     IIFE, racing against any follow-up poll
+//   - a failing prisma.deploy.create mid-loop would leave earlier apps'
+//     audit + deploy rows orphaned
+//
+// Routing the bulk path through `streamDeploy` gets us parity and drops
+// ~30 lines of duplicated logic at the same time.
+appsRouter.post("/bulk-deploy", async (c) => {
+  const serverId = getServerId(c);
+  const body = await c.req.json().catch(() => ({}));
+  const { apps: rawAppNames, force } = body as { apps?: string[]; force?: boolean };
+
+  if (!rawAppNames || !Array.isArray(rawAppNames) || rawAppNames.length === 0) {
+    return c.json({ error: "bad_request", message: "apps array is required" }, 400);
+  }
+
+  // Dedupe + cap so a single operator click can't spawn thousands of
+  // concurrent relay calls.
+  const appNames = Array.from(new Set(rawAppNames));
+  if (appNames.length > 50) {
+    return c.json(
+      { error: "bad_request", message: "bulk deploy capped at 50 apps per call" },
+      400,
+    );
+  }
+
+  // Fetch the server once — streamDeploy needs relayUrl + relayToken
+  // per call. Doing this upfront also gives us a clean 404 path instead
+  // of discovering the missing server inside each per-app loop.
+  const server = await prisma.server.findUnique({ where: { id: serverId } });
+  if (!server) return c.json({ error: "not_found" }, 404);
+
+  const actor = getActor(c);
+
+  // One audit row for the whole batch, so an operator can see the full
+  // group at a glance; per-app audit rows are still written below for
+  // parity with the single-deploy path.
+  audit(
+    "bulk-deploy",
+    `${appNames.length} app(s) on server ${serverId}`,
+    JSON.stringify({ apps: appNames, force: force ?? false }),
+    actor,
+  );
+
+  const results: Array<{
+    app: string;
+    deployId: string;
+    status: string;
+    error?: string;
+  }> = [];
+
+  for (const name of appNames) {
+    // Wrap per-app setup so one bad app name (invalid chars,
+    // findOrCreateApp throw, prisma hiccup) doesn't crash the batch and
+    // leave earlier apps' bookkeeping committed but invisible to the
+    // caller. Errors are reported in-band via the results array.
+    try {
+      const app = await findOrCreateApp(serverId, name);
+      const deploy = await prisma.deploy.create({
+        data: { serverId, appId: app.id, status: "running", triggeredBy: "panel" },
+      });
+      // Hoisted out of the fire-and-forget path so a follow-up poll
+      // after the 202 response sees the correct state immediately.
+      await prisma.app.update({ where: { id: app.id }, data: { status: "deploying" } });
+      audit(
+        "deploy",
+        `${name} (bulk) on server ${serverId}`,
+        `deployId: ${deploy.id}`,
+        actor,
+      );
+      results.push({ app: name, deployId: deploy.id, status: "running" });
+
+      streamDeploy({
+        serverId,
+        deployId: deploy.id,
+        appId: app.id,
+        appName: name,
+        relayUrl: server.relayUrl ?? "",
+        relayToken: server.relayToken ?? null,
+        body: { force: force ?? false },
+      });
+    } catch (err) {
+      results.push({
+        app: name,
+        deployId: "",
+        status: "failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return c.json({ deploys: results }, 202);
+});
+
 async function findOrCreateApp(serverId: string, name: string) {
   if (!APP_NAME_PATTERN.test(name)) {
     throw new Error("Invalid app name: must be alphanumeric, hyphens, or underscores");

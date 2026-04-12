@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getServer, getApps, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, setAppLiveUrl, type AppWithCount } from "@/lib/api";
+import { getServer, getApps, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, setAppLiveUrl, bulkDeploy, type AppWithCount } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { usePrompt } from "@/components/PromptDialog";
@@ -24,10 +24,54 @@ export default function ServerDetailPage() {
   const [deploying, setDeploying] = useState<string | null>(null);
   const [deployLog, setDeployLog] = useState<{ status: string; steps: Array<{ name: string; status: string; durationMs: number }> } | null>(null);
   const [preflight, setPreflight] = useState<{ passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> } | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkDeploying, setBulkDeploying] = useState(false);
   const { toast } = useToast();
   const { confirm } = useConfirm();
   const { prompt: promptDialog } = usePrompt();
   const scheduleDialog = useScheduleDialog();
+
+  function toggleSelect(name: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name); else next.add(name);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    if (selected.size === apps.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(apps.map((a) => a.name)));
+    }
+  }
+
+  async function handleBulkDeploy() {
+    if (selected.size === 0) return;
+    const names = Array.from(selected);
+    const ok = await confirm({
+      title: "Bulk Deploy",
+      message: `Deploy ${names.length} app${names.length > 1 ? "s" : ""}?\n\n${names.join(", ")}`,
+      confirmLabel: `Deploy ${names.length}`,
+    });
+    if (!ok) return;
+
+    setBulkDeploying(true);
+    try {
+      const result = await bulkDeploy(id, names);
+      toast(`${result.deploys.length} deploys started`, "success");
+      setSelected(new Set());
+      // Start polling for completion
+      setTimeout(() => load(), 5000);
+      setTimeout(() => load(), 15000);
+      setTimeout(() => load(), 30000);
+    } catch (err: any) {
+      toast(`Bulk deploy failed: ${err.message}`, "error");
+    } finally {
+      setBulkDeploying(false);
+    }
+  }
 
   async function load() {
     try {
@@ -215,6 +259,34 @@ export default function ServerDetailPage() {
         </button>
       </div>
 
+      {/* Bulk deploy toolbar */}
+      {!loading && apps.length > 1 && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: "var(--space-3)",
+          marginBottom: "var(--space-3)", padding: "var(--space-2) var(--space-3)",
+          background: selected.size > 0 ? "var(--primary-muted)" : "transparent",
+          borderRadius: "var(--radius)", transition: "background var(--transition)",
+        }}>
+          <label style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", cursor: "pointer", fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>
+            <input
+              type="checkbox"
+              checked={selected.size === apps.length && apps.length > 0}
+              onChange={toggleSelectAll}
+              style={{ accentColor: "var(--primary)" }}
+            />
+            {selected.size > 0 ? `${selected.size} selected` : "Select all"}
+          </label>
+          {selected.size > 0 && (
+            <>
+              <button onClick={handleBulkDeploy} disabled={bulkDeploying} className="btn btn-primary btn-sm">
+                {bulkDeploying ? "Deploying..." : `Deploy ${selected.size} app${selected.size > 1 ? "s" : ""}`}
+              </button>
+              <button onClick={() => setSelected(new Set())} className="btn btn-secondary btn-sm">Clear</button>
+            </>
+          )}
+        </div>
+      )}
+
       {loading ? (
         <div style={{ display: "grid", gap: "var(--space-3)" }}>
           {[1, 2, 3].map((i) => (
@@ -234,6 +306,14 @@ export default function ServerDetailPage() {
               {/* App header */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-3)" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+                  {apps.length > 1 && (
+                    <input
+                      type="checkbox"
+                      checked={selected.has(app.name)}
+                      onChange={() => toggleSelect(app.name)}
+                      style={{ accentColor: "var(--primary)" }}
+                    />
+                  )}
                   <span className={`status-dot status-dot-${app.status}`} />
                   <span style={{ fontWeight: 600, fontSize: "var(--text-md)" }}>{app.name}</span>
                   <button
