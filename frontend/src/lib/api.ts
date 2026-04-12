@@ -40,6 +40,7 @@ export interface App {
   status: string;
   health: string | null;
   tag: string | null;
+  liveUrl: string | null;
   lastDeployAt: string | null;
 }
 
@@ -127,6 +128,17 @@ export async function getAppLogs(serverId: string, name: string, lines = 50): Pr
 
 export async function tagApp(serverId: string, name: string, tag: string | null): Promise<{ app: App }> {
   return request(`/api/servers/${serverId}/apps/${name}/tag`, { method: "PATCH", body: JSON.stringify({ tag }) });
+}
+
+export async function setAppLiveUrl(
+  serverId: string,
+  name: string,
+  liveUrl: string | null,
+): Promise<{ app: App }> {
+  return request(`/api/servers/${serverId}/apps/${name}/live-url`, {
+    method: "PATCH",
+    body: JSON.stringify({ liveUrl }),
+  });
 }
 
 export async function hideApp(serverId: string, name: string): Promise<void> {
