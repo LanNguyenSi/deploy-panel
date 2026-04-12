@@ -39,6 +39,7 @@ model App {
   branch       String   @default("main")
   path         String   // path on VPS
   health       String?  // health endpoint
+  liveUrl      String?  // public URL to the deployed app (manual; not derivable from the relay)
   status       String   @default("unknown") // unknown, healthy, unhealthy, deploying
   tag          String?  // production, development, ignored
   lastDeployAt DateTime?

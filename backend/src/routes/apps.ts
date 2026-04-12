@@ -59,6 +59,57 @@ appsRouter.patch("/:name/tag", async (c) => {
   }
 });
 
+// PATCH /api/servers/:serverId/apps/:name/live-url — set or clear the public URL.
+//
+// The live URL is the public address of the deployed app (e.g.
+// https://example.com). The agent-relay doesn't know it — it's manually
+// entered by an operator and only used as a click-through on the app card.
+// Empty string / null / missing clears the field.
+appsRouter.patch("/:name/live-url", async (c) => {
+  const serverId = getServerId(c);
+  const name = c.req.param("name");
+  const body = await c.req.json().catch(() => ({}));
+  const raw = typeof body.liveUrl === "string" ? body.liveUrl.trim() : null;
+
+  // Guard against a multi-MB body bloating the row + audit detail. Every
+  // sane public URL fits comfortably in 2KB; anything larger is garbage
+  // or abuse.
+  if (raw && raw.length > 2048) {
+    return c.json({ error: "liveUrl exceeds 2048 characters" }, 400);
+  }
+
+  // Normalize: empty → null to clear. Otherwise, require a syntactically
+  // valid absolute http(s) URL so we don't render a junk <a href>.
+  let next: string | null = null;
+  if (raw) {
+    try {
+      const parsed = new URL(raw);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        return c.json({ error: "liveUrl must use http or https" }, 400);
+      }
+      next = parsed.toString();
+    } catch {
+      return c.json({ error: "liveUrl must be a valid absolute URL" }, 400);
+    }
+  }
+
+  try {
+    const app = await prisma.app.update({
+      where: { serverId_name: { serverId, name } },
+      data: { liveUrl: next },
+    });
+    await audit(
+      "app.live_url",
+      `${name} on server ${serverId}`,
+      next ? `set to ${next}` : "cleared",
+      getActor(c),
+    );
+    return c.json({ app });
+  } catch {
+    return c.json({ error: "not_found" }, 404);
+  }
+});
+
 // DELETE /api/servers/:serverId/apps/:name — hide app from server view
 appsRouter.delete("/:name", async (c) => {
   const serverId = getServerId(c);

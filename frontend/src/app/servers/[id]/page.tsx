@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getServer, getApps, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, type AppWithCount } from "@/lib/api";
+import { getServer, getApps, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, setAppLiveUrl, type AppWithCount } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { requestPermission, notifyDeployResult } from "@/lib/notifications";
@@ -126,6 +126,24 @@ export default function ServerDetailPage() {
     }
   }
 
+  async function handleEditLiveUrl(app: AppWithCount) {
+    // window.prompt keeps the diff small and matches the existing
+    // Schedule flow above. Empty string / cancel clears the field.
+    const next = prompt(
+      `Public URL for "${app.name}" (empty to clear):`,
+      app.liveUrl ?? "",
+    );
+    if (next === null) return; // user cancelled
+    const trimmed = next.trim();
+    try {
+      await setAppLiveUrl(id, app.name, trimmed || null);
+      toast(trimmed ? "Live URL updated" : "Live URL cleared", "success");
+      await load();
+    } catch (err: any) {
+      toast(`Live URL update failed: ${err.message}`, "error");
+    }
+  }
+
   async function handleLogs(name: string) {
     setPanel({ type: "logs", app: name });
     setLogs(null);
@@ -213,6 +231,32 @@ export default function ServerDetailPage() {
                     {isPinned(id, app.name) ? "★" : "☆"}
                   </button>
                   <TagBadge tag={app.tag} />
+                  {app.liveUrl && (
+                    <a
+                      href={app.liveUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn btn-secondary btn-sm"
+                      style={{ textDecoration: "none" }}
+                      title={`Open ${app.liveUrl}`}
+                    >
+                      Open ↗
+                    </a>
+                  )}
+                  <button
+                    onClick={() => handleEditLiveUrl(app)}
+                    title={app.liveUrl ? "Edit live URL" : "Set live URL"}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      cursor: "pointer",
+                      fontSize: "var(--text-sm)",
+                      color: "var(--muted)",
+                      padding: 0,
+                    }}
+                  >
+                    {app.liveUrl ? "✎" : "+ URL"}
+                  </button>
                   <span style={{ fontSize: "var(--text-xs)", color: "var(--muted)" }}>
                     {app._count.deploys} deploy{app._count.deploys !== 1 ? "s" : ""}
                   </span>
