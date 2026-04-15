@@ -3,6 +3,7 @@ import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
 import { audit, getActor } from "../lib/audit.js";
+import { recoverBrokenDeploy } from "../lib/deploy-recovery.js";
 
 export const appsRouter = new Hono();
 
@@ -206,10 +207,20 @@ appsRouter.post("/:name/rollback", async (c) => {
 
     return c.json({ deploy: { id: deploy.id, ...result } });
   } catch (err) {
-    await prisma.deploy.update({
-      where: { id: deploy.id },
-      data: { status: "failed", log: err instanceof Error ? err.message : String(err) },
-    });
+    // A rollback restarts the same container stack as a deploy, so the
+    // relay connection can break the same way — especially when the
+    // deploy-panel rolls back itself. Hand the deploy off to
+    // recoverBrokenDeploy (same pattern as v1.ts:243 and stream-deploy)
+    // instead of writing `failed` directly. Recovery probes the app via
+    // preflight and flips the deploy row to `success` or `failed` based
+    // on actual container health, not on the relay socket state.
+    //
+    // We do NOT await — recovery can take up to ~80s. The HTTP caller
+    // still gets the RelayError response immediately; the deploy row
+    // stays `running` until recovery writes the final status, matching
+    // the v1 rollback semantics.
+    const errMsg = err instanceof Error ? err.message : String(err);
+    recoverBrokenDeploy(deploy.id, app.id, serverId, name, errMsg);
     if (err instanceof RelayError) return c.json({ error: err.message }, err.status as any);
     throw err;
   }
