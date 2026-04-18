@@ -69,8 +69,11 @@ follow the migration notes below before pulling the tagged image.
 
 #### v1 REST API (`/api/v1`)
 
-- `/api/v1/deploys`, rollback, logs — REST endpoints designed for
-  CI/CD integration.
+- `/api/v1/deploy`, `/api/v1/deploy/:id`, `/api/v1/deploys`,
+  `/api/v1/rollback`, `/api/v1/logs`, `/api/v1/preflight` — REST
+  endpoints designed for CI/CD integration. The GitHub Action
+  (`action/action.yml`) drives the preflight + deploy flow
+  through these routes.
 - Offset pagination + total count on the deploy-history endpoint
   so the paginated UI has stable navigation.
 - v1 deploy endpoint uses the SSE streaming path for live step
@@ -125,10 +128,11 @@ follow the migration notes below before pulling the tagged image.
   the matching CHANGELOG section as the release body.
 - `CHANGELOG.md`, this file.
 - `.relay.yml` so deploy-panel can deploy itself via agent-relay.
-- MIT license. Root `package.json` is a npm-workspaces root; the
-  shipping artifacts are `backend` (`deploy-panel-backend`),
-  `frontend` (`deploy-panel-frontend`), and `mcp`
-  (`@deploy-panel/mcp`).
+- MIT license. Root `package.json` is a npm-workspaces root for
+  `backend` + `frontend`; `mcp/` is a standalone sub-package
+  built independently. The three shipping artifacts are
+  `deploy-panel-backend`, `deploy-panel-frontend`, and
+  `@deploy-panel/mcp`.
 
 ### Changed
 
