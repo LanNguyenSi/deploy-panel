@@ -48,9 +48,29 @@ model App {
 
   server       Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
   deploys      Deploy[]
+  envChanges   EnvVarChange[]
 
   @@unique([serverId, name])
   @@map("apps")
+}
+
+// ── Env-var change log ──────────────────────────────────────────────────────
+// Records that a given key changed on an app, without ever storing the value.
+// The live value lives on the VPS in the app's .env file; the panel only
+// proxies reads/writes. This table is purely for "who changed what and when".
+model EnvVarChange {
+  id         String   @id @default(uuid())
+  appId      String
+  key        String
+  changeType String   // "create" | "update" | "delete"
+  actor      String?
+  createdAt  DateTime @default(now())
+
+  app App @relation(fields: [appId], references: [id], onDelete: Cascade)
+
+  @@index([appId])
+  @@index([appId, key])
+  @@map("env_var_changes")
 }
 
 // ── API Keys ────────────────────────────────────────────────────────────────

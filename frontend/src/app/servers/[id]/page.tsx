@@ -10,8 +10,9 @@ import { usePrompt } from "@/components/PromptDialog";
 import { useScheduleDialog } from "@/components/ScheduleDialog";
 import { requestPermission, notifyDeployResult } from "@/lib/notifications";
 import { isPinned, togglePin } from "@/lib/pinned";
+import EnvVarsPanel from "@/components/EnvVarsPanel";
 
-type Panel = { type: "logs" | "deploy" | "preflight"; app: string };
+type Panel = { type: "logs" | "deploy" | "preflight" | "env"; app: string };
 
 export default function ServerDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -370,6 +371,12 @@ export default function ServerDetailPage() {
                   <button onClick={() => handleLogs(app.name)} className="btn btn-secondary btn-sm">Logs</button>
                   <button onClick={() => handlePreflight(app.name)} className="btn btn-secondary btn-sm">Preflight</button>
                   <button onClick={() => handleSchedule(app.name)} className="btn btn-secondary btn-sm">Schedule</button>
+                  <button
+                    onClick={() => setPanel(panel?.app === app.name && panel.type === "env" ? null : { type: "env", app: app.name })}
+                    className="btn btn-secondary btn-sm"
+                  >
+                    Env
+                  </button>
                 </div>
 
                 <div className="action-group-secondary">
@@ -410,9 +417,19 @@ export default function ServerDetailPage() {
                       {panel.type === "logs" && "Application Logs"}
                       {panel.type === "deploy" && "Deploy Progress"}
                       {panel.type === "preflight" && "Preflight Checks"}
+                      {panel.type === "env" && "Environment Variables"}
                     </span>
                     <button onClick={closePanel} className="btn btn-secondary btn-sm">Close</button>
                   </div>
+
+                  {/* Env vars */}
+                  {panel.type === "env" && (
+                    <EnvVarsPanel
+                      serverId={id}
+                      appName={app.name}
+                      onError={(msg) => toast(msg, "error")}
+                    />
+                  )}
 
                   {/* Logs */}
                   {panel.type === "logs" && (
