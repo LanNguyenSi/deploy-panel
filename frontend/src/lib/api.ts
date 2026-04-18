@@ -163,6 +163,48 @@ export async function hideApp(serverId: string, name: string): Promise<void> {
   return request(`/api/servers/${serverId}/apps/${name}`, { method: "DELETE" });
 }
 
+// ── App env vars ──────────────────────────────────────────────────────────
+
+export interface EnvEntry {
+  key: string;
+  value: string;
+  sensitive: boolean;
+}
+
+export interface EnvVarChange {
+  id: string;
+  appId: string;
+  key: string;
+  changeType: "create" | "update" | "delete";
+  actor: string | null;
+  createdAt: string;
+}
+
+export async function getAppEnv(
+  serverId: string,
+  name: string,
+): Promise<{ entries: EnvEntry[] }> {
+  return request(`/api/servers/${serverId}/apps/${name}/env`);
+}
+
+export async function setAppEnv(
+  serverId: string,
+  name: string,
+  entries: { key: string; value: string }[],
+): Promise<{ entries: EnvEntry[]; changes: number; needsRedeploy: boolean }> {
+  return request(`/api/servers/${serverId}/apps/${name}/env`, {
+    method: "PUT",
+    body: JSON.stringify({ entries }),
+  });
+}
+
+export async function getAppEnvHistory(
+  serverId: string,
+  name: string,
+): Promise<{ changes: EnvVarChange[] }> {
+  return request(`/api/servers/${serverId}/apps/${name}/env/history`);
+}
+
 // ── Scheduled Deploys ─────────────────────────────────────────────────────
 
 export interface ScheduledDeployInfo {

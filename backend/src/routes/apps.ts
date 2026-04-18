@@ -364,6 +364,177 @@ appsRouter.post("/bulk-deploy", async (c) => {
   return c.json({ deploys: results }, 202);
 });
 
+// ── Env-vars ───────────────────────────────────────────────────────────────
+//
+// The relay is the source of truth for .env contents (it writes them on the
+// VPS filesystem). The panel is a thin proxy that never persists values — it
+// only tracks *which keys changed when and by whom* in `env_var_changes` so
+// the UI can show a "who touched this" history.
+//
+// Sensitivity is computed here via a keyword heuristic; the UI uses it to
+// decide whether to mask the value by default. Actual secrecy is still
+// enforced only by access control — anyone who can GET this endpoint sees
+// the raw value, just as anyone who can SSH into the box can cat the file.
+
+const SENSITIVE_KEY_PATTERN = /(PASSWORD|PASSWD|PWD|SECRET|TOKEN|KEY|DSN|AUTH|CREDENTIAL|PRIVATE)/i;
+
+// Mirror the relay's caps locally so a malicious client can't waste a
+// round-trip / bloat the proxy's memory before the relay rejects.
+const ENV_MAX_ENTRIES = 500;
+const ENV_MAX_KEY = 128;
+const ENV_MAX_VALUE = 32_768;
+
+function classifySensitivity(entries: { key: string; value: string }[]) {
+  return entries.map((e) => ({
+    key: e.key,
+    value: e.value,
+    sensitive: SENSITIVE_KEY_PATTERN.test(e.key),
+  }));
+}
+
+// GET /api/servers/:serverId/apps/:name/env
+appsRouter.get("/:name/env", async (c) => {
+  const serverId = getServerId(c);
+  const name = c.req.param("name");
+  if (!APP_NAME_PATTERN.test(name)) return c.json({ error: "invalid_app_name" }, 400);
+
+  try {
+    const result = await relayRequest<{ entries: { key: string; value: string }[] }>({
+      serverId,
+      path: `/api/apps/${name}/env`,
+      method: "GET",
+    });
+    return c.json({ entries: classifySensitivity(result.entries ?? []) });
+  } catch (err) {
+    if (err instanceof RelayError) return c.json({ error: err.message }, err.status as 400 | 404 | 500);
+    throw err;
+  }
+});
+
+// PUT /api/servers/:serverId/apps/:name/env
+//
+// Body: { entries: [{ key, value }] } — the complete desired set. The route
+// diffs against the current state, writes the new set via the relay, and
+// records one audit row per changed key (create/update/delete).
+appsRouter.put("/:name/env", async (c) => {
+  const serverId = getServerId(c);
+  const name = c.req.param("name");
+  if (!APP_NAME_PATTERN.test(name)) return c.json({ error: "invalid_app_name" }, 400);
+
+  const body = await c.req.json().catch(() => null);
+  if (!body || !Array.isArray(body.entries)) {
+    return c.json({ error: "Body must be { entries: [{ key, value }] }" }, 400);
+  }
+
+  // Shape validation is re-enforced by the relay; we only short-circuit the
+  // obvious mistakes here so we don't hit the network for malformed input.
+  const rawEntries = body.entries as unknown[];
+  if (rawEntries.length > ENV_MAX_ENTRIES) {
+    return c.json({ error: `Too many entries (max ${ENV_MAX_ENTRIES})` }, 400);
+  }
+  const seen = new Set<string>();
+  const entries: { key: string; value: string }[] = [];
+  for (const row of rawEntries) {
+    if (!row || typeof row !== "object") {
+      return c.json({ error: "Each entry must be { key, value }" }, 400);
+    }
+    const { key, value } = row as { key?: unknown; value?: unknown };
+    if (typeof key !== "string" || typeof value !== "string") {
+      return c.json({ error: "key and value must be strings" }, 400);
+    }
+    if (key.length === 0 || key.length > ENV_MAX_KEY) {
+      return c.json({ error: `Key length must be 1..${ENV_MAX_KEY}` }, 400);
+    }
+    if (value.length > ENV_MAX_VALUE) {
+      return c.json({ error: `Value for ${key} exceeds ${ENV_MAX_VALUE} chars` }, 400);
+    }
+    if (seen.has(key)) return c.json({ error: `Duplicate key: ${key}` }, 400);
+    seen.add(key);
+    entries.push({ key, value });
+  }
+
+  // Fetch current set for diff — relay is source of truth. If the app isn't
+  // registered in the panel yet, upsert it so audit rows have a home.
+  const app = await findOrCreateApp(serverId, name);
+
+  let current: { key: string; value: string }[] = [];
+  try {
+    const prev = await relayRequest<{ entries: { key: string; value: string }[] }>({
+      serverId,
+      path: `/api/apps/${name}/env`,
+      method: "GET",
+    });
+    current = prev.entries ?? [];
+  } catch (err) {
+    if (err instanceof RelayError) return c.json({ error: err.message }, err.status as 400 | 404 | 500);
+    throw err;
+  }
+
+  // Write first; only record history if the write actually succeeded.
+  try {
+    await relayRequest({
+      serverId,
+      path: `/api/apps/${name}/env`,
+      method: "PUT",
+      body: { entries },
+    });
+  } catch (err) {
+    if (err instanceof RelayError) return c.json({ error: err.message }, err.status as 400 | 404 | 500);
+    throw err;
+  }
+
+  const prevMap = new Map(current.map((e) => [e.key, e.value]));
+  const nextMap = new Map(entries.map((e) => [e.key, e.value]));
+  const actor = getActor(c);
+  const changes: { key: string; changeType: "create" | "update" | "delete" }[] = [];
+  for (const [key, value] of nextMap) {
+    const was = prevMap.get(key);
+    if (was === undefined) changes.push({ key, changeType: "create" });
+    else if (was !== value) changes.push({ key, changeType: "update" });
+  }
+  for (const key of prevMap.keys()) {
+    if (!nextMap.has(key)) changes.push({ key, changeType: "delete" });
+  }
+
+  if (changes.length > 0) {
+    await prisma.envVarChange.createMany({
+      data: changes.map((ch) => ({ appId: app.id, key: ch.key, changeType: ch.changeType, actor })),
+    });
+    await audit(
+      "app.env.updated",
+      `${name} on server ${serverId}`,
+      `${changes.length} key(s): ${changes
+        .map((ch) => `${ch.changeType}:${ch.key}`)
+        .join(", ")
+        .slice(0, 500)}`,
+      actor,
+    );
+  }
+
+  return c.json({
+    entries: classifySensitivity(entries),
+    changes: changes.length,
+    needsRedeploy: changes.length > 0,
+  });
+});
+
+// GET /api/servers/:serverId/apps/:name/env/history — fact-of-change log
+appsRouter.get("/:name/env/history", async (c) => {
+  const serverId = getServerId(c);
+  const name = c.req.param("name");
+  const app = await prisma.app.findUnique({
+    where: { serverId_name: { serverId, name } },
+  });
+  if (!app) return c.json({ changes: [] });
+
+  const changes = await prisma.envVarChange.findMany({
+    where: { appId: app.id },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+  });
+  return c.json({ changes });
+});
+
 async function findOrCreateApp(serverId: string, name: string) {
   if (!APP_NAME_PATTERN.test(name)) {
     throw new Error("Invalid app name: must be alphanumeric, hyphens, or underscores");
