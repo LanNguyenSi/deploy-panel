@@ -22,10 +22,19 @@ model Server {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  // Ownership. Non-null for broker-registered users (they only see their own).
+  // Null = admin-shared (visible to panel-token / session admins; legacy rows
+  // before this migration also land here). Ownership propagates via serverId
+  // to App, Deploy, EnvVarChange, and ScheduledDeploy — those don't carry
+  // their own userId; their access is gated through this FK.
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
   apps             App[]
   deploys          Deploy[]
   scheduledDeploys ScheduledDeploy[]
 
+  @@index([userId])
   @@map("servers")
 }
 
@@ -90,6 +99,7 @@ model User {
   updatedAt   DateTime @updatedAt
 
   apiKeys     ApiKey[]
+  servers     Server[]
 
   @@map("users")
 }

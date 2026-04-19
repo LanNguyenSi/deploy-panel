@@ -4,6 +4,7 @@ import { relayRequest, RelayError } from "../lib/relay.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
 import { audit, getActor } from "../lib/audit.js";
 import { recoverBrokenDeploy } from "../lib/deploy-recovery.js";
+import { findOwnedServer, getActorContext } from "../lib/ownership.js";
 
 export const appsRouter = new Hono();
 
@@ -13,6 +14,20 @@ function getServerId(c: any): string {
   if (!id) throw new Error("serverId is required");
   return id;
 }
+
+// Every app-scoped request must prove the actor owns (or admins) the parent
+// server. Centralising the check here means individual endpoints don't need
+// to repeat the findOwnedServer call — they just operate on the already-
+// verified serverId. 404 is intentional (not 403) to avoid leaking whether
+// a server exists that the actor can't see.
+appsRouter.use("*", async (c, next) => {
+  const serverId = c.req.param("serverId");
+  if (!serverId) return c.json({ error: "bad_request" }, 400);
+  const actor = getActorContext(c);
+  const server = await findOwnedServer(actor, serverId);
+  if (!server) return c.json({ error: "not_found" }, 404);
+  return next();
+});
 
 const APP_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 

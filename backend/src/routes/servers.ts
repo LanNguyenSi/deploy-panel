@@ -3,6 +3,11 @@ import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { prisma } from "../lib/prisma.js";
 import { audit, getActor } from "../lib/audit.js";
+import {
+  findOwnedServer,
+  getActorContext,
+  serverOwnershipWhere,
+} from "../lib/ownership.js";
 
 /** Strip sensitive fields from server objects */
 function sanitizeServer(server: any) {
@@ -22,9 +27,11 @@ const createServerSchema = z.object({
 
 const updateServerSchema = createServerSchema.partial();
 
-// GET /api/servers — list all servers
+// GET /api/servers — list all servers the actor can see
 serversRouter.get("/", async (c) => {
+  const actor = getActorContext(c);
   const servers = await prisma.server.findMany({
+    where: serverOwnershipWhere(actor),
     orderBy: { createdAt: "desc" },
     include: { _count: { select: { apps: true } } },
   });
@@ -32,19 +39,24 @@ serversRouter.get("/", async (c) => {
   return c.json({ servers: servers.map(sanitizeServer) });
 });
 
-// GET /api/servers/:id — single server
+// GET /api/servers/:id — single server (owner only)
 serversRouter.get("/:id", async (c) => {
+  const actor = getActorContext(c);
+  const owned = await findOwnedServer(actor, c.req.param("id"));
+  if (!owned) return c.json({ error: "not_found" }, 404);
+
+  // Fetch again WITH the include-payload now that ownership is confirmed.
   const server = await prisma.server.findUnique({
-    where: { id: c.req.param("id") },
+    where: { id: owned.id },
     include: { apps: true, _count: { select: { deploys: true } } },
   });
-
   if (!server) return c.json({ error: "not_found" }, 404);
   return c.json({ server: sanitizeServer(server) });
 });
 
-// POST /api/servers — add server
+// POST /api/servers — add server (owned by the actor unless admin)
 serversRouter.post("/", zValidator("json", createServerSchema), async (c) => {
+  const actor = getActorContext(c);
   const data = c.req.valid("json");
 
   const existing = await prisma.server.findUnique({ where: { host: data.host } });
@@ -52,14 +64,27 @@ serversRouter.post("/", zValidator("json", createServerSchema), async (c) => {
     return c.json({ error: "conflict", message: "Server with this host already exists" }, 409);
   }
 
-  const server = await prisma.server.create({ data });
+  // Non-admin actors must own the server they create. Admin rows land with
+  // userId=null (admin-shared) so existing flows that seed fleet via the
+  // panel UI keep their prior semantics.
+  const ownerUserId = actor.isAdmin ? null : actor.userId;
+  if (!actor.isAdmin && !ownerUserId) {
+    return c.json({ error: "forbidden" }, 403);
+  }
+
+  const server = await prisma.server.create({
+    data: { ...data, userId: ownerUserId },
+  });
   audit("server.create", `${server.name} (${server.host})`, undefined, getActor(c));
   return c.json({ server: sanitizeServer(server) }, 201);
 });
 
-// PATCH /api/servers/:id — update server
+// PATCH /api/servers/:id — update server (owner only)
 serversRouter.patch("/:id", zValidator("json", updateServerSchema), async (c) => {
+  const actor = getActorContext(c);
   const id = c.req.param("id");
+  const owned = await findOwnedServer(actor, id);
+  if (!owned) return c.json({ error: "not_found" }, 404);
   const data = c.req.valid("json");
 
   try {
@@ -70,9 +95,12 @@ serversRouter.patch("/:id", zValidator("json", updateServerSchema), async (c) =>
   }
 });
 
-// DELETE /api/servers/:id — remove server
+// DELETE /api/servers/:id — remove server (owner only)
 serversRouter.delete("/:id", async (c) => {
+  const actor = getActorContext(c);
   const id = c.req.param("id");
+  const owned = await findOwnedServer(actor, id);
+  if (!owned) return c.json({ error: "not_found" }, 404);
 
   try {
     const server = await prisma.server.delete({ where: { id } });
@@ -85,7 +113,8 @@ serversRouter.delete("/:id", async (c) => {
 
 // POST /api/servers/:id/test — test connection to relay
 serversRouter.post("/:id/test", async (c) => {
-  const server = await prisma.server.findUnique({ where: { id: c.req.param("id") } });
+  const actor = getActorContext(c);
+  const server = await findOwnedServer(actor, c.req.param("id"));
   if (!server) return c.json({ error: "not_found" }, 404);
 
   if (!server.relayUrl) {
@@ -132,7 +161,8 @@ serversRouter.post("/:id/test", async (c) => {
 
 // GET /api/servers/:id/system — get CPU/RAM/Disk from relay
 serversRouter.get("/:id/system", async (c) => {
-  const server = await prisma.server.findUnique({ where: { id: c.req.param("id") } });
+  const actor = getActorContext(c);
+  const server = await findOwnedServer(actor, c.req.param("id"));
   if (!server) return c.json({ error: "not_found" }, 404);
   if (!server.relayUrl) return c.json({ error: "no_relay" }, 400);
 
@@ -154,7 +184,8 @@ serversRouter.get("/:id/system", async (c) => {
 
 // POST /api/servers/:id/install-relay — trigger relay install via SSH
 serversRouter.post("/:id/install-relay", async (c) => {
-  const server = await prisma.server.findUnique({ where: { id: c.req.param("id") } });
+  const actor = getActorContext(c);
+  const server = await findOwnedServer(actor, c.req.param("id"));
   if (!server) return c.json({ error: "not_found" }, 404);
 
   // Placeholder — actual SSH installation will use the installer script from agent-relay

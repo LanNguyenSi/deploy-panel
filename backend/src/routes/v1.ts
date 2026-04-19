@@ -4,8 +4,15 @@ import { relayRequest, RelayError } from "../lib/relay.js";
 import { recoverBrokenDeploy } from "../lib/deploy-recovery.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
 import { audit } from "../lib/audit.js";
+import {
+  findOwnedServerByIdOrName,
+  getActorContext,
+  serverOwnershipWhere,
+} from "../lib/ownership.js";
 
-type Env = { Variables: { authType: string; apiKeyName?: string } };
+type Env = {
+  Variables: { authType: string; apiKeyName?: string; userId?: string; isAdmin?: boolean };
+};
 export const v1Router = new Hono<Env>();
 
 const APP_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
@@ -13,7 +20,9 @@ const APP_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 // ── List servers ─────────────────────────────────────────────────────────────
 
 v1Router.get("/servers", async (c) => {
+  const actor = getActorContext(c);
   const servers = await prisma.server.findMany({
+    where: serverOwnershipWhere(actor),
     orderBy: { name: "asc" },
     include: { _count: { select: { apps: true } } },
   });
@@ -28,10 +37,19 @@ v1Router.get("/servers", async (c) => {
 // ── List apps ────────────────────────────────────────────────────────────────
 
 v1Router.get("/apps", async (c) => {
+  const actor = getActorContext(c);
   const serverId = c.req.query("server_id");
 
+  // App ownership inherits through the parent server. Admin: no filter.
+  // Non-admin: apps whose server is owned by the actor. Explicit serverId
+  // still works but gets AND-ed with the ownership filter.
+  const where: Record<string, unknown> = serverId ? { serverId } : {};
+  if (!actor.isAdmin) {
+    where.server = { userId: actor.userId ?? "__no_access__" };
+  }
+
   const apps = await prisma.app.findMany({
-    where: serverId ? { serverId } : {},
+    where,
     orderBy: { name: "asc" },
     include: { server: { select: { id: true, name: true } } },
   });
@@ -63,10 +81,8 @@ v1Router.post("/deploy", async (c) => {
     return c.json({ error: "bad_request", message: "Invalid app name: must be alphanumeric, dots, hyphens, or underscores" }, 400);
   }
 
-  // Resolve server by name or ID
-  const srv = await prisma.server.findFirst({
-    where: { OR: [{ id: server }, { name: server }] },
-  });
+  const actor = getActorContext(c);
+  const srv = await findOwnedServerByIdOrName(actor, server);
   if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
 
   if (!srv.relayUrl) {
@@ -109,15 +125,19 @@ v1Router.post("/deploy", async (c) => {
 // ── Deploy status ────────────────────────────────────────────────────────────
 
 v1Router.get("/deploy/:id", async (c) => {
+  const actor = getActorContext(c);
   const id = c.req.param("id");
   const deploy = await prisma.deploy.findUnique({
     where: { id },
     include: {
       app: { select: { name: true } },
-      server: { select: { name: true } },
+      server: { select: { name: true, userId: true } },
     },
   });
   if (!deploy) return c.json({ error: "not_found", message: "Deploy not found" }, 404);
+  if (!actor.isAdmin && deploy.server.userId !== actor.userId) {
+    return c.json({ error: "not_found", message: "Deploy not found" }, 404);
+  }
 
   let steps: unknown[] = [];
   if (deploy.log) {
@@ -143,16 +163,20 @@ v1Router.get("/deploy/:id", async (c) => {
 // ── Deploy History ──────────────────────────────────────────────────────────
 
 v1Router.get("/deploys", async (c) => {
+  const actor = getActorContext(c);
   const serverId = c.req.query("server_id");
   const appId = c.req.query("app_id");
   const status = c.req.query("status");
   const limit = Math.min(Number(c.req.query("limit")) || 50, 200);
   const offset = Math.max(Number(c.req.query("offset")) || 0, 0);
 
-  const where: Record<string, string> = {};
+  const where: Record<string, unknown> = {};
   if (serverId) where.serverId = serverId;
   if (appId) where.appId = appId;
   if (status) where.status = status;
+  if (!actor.isAdmin) {
+    where.server = { userId: actor.userId ?? "__no_access__" };
+  }
 
   const [deploys, total] = await Promise.all([
     prisma.deploy.findMany({
@@ -200,9 +224,8 @@ v1Router.post("/rollback", async (c) => {
     return c.json({ error: "bad_request", message: "Invalid app name" }, 400);
   }
 
-  const srv = await prisma.server.findFirst({
-    where: { OR: [{ id: server }, { name: server }] },
-  });
+  const actor = getActorContext(c);
+  const srv = await findOwnedServerByIdOrName(actor, server);
   if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
 
   const appRecord = await prisma.app.findUnique({
@@ -264,9 +287,8 @@ v1Router.get("/logs", async (c) => {
     return c.json({ error: "bad_request", message: "Invalid app name" }, 400);
   }
 
-  const srv = await prisma.server.findFirst({
-    where: { OR: [{ id: server }, { name: server }] },
-  });
+  const actor = getActorContext(c);
+  const srv = await findOwnedServerByIdOrName(actor, server);
   if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
 
   try {
@@ -291,9 +313,8 @@ v1Router.post("/preflight", async (c) => {
     return c.json({ error: "bad_request", message: "server and app are required" }, 400);
   }
 
-  const srv = await prisma.server.findFirst({
-    where: { OR: [{ id: server }, { name: server }] },
-  });
+  const actor = getActorContext(c);
+  const srv = await findOwnedServerByIdOrName(actor, server);
   if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
 
   try {
