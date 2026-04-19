@@ -37,14 +37,15 @@ export async function requireAuth(c: Context, next: Next) {
     if (bearer.startsWith("dp_")) {
       const keyHash = hashApiKey(bearer);
       const apiKey = await prisma.apiKey.findUnique({ where: { keyHash } });
-      if (apiKey) {
+      if (apiKey && !apiKey.revokedAt) {
         // Update lastUsedAt (fire-and-forget)
         prisma.apiKey.update({ where: { id: apiKey.id }, data: { lastUsedAt: new Date() } }).catch(() => {});
         c.set("authType", "api_key");
         c.set("apiKeyName", apiKey.name);
+        if (apiKey.userId) c.set("userId", apiKey.userId);
         return next();
       }
-      return c.json({ error: "unauthorized", message: "Invalid API key" }, 401);
+      return c.json({ error: "unauthorized", message: "Invalid or revoked API key" }, 401);
     }
 
     // Panel token
