@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { prisma } from "../lib/prisma.js";
-import { audit, getActor } from "../lib/audit.js";
+import { audit, getActor, getActorUserId } from "../lib/audit.js";
 import {
   findOwnedServer,
   getActorContext,
@@ -75,7 +75,7 @@ serversRouter.post("/", zValidator("json", createServerSchema), async (c) => {
   const server = await prisma.server.create({
     data: { ...data, userId: ownerUserId },
   });
-  audit("server.create", `${server.name} (${server.host})`, undefined, getActor(c));
+  audit("server.create", `${server.name} (${server.host})`, undefined, getActor(c), getActorUserId(c));
   return c.json({ server: sanitizeServer(server) }, 201);
 });
 
@@ -104,7 +104,7 @@ serversRouter.delete("/:id", async (c) => {
 
   try {
     const server = await prisma.server.delete({ where: { id } });
-    audit("server.delete", `${server.name} (${server.host})`, undefined, getActor(c));
+    audit("server.delete", `${server.name} (${server.host})`, undefined, getActor(c), getActorUserId(c));
     return c.json({ deleted: true });
   } catch {
     return c.json({ error: "not_found" }, 404);

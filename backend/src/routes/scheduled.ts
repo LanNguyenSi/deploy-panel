@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
-import { audit, getActor } from "../lib/audit.js";
+import { audit, getActor, getActorUserId } from "../lib/audit.js";
 import { getActorContext } from "../lib/ownership.js";
 
 export const scheduledRouter = new Hono();
@@ -57,7 +57,7 @@ scheduledRouter.post("/", async (c) => {
     },
   });
 
-  audit("schedule.create", `${app} on ${srv.name}`, `at ${scheduledDate.toISOString()}`, getActor(c));
+  audit("schedule.create", `${app} on ${srv.name}`, `at ${scheduledDate.toISOString()}`, getActor(c), getActorUserId(c));
 
   return c.json({ scheduled: entry }, 201);
 });
@@ -83,7 +83,7 @@ scheduledRouter.delete("/:id", async (c) => {
       where: { id, status: "pending" },
       data: { status: "cancelled" },
     });
-    audit("schedule.cancel", `${entry.appName}`, undefined, getActor(c));
+    audit("schedule.cancel", `${entry.appName}`, undefined, getActor(c), getActorUserId(c));
     return c.json({ cancelled: true });
   } catch {
     return c.json({ error: "not_found", message: "Scheduled deploy not found or already triggered" }, 404);

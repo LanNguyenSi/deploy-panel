@@ -3,7 +3,7 @@ import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
 import { recoverBrokenDeploy } from "../lib/deploy-recovery.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
-import { audit } from "../lib/audit.js";
+import { audit, getActorUserId } from "../lib/audit.js";
 import {
   findOwnedServerByIdOrName,
   getActorContext,
@@ -104,7 +104,7 @@ v1Router.post("/deploy", async (c) => {
 
   await prisma.app.update({ where: { id: appRecord.id }, data: { status: "deploying" } });
 
-  audit("deploy", `${appName} on ${srv.name}`, `deployId: ${deploy.id}, via: ${triggeredBy}`, triggeredBy === "api" ? `api:${(c as any).get?.("apiKeyName") ?? "unknown"}` : "panel");
+  audit("deploy", `${appName} on ${srv.name}`, `deployId: ${deploy.id}, via: ${triggeredBy}`, triggeredBy === "api" ? `api:${(c as any).get?.("apiKeyName") ?? "unknown"}` : "panel", getActorUserId(c));
 
   // Fire and forget — use streamDeploy for live step updates in DB
   streamDeploy({
@@ -239,7 +239,7 @@ v1Router.post("/rollback", async (c) => {
     data: { serverId: srv.id, appId: appRecord.id, status: "running", triggeredBy },
   });
 
-  audit("rollback", `${appName} on ${srv.name}`, `deployId: ${deploy.id}, via: v1 api`, triggeredBy === "api" ? `api:${c.get("apiKeyName") ?? "unknown"}` : "panel");
+  audit("rollback", `${appName} on ${srv.name}`, `deployId: ${deploy.id}, via: v1 api`, triggeredBy === "api" ? `api:${c.get("apiKeyName") ?? "unknown"}` : "panel", getActorUserId(c));
 
   // Fire and forget
   const deployId = deploy.id;

@@ -18,7 +18,11 @@ vi.mock("../src/lib/prisma.js", () => ({
     app: {
       findMany: vi.fn(),
     },
-    auditLog: { create: vi.fn().mockResolvedValue({}) },
+    auditLog: {
+      create: vi.fn().mockResolvedValue({}),
+      findMany: vi.fn().mockResolvedValue([]),
+      count: vi.fn().mockResolvedValue(0),
+    },
   },
 }));
 
@@ -260,13 +264,29 @@ describe("deploy-panel per-user isolation", () => {
     expect(createArg?.data?.userId).toBeNull();
   });
 
-  it("/api/audit is admin-only (non-admin gets an empty result)", async () => {
+  it("/api/audit scopes non-admin query to actorUserId = their own", async () => {
+    const auditLog = prisma.auditLog as unknown as {
+      findMany: ReturnType<typeof vi.fn>;
+      count: ReturnType<typeof vi.fn>;
+    };
+
     const res = await appFor({ userId: "user-a", isAdmin: false }).request(
       "/audit",
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { entries: unknown[]; total: number };
-    expect(body.entries).toEqual([]);
-    expect(body.total).toBe(0);
+
+    const where = auditLog.findMany.mock.calls[0]?.[0]?.where;
+    expect(where?.actorUserId).toBe("user-a");
+  });
+
+  it("/api/audit admin sees everything (no actorUserId filter)", async () => {
+    const auditLog = prisma.auditLog as unknown as {
+      findMany: ReturnType<typeof vi.fn>;
+    };
+
+    await appFor({ userId: null, isAdmin: true }).request("/audit");
+
+    const where = auditLog.findMany.mock.calls[0]?.[0]?.where ?? {};
+    expect(where.actorUserId).toBeUndefined();
   });
 });
