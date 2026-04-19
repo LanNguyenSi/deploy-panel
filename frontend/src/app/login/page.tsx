@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
@@ -16,7 +16,19 @@ const OAUTH_ERROR_COPY: Record<string, string> = {
   forbidden_github_login: "This GitHub account is not permitted on this instance.",
 };
 
+// Next.js 15 refuses to prerender pages that call useSearchParams() at the
+// top of the component tree — it wants a Suspense boundary so the server
+// can render a fallback while the CSR bailout flushes the URL state. Wrap
+// the actual form in one.
 export default function LoginPage() {
+  return (
+    <Suspense fallback={<main className="login-bg" />}>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
   const [token, setToken] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
