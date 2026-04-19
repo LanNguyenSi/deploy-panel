@@ -186,6 +186,7 @@ authRouter.get("/github/callback", async (c) => {
     `github/${githubUser.login}`,
     "source: native-oauth",
     `user:${githubUser.login}`,
+    user.id,
   );
 
   return c.redirect(config.FRONTEND_URL);
@@ -322,6 +323,7 @@ authRouter.post(
       `project-pilot/${githubUser.login}`,
       `prefix: ${keyPrefix} source: project-pilot`,
       `broker:project-pilot/${githubUser.login}`,
+      user.id,
     );
 
     return c.json({

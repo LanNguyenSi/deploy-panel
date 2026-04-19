@@ -101,6 +101,7 @@ model User {
   apiKeys     ApiKey[]
   servers     Server[]
   sessions    Session[]
+  auditLogs   AuditLog[]
 
   @@map("users")
 }
@@ -170,11 +171,19 @@ model AuditLog {
   action    String   // deploy, rollback, server.create, server.delete, app.tag, app.hide, login, logout, api_key.create, api_key.revoke
   target    String?  // e.g. "deploy-panel on VPS-01" or "VPS-01 (Stone)"
   detail    String?  // extra info like commit hash, status, etc.
-  actor     String?  // "panel", "api:github-actions", "session"
+  actor     String?  // free-form label kept for UI display: "panel", "api:github-actions", "session", "broker:project-pilot/<login>"
+  // Structured actor, populated when the triggering credential is bound
+  // to a User (broker API keys, native OAuth sessions). Null for
+  // admin-triggered actions via PANEL_TOKEN / session-as-admin and for
+  // pre-migration rows. Non-admin `/api/audit` callers filter on this;
+  // admins see everything regardless.
+  actorUserId String?
+  actorUser   User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
   createdAt DateTime @default(now())
 
   @@index([action])
   @@index([createdAt])
+  @@index([actorUserId])
   @@map("audit_logs")
 }
 

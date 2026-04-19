@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
-import { audit, getActor } from "../lib/audit.js";
+import { audit, getActor, getActorUserId } from "../lib/audit.js";
 import { recoverBrokenDeploy } from "../lib/deploy-recovery.js";
 import { findOwnedServer, getActorContext } from "../lib/ownership.js";
 
@@ -119,6 +119,7 @@ appsRouter.patch("/:name/live-url", async (c) => {
       `${name} on server ${serverId}`,
       next ? `set to ${next}` : "cleared",
       getActor(c),
+      getActorUserId(c),
     );
     return c.json({ app });
   } catch {
@@ -162,7 +163,7 @@ appsRouter.post("/:name/deploy", async (c) => {
 
   await prisma.app.update({ where: { id: app.id }, data: { status: "deploying" } });
 
-  audit("deploy", `${name} on server ${serverId}`, `deployId: ${deploy.id}`, getActor(c));
+  audit("deploy", `${name} on server ${serverId}`, `deployId: ${deploy.id}`, getActor(c), getActorUserId(c));
 
   // Get relay info for streaming
   const server = await prisma.server.findUnique({ where: { id: serverId } });
@@ -200,7 +201,7 @@ appsRouter.post("/:name/rollback", async (c) => {
     data: { serverId, appId: app.id, status: "running", triggeredBy: "panel" },
   });
 
-  audit("rollback", `${name} on server ${serverId}`, `deployId: ${deploy.id}`, getActor(c));
+  audit("rollback", `${name} on server ${serverId}`, `deployId: ${deploy.id}`, getActor(c), getActorUserId(c));
 
   try {
     const result = await relayRequest<{ success?: boolean; commitBefore?: string; commitAfter?: string }>({
@@ -318,6 +319,7 @@ appsRouter.post("/bulk-deploy", async (c) => {
   if (!server) return c.json({ error: "not_found" }, 404);
 
   const actor = getActor(c);
+  const actorUserId = getActorUserId(c);
 
   // One audit row for the whole batch, so an operator can see the full
   // group at a glance; per-app audit rows are still written below for
@@ -327,6 +329,7 @@ appsRouter.post("/bulk-deploy", async (c) => {
     `${appNames.length} app(s) on server ${serverId}`,
     JSON.stringify({ apps: appNames, force: force ?? false }),
     actor,
+    actorUserId,
   );
 
   const results: Array<{
@@ -354,6 +357,7 @@ appsRouter.post("/bulk-deploy", async (c) => {
         `${name} (bulk) on server ${serverId}`,
         `deployId: ${deploy.id}`,
         actor,
+        actorUserId,
       );
       results.push({ app: name, deployId: deploy.id, status: "running" });
 
@@ -523,6 +527,7 @@ appsRouter.put("/:name/env", async (c) => {
         .join(", ")
         .slice(0, 500)}`,
       actor,
+      getActorUserId(c),
     );
   }
 

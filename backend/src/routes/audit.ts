@@ -6,23 +6,22 @@ export const auditRouter = new Hono();
 
 // GET /api/audit — list audit log entries
 //
-// Stop-gap scoping: admin-only. AuditLog has no userId FK yet (actor is a
-// free-form string like "panel" / "api:key-name"), so we can't reliably
-// filter to a specific user without parsing actor strings. Rather than
-// expose the entire audit log to every broker user, block non-admin
-// access entirely. Per-user audit view is tracked as a follow-up.
+// Admin (panel token, session, legacy userless ApiKey) sees the full log.
+// Non-admin actors (broker ApiKey, native OAuth session) see only entries
+// attributed to their own userId via `actorUserId`. Pre-migration rows
+// with actorUserId=null are treated as admin-shared and NOT visible to
+// non-admin actors — a backfill can assign them to a user if needed.
 auditRouter.get("/", async (c) => {
   const actor = getActorContext(c);
-  if (!actor.isAdmin) {
-    return c.json({ entries: [], total: 0, limit: 0, offset: 0 });
-  }
-
   const action = c.req.query("action");
   const limit = Math.min(Number(c.req.query("limit") ?? 100), 500);
   const offset = Number(c.req.query("offset") ?? 0);
 
-  const where: any = {};
+  const where: Record<string, unknown> = {};
   if (action) where.action = action;
+  if (!actor.isAdmin) {
+    where.actorUserId = actor.userId ?? "__no_access__";
+  }
 
   const [entries, total] = await Promise.all([
     prisma.auditLog.findMany({
