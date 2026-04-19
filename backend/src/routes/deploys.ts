@@ -1,10 +1,12 @@
 import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
+import { getActorContext } from "../lib/ownership.js";
 
 export const deploysRouter = new Hono();
 
-// GET /api/deploys — all deploys with filters
+// GET /api/deploys — all deploys with filters, scoped to servers the actor owns
 deploysRouter.get("/", async (c) => {
+  const actor = getActorContext(c);
   const serverId = c.req.query("serverId");
   const appId = c.req.query("appId");
   const status = c.req.query("status");
@@ -15,6 +17,11 @@ deploysRouter.get("/", async (c) => {
   if (serverId) where.serverId = serverId;
   if (appId) where.appId = appId;
   if (status) where.status = status;
+  // Inherit ownership through the parent server. Non-admin actors only see
+  // deploys on servers they own; admins see everything.
+  if (!actor.isAdmin) {
+    where.server = { userId: actor.userId ?? "__no_access__" };
+  }
 
   const [deploys, total] = await Promise.all([
     prisma.deploy.findMany({
@@ -35,17 +42,22 @@ deploysRouter.get("/", async (c) => {
 
 // GET /api/deploys/:id — single deploy detail with steps and commit info
 deploysRouter.get("/:id", async (c) => {
+  const actor = getActorContext(c);
   const id = c.req.param("id");
 
   const deploy = await prisma.deploy.findUnique({
     where: { id },
     include: {
       app: { select: { name: true, repoUrl: true, branch: true } },
-      server: { select: { name: true, host: true } },
+      server: { select: { name: true, host: true, userId: true } },
     },
   });
 
   if (!deploy) return c.json({ error: "not_found" }, 404);
+  // Ownership gate via parent server.
+  if (!actor.isAdmin && deploy.server.userId !== actor.userId) {
+    return c.json({ error: "not_found" }, 404);
+  }
 
   // Parse steps from log
   let steps: unknown[] = [];

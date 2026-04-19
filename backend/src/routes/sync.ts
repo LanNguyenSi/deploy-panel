@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest } from "../lib/relay.js";
+import { findOwnedServer, getActorContext } from "../lib/ownership.js";
 
 export const syncRouter = new Hono();
 
@@ -19,9 +20,10 @@ interface RelayApp {
  * - Updates existing app status based on relay preflight
  */
 syncRouter.post("/:serverId/sync", async (c) => {
+  const actor = getActorContext(c);
   const serverId = c.req.param("serverId");
 
-  const server = await prisma.server.findUnique({ where: { id: serverId } });
+  const server = await findOwnedServer(actor, serverId);
   if (!server) return c.json({ error: "not_found" }, 404);
   if (!server.relayUrl) return c.json({ error: "no_relay", message: "No relay configured" }, 400);
 

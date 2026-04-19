@@ -17,6 +17,17 @@ export function hashApiKey(key: string): string {
  * 1. API Key (Bearer dp_...)
  * 2. Panel token (Bearer <PANEL_TOKEN>)
  * 3. Session cookie (panel_session=<PANEL_TOKEN>)
+ *
+ * Sets on the request context:
+ *   authType     — "api_key" | "panel" | "session"
+ *   apiKeyName   — when authType === "api_key"
+ *   userId       — the owning User.id, when the credential is user-bound.
+ *                  Null for panel/session auth and for legacy admin-created
+ *                  ApiKey rows that have no userId FK.
+ *   isAdmin      — true for panel/session auth AND for ApiKey rows without
+ *                  userId (legacy admin keys). Admin sees all resources;
+ *                  non-admin actors only see rows where Server.userId matches
+ *                  their own.
  */
 export async function requireAuth(c: Context, next: Next) {
   const token = config.PANEL_TOKEN;
@@ -25,6 +36,8 @@ export async function requireAuth(c: Context, next: Next) {
       console.error("CRITICAL: PANEL_TOKEN is not set in production — all requests will be rejected");
       return c.json({ error: "server_error", message: "Authentication not configured" }, 500);
     }
+    // Dev fallback: treat as admin so local-dev tooling keeps working.
+    c.set("isAdmin", true);
     return next();
   }
 
@@ -42,7 +55,13 @@ export async function requireAuth(c: Context, next: Next) {
         prisma.apiKey.update({ where: { id: apiKey.id }, data: { lastUsedAt: new Date() } }).catch(() => {});
         c.set("authType", "api_key");
         c.set("apiKeyName", apiKey.name);
-        if (apiKey.userId) c.set("userId", apiKey.userId);
+        if (apiKey.userId) {
+          c.set("userId", apiKey.userId);
+          c.set("isAdmin", false);
+        } else {
+          // Legacy admin-created key with no user binding.
+          c.set("isAdmin", true);
+        }
         return next();
       }
       return c.json({ error: "unauthorized", message: "Invalid or revoked API key" }, 401);
@@ -51,6 +70,7 @@ export async function requireAuth(c: Context, next: Next) {
     // Panel token
     if (safeCompare(bearer, token)) {
       c.set("authType", "panel");
+      c.set("isAdmin", true);
       return next();
     }
   }
@@ -61,6 +81,7 @@ export async function requireAuth(c: Context, next: Next) {
     const sessionMatch = cookie.split(";").map(s => s.trim()).find(s => s.startsWith("panel_session="));
     if (sessionMatch && safeCompare(sessionMatch.split("=")[1] ?? "", token)) {
       c.set("authType", "session");
+      c.set("isAdmin", true);
       return next();
     }
   }
