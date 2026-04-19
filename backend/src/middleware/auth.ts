@@ -2,6 +2,7 @@ import { Context, Next } from "hono";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { config } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
+import { readUserSessionCookie, validateSession } from "../lib/session.js";
 
 function safeCompare(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
@@ -75,13 +76,26 @@ export async function requireAuth(c: Context, next: Next) {
     }
   }
 
-  // Check session cookie
+  // Check panel_session cookie (legacy admin path — contains raw PANEL_TOKEN).
   const cookie = c.req.header("Cookie");
   if (cookie) {
-    const sessionMatch = cookie.split(";").map(s => s.trim()).find(s => s.startsWith("panel_session="));
-    if (sessionMatch && safeCompare(sessionMatch.split("=")[1] ?? "", token)) {
+    const panelMatch = cookie.split(";").map(s => s.trim()).find(s => s.startsWith("panel_session="));
+    if (panelMatch && safeCompare(panelMatch.split("=")[1] ?? "", token)) {
       c.set("authType", "session");
       c.set("isAdmin", true);
+      return next();
+    }
+  }
+
+  // Check user_session cookie (native GitHub OAuth login). Non-admin;
+  // userId comes from the session row.
+  const userSessionToken = readUserSessionCookie(cookie);
+  if (userSessionToken) {
+    const userId = await validateSession(userSessionToken);
+    if (userId) {
+      c.set("authType", "session");
+      c.set("userId", userId);
+      c.set("isAdmin", false);
       return next();
     }
   }

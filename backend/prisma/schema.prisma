@@ -100,8 +100,27 @@ model User {
 
   apiKeys     ApiKey[]
   servers     Server[]
+  sessions    Session[]
 
   @@map("users")
+}
+
+// Browser sessions issued by the native GitHub OAuth flow. Distinct from
+// the legacy `panel_session` cookie that carries the raw PANEL_TOKEN
+// string — those still work for admin access. A Session row is the
+// canonical proof-of-login for broker-registered users who sign in
+// directly at deploy-panel.
+model Session {
+  id        String   @id @default(uuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
 }
 
 // ── API Keys ────────────────────────────────────────────────────────────────
