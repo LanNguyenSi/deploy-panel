@@ -37,6 +37,12 @@ services:
       # Optional — gates the identity-broker register endpoint. Empty by
       # default (back-compat accept-any); set in prod .env to restrict.
       ALLOWED_GITHUB_LOGINS: ${ALLOWED_GITHUB_LOGINS:-}
+      # Native GitHub OAuth (pairs with #60 — standalone login). Empty =
+      # disabled (routes 503, frontend hides button). Set all three in
+      # prod .env to enable.
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      BACKEND_URL: ${BACKEND_URL:-http://localhost:3001}
     networks:
       - traefik
       - internal
