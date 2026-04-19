@@ -73,6 +73,27 @@ model EnvVarChange {
   @@map("env_var_changes")
 }
 
+// ── Users ───────────────────────────────────────────────────────────────────
+// Minimal multi-user layer provisioned via the identity-broker endpoint
+// (project-pilot). deploy-panel doesn't yet expose per-user UIs or per-user
+// deployment isolation — this table exists so that broker-issued API keys
+// can be attributed to a real identity for audit / later RBAC work. The
+// original PANEL_TOKEN single-secret flow remains the fallback for direct
+// admin access.
+model User {
+  id          String   @id @default(uuid())
+  githubId    String   @unique
+  githubLogin String
+  email       String?
+  avatarUrl   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  apiKeys     ApiKey[]
+
+  @@map("users")
+}
+
 // ── API Keys ────────────────────────────────────────────────────────────────
 
 model ApiKey {
@@ -80,9 +101,14 @@ model ApiKey {
   name       String   // e.g. "github-actions-prod"
   keyHash    String   @unique // SHA-256 hash of the key
   keyPrefix  String   // first 8 chars for display (dp_xxxx...)
+  userId     String?  // null = admin-created panel-wide key (legacy flow)
+  revokedAt  DateTime?
   lastUsedAt DateTime?
   createdAt  DateTime @default(now())
 
+  user       User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
   @@map("api_keys")
 }
 
