@@ -32,6 +32,7 @@ vi.mock("../src/lib/github.js", async () => {
   };
 });
 
+const { allowedLoginsMock } = vi.hoisted(() => ({ allowedLoginsMock: [] as string[] }));
 vi.mock("../src/config/index.js", () => ({
   config: {
     NODE_ENV: "test",
@@ -40,7 +41,9 @@ vi.mock("../src/config/index.js", () => ({
     CORS_ORIGINS: "http://localhost:3000",
     FRONTEND_URL: "http://localhost:3000",
     PORT: 3001,
+    ALLOWED_GITHUB_LOGINS: "",
   },
+  allowedGitHubLogins: allowedLoginsMock,
 }));
 
 import { prisma } from "../src/lib/prisma.js";
@@ -140,6 +143,52 @@ describe("POST /auth/register-from-project-pilot", () => {
       }),
     );
     expect(mApiKey.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("403 when allowlist is configured and login is not in it", async () => {
+    // Populate the shared allowlist mock; it's read by reference in the route.
+    allowedLoginsMock.length = 0;
+    allowedLoginsMock.push("authorized-user");
+
+    mockedFetch.mockResolvedValue({
+      id: 42,
+      login: "stranger",
+      name: null,
+      avatar_url: "",
+      email: null,
+    });
+
+    const res = await call({ githubAccessToken: "valid" });
+
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("forbidden_github_login");
+    expect(mUser.upsert).not.toHaveBeenCalled();
+
+    // Reset for next test.
+    allowedLoginsMock.length = 0;
+  });
+
+  it("accepts when allowlist is configured and login matches", async () => {
+    allowedLoginsMock.length = 0;
+    allowedLoginsMock.push("authorized-user");
+
+    mockedFetch.mockResolvedValue({
+      id: 42,
+      login: "authorized-user",
+      name: null,
+      avatar_url: "",
+      email: null,
+    });
+    mUser.upsert.mockResolvedValue({ id: "user-ok", githubLogin: "authorized-user" });
+    mApiKey.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await call({ githubAccessToken: "valid" });
+
+    expect(res.status).toBe(200);
+    expect(mUser.upsert).toHaveBeenCalled();
+
+    allowedLoginsMock.length = 0;
   });
 
   it("never leaks the GitHub access-token in any response body", async () => {
