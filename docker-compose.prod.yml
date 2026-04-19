@@ -34,6 +34,9 @@ services:
       CORS_ORIGINS: https://deploy-panel.opentriologue.ai
       FRONTEND_URL: https://deploy-panel.opentriologue.ai
       NODE_ENV: production
+      # Optional — gates the identity-broker register endpoint. Empty by
+      # default (back-compat accept-any); set in prod .env to restrict.
+      ALLOWED_GITHUB_LOGINS: ${ALLOWED_GITHUB_LOGINS:-}
     networks:
       - traefik
       - internal
