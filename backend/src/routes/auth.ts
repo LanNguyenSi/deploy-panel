@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { timingSafeEqual, randomBytes } from "node:crypto";
-import { config } from "../config/index.js";
+import { config, allowedGitHubLogins } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
 import { hashApiKey } from "../middleware/auth.js";
 import {
@@ -107,6 +107,23 @@ authRouter.post(
           message: "Claimed githubLogin does not match verified GitHub identity",
         },
         401,
+      );
+    }
+
+    // Stop-gap allowlist: until per-user data isolation ships, gate
+    // registration by a configured set of GitHub logins so opening the
+    // broker flow to a fresh GitHub account doesn't grant full panel
+    // access. Empty list = back-compat accept-all.
+    if (
+      allowedGitHubLogins.length > 0 &&
+      !allowedGitHubLogins.includes(githubUser.login)
+    ) {
+      return c.json(
+        {
+          error: "forbidden_github_login",
+          message: "This GitHub login is not permitted on this deploy-panel instance",
+        },
+        403,
       );
     }
 
