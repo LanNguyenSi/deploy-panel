@@ -2,14 +2,26 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { timingSafeEqual, randomBytes } from "node:crypto";
-import { config, allowedGitHubLogins } from "../config/index.js";
+import {
+  config,
+  allowedGitHubLogins,
+  hasGitHubOAuthConfigured,
+} from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
 import { hashApiKey } from "../middleware/auth.js";
 import {
+  buildAuthorizationUrl,
+  exchangeCodeForToken,
   fetchGitHubUser,
+  generateOAuthState,
   GitHubAuthError,
   GitHubUnreachableError,
+  type OAuthConfig,
 } from "../lib/github.js";
+import {
+  buildUserSessionCookie,
+  createSession,
+} from "../lib/session.js";
 import { audit } from "../lib/audit.js";
 
 function safeCompare(a: string, b: string): boolean {
@@ -40,10 +52,143 @@ authRouter.post("/login", zValidator("json", loginSchema), async (c) => {
   return c.json({ success: true });
 });
 
-// POST /api/auth/logout — clear session
+// POST /api/auth/logout — clear all session cookies (panel + user)
 authRouter.post("/logout", async (c) => {
-  c.header("Set-Cookie", "panel_session=; Path=/; HttpOnly; Max-Age=0");
+  c.header("Set-Cookie", "panel_session=; Path=/; HttpOnly; Max-Age=0", { append: true });
+  c.header(
+    "Set-Cookie",
+    "user_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+    { append: true },
+  );
   return c.json({ success: true });
+});
+
+// GET /api/auth/github/config — public probe so the frontend can conditionally
+// render the "Sign in with GitHub" button without attempting the redirect
+// and getting a 503.
+authRouter.get("/github/config", (c) => {
+  return c.json({ configured: hasGitHubOAuthConfigured });
+});
+
+// ── Native GitHub OAuth login ────────────────────────────────────────────────
+//
+// Standalone login path for users who aren't brokered through project-pilot.
+// GET /api/auth/github/start   → state cookie + 302 to github.com authorize
+// GET /api/auth/github/callback → exchange code, verify user, create session,
+//                                 set user_session cookie, redirect to /
+// If ALLOWED_GITHUB_LOGINS is set, unknown logins are refused at callback.
+
+const OAUTH_STATE_COOKIE = "dp_oauth_state";
+
+function oauthRedirectUri(): string {
+  return `${config.BACKEND_URL.replace(/\/+$/, "")}/api/auth/github/callback`;
+}
+
+function buildOAuthConfig(): OAuthConfig | null {
+  if (!hasGitHubOAuthConfigured) return null;
+  return {
+    clientId: config.GITHUB_CLIENT_ID,
+    clientSecret: config.GITHUB_CLIENT_SECRET,
+    redirectUri: oauthRedirectUri(),
+  };
+}
+
+authRouter.get("/github/start", (c) => {
+  const cfg = buildOAuthConfig();
+  if (!cfg) {
+    return c.json(
+      { error: "not_configured", message: "GitHub OAuth is not configured on this instance" },
+      503,
+    );
+  }
+
+  const state = generateOAuthState();
+  const isSecure = config.NODE_ENV === "production";
+  c.header(
+    "Set-Cookie",
+    `${OAUTH_STATE_COOKIE}=${state}; HttpOnly; SameSite=Lax; Max-Age=600; Path=/${isSecure ? "; Secure" : ""}`,
+  );
+
+  return c.redirect(buildAuthorizationUrl(cfg, state));
+});
+
+authRouter.get("/github/callback", async (c) => {
+  const cfg = buildOAuthConfig();
+  const clearState = `${OAUTH_STATE_COOKIE}=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/`;
+
+  if (!cfg) {
+    c.header("Set-Cookie", clearState);
+    return c.redirect(`${config.FRONTEND_URL}/login?error=not_configured`);
+  }
+
+  const code = c.req.query("code");
+  const state = c.req.query("state");
+  const cookieHeader = c.req.header("Cookie") ?? "";
+  const storedStateMatch = cookieHeader.match(new RegExp(`${OAUTH_STATE_COOKIE}=([^;]+)`));
+  const storedState = storedStateMatch ? storedStateMatch[1] : null;
+
+  // Always clear the transient state cookie regardless of outcome.
+  c.header("Set-Cookie", clearState, { append: true });
+
+  if (!code) {
+    return c.redirect(`${config.FRONTEND_URL}/login?error=missing_code`);
+  }
+  if (!state || !storedState || state !== storedState) {
+    return c.redirect(`${config.FRONTEND_URL}/login?error=state_mismatch`);
+  }
+
+  let tokenResponse;
+  let githubUser;
+  try {
+    tokenResponse = await exchangeCodeForToken(cfg, code);
+    githubUser = await fetchGitHubUser(tokenResponse.access_token);
+  } catch (err) {
+    const reason = err instanceof GitHubAuthError ? "oauth_failed" : "upstream_unavailable";
+    console.error("OAuth callback failed:", (err as Error).message);
+    return c.redirect(`${config.FRONTEND_URL}/login?error=${reason}`);
+  }
+
+  // Apply the same allowlist guard as the broker path. Without this, any
+  // GitHub user could reach deploy-panel's OAuth flow and provision an
+  // account; per-user isolation contains them to an empty view but the
+  // allowlist still applies as product policy.
+  if (
+    allowedGitHubLogins.length > 0 &&
+    !allowedGitHubLogins.includes(githubUser.login)
+  ) {
+    return c.redirect(`${config.FRONTEND_URL}/login?error=forbidden_github_login`);
+  }
+
+  const githubId = String(githubUser.id);
+  const githubEmail = githubUser.email?.toLowerCase() ?? null;
+
+  const user = await prisma.user.upsert({
+    where: { githubId },
+    create: {
+      githubId,
+      githubLogin: githubUser.login,
+      email: githubEmail,
+      avatarUrl: githubUser.avatar_url,
+    },
+    update: {
+      githubLogin: githubUser.login,
+      email: githubEmail ?? undefined,
+      avatarUrl: githubUser.avatar_url,
+    },
+  });
+
+  const { token } = await createSession(user.id);
+  const isSecure = config.NODE_ENV === "production";
+  c.header("Set-Cookie", buildUserSessionCookie(token, isSecure), { append: true });
+
+  void audit(
+    "user.login",
+    `github/${githubUser.login}`,
+    "source: native-oauth",
+    `user:${githubUser.login}`,
+  );
+
+  return c.redirect(config.FRONTEND_URL);
 });
 
 // ── Identity-broker registration (e.g. project-pilot) ────────────────────────

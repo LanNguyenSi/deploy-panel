@@ -30,6 +30,70 @@ export class GitHubUnreachableError extends Error {
 
 const GITHUB_TIMEOUT_MS = 5_000;
 
+export interface GitHubTokenResponse {
+  access_token: string;
+  token_type: string;
+  scope: string;
+}
+
+export interface OAuthConfig {
+  clientId: string;
+  clientSecret: string;
+  redirectUri: string;
+}
+
+// Scopes for the native login flow. Intentionally narrow — deploy-panel
+// doesn't need repo-wide access here; just identity. Contrast the broker
+// path (project-pilot) which requests `repo` because it provisions
+// downstream modules that may need it.
+const OAUTH_SCOPES = "read:user read:org";
+
+export function buildAuthorizationUrl(cfg: OAuthConfig, state: string): string {
+  const params = new URLSearchParams({
+    client_id: cfg.clientId,
+    redirect_uri: cfg.redirectUri,
+    scope: OAUTH_SCOPES,
+    state,
+  });
+  return `https://github.com/login/oauth/authorize?${params.toString()}`;
+}
+
+export async function exchangeCodeForToken(
+  cfg: OAuthConfig,
+  code: string,
+): Promise<GitHubTokenResponse> {
+  const response = await fetch("https://github.com/login/oauth/access_token", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      client_id: cfg.clientId,
+      client_secret: cfg.clientSecret,
+      code,
+      redirect_uri: cfg.redirectUri,
+    }),
+    signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+  });
+
+  if (!response.ok) {
+    throw new GitHubUnreachableError(`Token exchange failed: ${response.status}`);
+  }
+
+  const data = (await response.json()) as GitHubTokenResponse & { error?: string };
+  if (data.error) {
+    throw new GitHubAuthError(`GitHub OAuth error: ${data.error}`);
+  }
+  return data;
+}
+
+export function generateOAuthState(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 export async function fetchGitHubUser(accessToken: string): Promise<GitHubUser> {
   let response: Response;
   try {
