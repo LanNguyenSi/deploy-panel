@@ -58,7 +58,7 @@ export function ServerReinstallDialog({
 
   const [logLines, setLogLines] = useState<Array<{ stream: "stdout" | "stderr"; line: string }>>([]);
   const [errorBanner, setErrorBanner] = useState<{ kind: string; message: string } | null>(null);
-  const [doneInfo, setDoneInfo] = useState<{ relayUrl: string; relayMode?: RelayMode; tokenRotated: boolean } | null>(null);
+  const [doneInfo, setDoneInfo] = useState<{ relayUrl: string; relayMode?: RelayMode; tokenRotated: boolean; tokenDiverged?: boolean } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const logEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -118,6 +118,7 @@ export function ServerReinstallDialog({
             relayUrl: ev.data.relayUrl,
             relayMode: ev.data.relayMode,
             tokenRotated: ev.data.tokenRotated,
+            tokenDiverged: ev.data.tokenDiverged,
           });
           setPhase("done");
           break;
@@ -364,14 +365,24 @@ export function ServerReinstallDialog({
             </div>
 
             {phase === "done" && doneInfo && (
-              <div className="alert alert-success">
-                <strong>Re-install complete.</strong>
-                <div style={{ fontSize: "var(--text-xs)", marginTop: "var(--space-1)" }}>
-                  URL: <code>{doneInfo.relayUrl}</code>
-                  {doneInfo.relayMode && <> &middot; Mode: <code>{doneInfo.relayMode}</code></>}
-                  {doneInfo.tokenRotated && <> &middot; <em>token rotated</em></>}
+              <>
+                <div className="alert alert-success">
+                  <strong>Re-install complete.</strong>
+                  <div style={{ fontSize: "var(--text-xs)", marginTop: "var(--space-1)" }}>
+                    URL: <code>{doneInfo.relayUrl}</code>
+                    {doneInfo.relayMode && <> &middot; Mode: <code>{doneInfo.relayMode}</code></>}
+                    {doneInfo.tokenRotated && <> &middot; <em>token rotated</em></>}
+                  </div>
                 </div>
-              </div>
+                {doneInfo.tokenDiverged && (
+                  <div className="alert alert-warning" role="alert" style={{ marginTop: "var(--space-2)" }}>
+                    <strong>Token divergence detected.</strong>{" "}
+                    The VPS emitted a different token than was stored in deploy-panel. The DB has been
+                    updated with the new value. If you did not intend this — wipe <code>/opt/agent-relay/.env</code>
+                    on the VPS or re-onboard the server.
+                  </div>
+                )}
+              </>
             )}
 
             {phase === "error" && errorBanner && (

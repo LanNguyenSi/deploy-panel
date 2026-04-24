@@ -290,6 +290,8 @@ export type ReinstallRelayEvent =
         host: string;
         relayUrl: string;
         tokenRotated: boolean;
+        /** True when the VPS-side .env was wiped out-of-band and install.sh emitted a different token than DB. */
+        tokenDiverged?: boolean;
         relayMode?: RelayMode;
       };
     }
