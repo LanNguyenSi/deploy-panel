@@ -252,6 +252,17 @@ const installEnvSchema = z.object({
     .max(64)
     .regex(/^[0-9a-fA-F:.]+$/, "relayBind must be an IP address")
     .optional(),
+  // Absolute path on the VPS where install.sh puts compose + .env.
+  // Strict shape: starts with `/`, alnum + `_.-/`, no `..` segments,
+  // no shell metachars. The value is templated into `cd <dir>` in
+  // update-image / re-install SSH commands.
+  relayDir: z
+    .string()
+    .min(2)
+    .max(255)
+    .regex(/^\/[A-Za-z0-9._/-]*$/, "relayDir must be an absolute, simple path")
+    .refine((v) => !v.split("/").includes(".."), "relayDir must not contain `..`")
+    .optional(),
 });
 
 // password XOR privateKey. Both optional per field, but the body must
@@ -463,6 +474,7 @@ serversRouter.post("/install-relay", async (c) => {
         traefikNetwork: input.traefikNetwork,
         traefikCertResolver: input.traefikCertResolver,
         relayBind: input.relayBind,
+        relayDir: input.relayDir,
       });
 
       await executeSshCommand({
@@ -533,6 +545,7 @@ serversRouter.post("/install-relay", async (c) => {
           ...(parsedOutput.value.relayMode
             ? { relayMode: parsedOutput.value.relayMode }
             : {}),
+          ...(input.relayDir ? { relayDir: input.relayDir } : {}),
         },
       });
       await audit(
@@ -677,6 +690,10 @@ serversRouter.post("/:id/install-relay", async (c) => {
       const storedMode = knownModes.find((m) => m === server.relayMode);
       const effectiveMode = input.relayMode ?? storedMode ?? undefined;
 
+      // Effective install dir. Input override wins, else the value
+      // stored on first install, else the installer default.
+      const effectiveRelayDir = input.relayDir ?? server.relayDir ?? "/opt/agent-relay";
+
       const baseCommand = buildInstallCommand({
         relayDomain: input.relayDomain,
         traefikEmail: input.traefikEmail,
@@ -685,21 +702,20 @@ serversRouter.post("/:id/install-relay", async (c) => {
         traefikNetwork: input.traefikNetwork,
         traefikCertResolver: input.traefikCertResolver,
         relayBind: input.relayBind,
+        // Forward the resolved dir as an explicit RELAY_DIR so
+        // install.sh writes compose/.env at the correct location
+        // (matches whatever the prior install used).
+        relayDir: effectiveRelayDir,
       });
 
-      // Token rotation. install.sh v0.2.0 preserves an existing
-      // AUTH_TOKEN (it reads /opt/agent-relay/.env if present and only
-      // generates a fresh hex token when the file is missing). If the
-      // operator wants a fresh token (e.g. they suspect the current
-      // one has leaked), we have to wipe the existing .env first —
-      // the installer's `--rotate-token` flag would belong upstream
-      // but until then we shell-chain a `sudo rm -f` ahead of the
-      // install command. RELAY_DIR defaults to /opt/agent-relay; the
-      // wizard does not currently expose a custom value, so the path
-      // is hardcoded here. If RELAY_DIR is ever exposed on the route,
-      // template it in.
+      // Token rotation. install.sh preserves an existing AUTH_TOKEN
+      // when it sees <RELAY_DIR>/.env. If the operator wants a fresh
+      // token, we have to wipe that file first. Zod already
+      // validated `effectiveRelayDir` as a shell-safe absolute path
+      // (no metachars, no `..`) so templating it straight into the
+      // command is safe.
       const command = input.rotateToken
-        ? `sudo rm -f /opt/agent-relay/.env && ${baseCommand}`
+        ? `sudo rm -f ${effectiveRelayDir}/.env && ${baseCommand}`
         : baseCommand;
 
       // Capture the fingerprint we see during this connect so we can
@@ -814,6 +830,13 @@ serversRouter.post("/:id/install-relay", async (c) => {
           relayUrl: parsedOutput.value.relayUrl,
           ...(persistableMode ? { relayMode: persistableMode } : {}),
           ...(shouldUpdateToken ? { relayToken: emittedToken } : {}),
+          // Persist the relayDir if the operator supplied one this
+          // run — typically on a legacy row that was installed under
+          // a non-default path. Future re-install / update-image
+          // calls default to it.
+          ...(input.relayDir && input.relayDir !== server.relayDir
+            ? { relayDir: input.relayDir }
+            : {}),
           // hostKeySha256 was already persisted right after the SSH
           // handshake (see above), so no need to repeat here.
         },
@@ -893,7 +916,21 @@ serversRouter.post("/:id/install-relay", async (c) => {
 //   runs docker compose pull + up -d. Hardcoded path matches the
 //   installer's RELAY_DIR default; if the wizard ever exposes a
 //   custom RELAY_DIR, template it in.
-const updateRelayImageSchema = sshAuthSchema;
+const updateRelayImageSchema = z
+  .object({
+    // Optional override for the relay's install dir on the VPS.
+    // When present and valid, the route persists it to `server.relayDir`
+    // so subsequent calls no longer need the operator to supply it.
+    // Same validation shape as installEnvSchema.relayDir.
+    relayDir: z
+      .string()
+      .min(2)
+      .max(255)
+      .regex(/^\/[A-Za-z0-9._/-]*$/, "relayDir must be an absolute, simple path")
+      .refine((v) => !v.split("/").includes(".."), "relayDir must not contain `..`")
+      .optional(),
+  })
+  .and(sshAuthSchema);
 
 serversRouter.post("/:id/update-relay-image", async (c) => {
   const actor = getActorContext(c);
@@ -956,12 +993,17 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
     };
 
     try {
-      // Hardcoded RELAY_DIR — matches install.sh's default. The
+      // Resolve effective install dir: body override > stored value >
+      // installer default. Zod validated the body field as shell-safe
+      // (absolute path, `[A-Za-z0-9._/-]+`, no `..`) before it reached
+      // us, and the stored value originates from the same validated
+      // source, so templating into the command body is safe.
+      const effectiveRelayDir = input.relayDir ?? server.relayDir ?? "/opt/agent-relay";
+
       // `set -e` + chained `&&`s make any step failure terminate the
       // command non-zero, which executeSshCommand surfaces via the
       // exit code check below. No silent-swallow of pull errors.
-      const command =
-        "bash -c 'set -e; cd /opt/agent-relay && docker compose pull && docker compose up -d'";
+      const command = `bash -c 'set -e; cd ${effectiveRelayDir} && docker compose pull && docker compose up -d'`;
 
       let observedHostKeySha256: string | undefined;
 
@@ -1063,6 +1105,13 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
         data: {
           lastSeenAt: new Date(),
           ...(healthOk ? { status: "online" } : {}),
+          // Persist the relayDir if the operator supplied it this run
+          // (typically backfilling a legacy row that installed at a
+          // non-default path). Subsequent update-image / re-install
+          // calls default to this stored value.
+          ...(input.relayDir && input.relayDir !== server.relayDir
+            ? { relayDir: input.relayDir }
+            : {}),
         },
       });
 

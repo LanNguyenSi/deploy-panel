@@ -36,6 +36,8 @@ export interface InstallEnvVars {
   traefikCertResolver?: string;
   /** Host bind IP for port-only mode. Default `127.0.0.1`; use `0.0.0.0` to expose publicly. */
   relayBind?: string;
+  /** Absolute path on the VPS where install.sh should put compose + .env. Default `/opt/agent-relay`. */
+  relayDir?: string;
 }
 
 /**
@@ -83,6 +85,9 @@ export function buildInstallCommand(env: InstallEnvVars): string {
   }
   if (env.relayBind !== undefined) {
     envPairs.push(`RELAY_BIND=${shellEscape(env.relayBind)}`);
+  }
+  if (env.relayDir !== undefined) {
+    envPairs.push(`RELAY_DIR=${shellEscape(env.relayDir)}`);
   }
   const envPrefix = envPairs.length > 0 ? `env ${envPairs.join(" ")} ` : "";
   // INSTALL_SCRIPT_URL is a compile-time constant — not exposed to the

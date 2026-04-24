@@ -17,6 +17,8 @@ interface Props {
   defaultMode: RelayMode | null;
   /** True if the backend has a stored host-key fingerprint to pin against. */
   hasHostKeyPinned: boolean;
+  /** Stored install dir on the VPS; defaults the advanced field. Null = legacy row. */
+  defaultRelayDir: string | null;
   onClose: () => void;
   /** Called after a successful re-install so the parent can refresh. */
   onReinstalled: () => void;
@@ -34,6 +36,7 @@ export function ServerReinstallDialog({
   serverHost,
   defaultMode,
   hasHostKeyPinned,
+  defaultRelayDir,
   onClose,
   onReinstalled,
 }: Props) {
@@ -53,6 +56,7 @@ export function ServerReinstallDialog({
   const [relayDomain, setRelayDomain] = useState("");
   const [traefikEmail, setTraefikEmail] = useState("");
   const [appsDir, setAppsDir] = useState("");
+  const [relayDir, setRelayDir] = useState(defaultRelayDir ?? "");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [rotateToken, setRotateToken] = useState(false);
 
@@ -103,6 +107,7 @@ export function ServerReinstallDialog({
       ...(relayDomain.trim() ? { relayDomain: relayDomain.trim() } : {}),
       ...(traefikEmail.trim() ? { traefikEmail: traefikEmail.trim() } : {}),
       ...(appsDir.trim() ? { appsDir: appsDir.trim() } : {}),
+      ...(relayDir.trim() ? { relayDir: relayDir.trim() } : {}),
       ...(rotateToken ? { rotateToken: true } : {}),
     };
 
@@ -311,6 +316,24 @@ export function ServerReinstallDialog({
                   <div>
                     <Label htmlFor="rein-bind">RELAY_BIND</Label>
                     <input id="rein-bind" type="text" placeholder="127.0.0.1" value={relayBind} onChange={(e) => setRelayBind(e.target.value)} className="input" />
+                  </div>
+                  <div style={{ gridColumn: "1 / -1" }}>
+                    <Label htmlFor="rein-relay-dir">
+                      RELAY_DIR{" "}
+                      <span style={{ color: "var(--muted)" }}>
+                        ({defaultRelayDir
+                          ? <>stored: <code>{defaultRelayDir}</code></>
+                          : <>default <code>/opt/agent-relay</code>; set if the relay was installed elsewhere, e.g. <code>/root/git/agent-relay</code></>})
+                      </span>
+                    </Label>
+                    <input
+                      id="rein-relay-dir"
+                      type="text"
+                      placeholder={defaultRelayDir ?? "/opt/agent-relay"}
+                      value={relayDir}
+                      onChange={(e) => setRelayDir(e.target.value)}
+                      className="input"
+                    />
                   </div>
                   <div style={{ gridColumn: "1 / -1" }}>
                     <label style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", fontSize: "var(--text-sm)" }}>

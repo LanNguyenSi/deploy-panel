@@ -34,6 +34,8 @@ export interface Server {
   /** Last-known install mode (greenfield / existing-traefik / port-only / null). */
   relayMode?: string | null;
   relayUrl?: string | null;
+  /** Absolute install dir on the VPS (default /opt/agent-relay). Null on legacy rows. */
+  relayDir?: string | null;
   /** Indicates we have a pinned host-key fingerprint stored — re-install will pin against it. */
   hasHostKeyPinned?: boolean;
 }
@@ -276,6 +278,8 @@ export interface ReinstallRelayRequest {
   relayDomain?: string;
   traefikEmail?: string;
   appsDir?: string;
+  /** Override / backfill the relay's install dir on the VPS (default /opt/agent-relay). */
+  relayDir?: string;
   /** Force a fresh AUTH_TOKEN on the VPS instead of preserving the current one. */
   rotateToken?: boolean;
 }
@@ -315,6 +319,8 @@ export interface UpdateRelayImageRequest {
   sshPassword?: string;
   sshPrivateKey?: string;
   sshPassphrase?: string;
+  /** Override / backfill the relay's install dir on the VPS (default /opt/agent-relay). */
+  relayDir?: string;
 }
 
 export type UpdateRelayImageEvent =
