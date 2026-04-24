@@ -31,6 +31,11 @@ export interface Server {
   status: string;
   lastSeenAt: string | null;
   createdAt: string;
+  /** Last-known install mode (greenfield / existing-traefik / port-only / null). */
+  relayMode?: string | null;
+  relayUrl?: string | null;
+  /** Indicates we have a pinned host-key fingerprint stored — re-install will pin against it. */
+  hasHostKeyPinned?: boolean;
 }
 
 export interface App {
@@ -182,19 +187,23 @@ export async function probeVps(req: ProbeVpsRequest): Promise<ProbeVpsResponse> 
  * yields a single synthetic `{ event: "error", data }` frame so the
  * caller can render it identically to server-emitted error frames.
  */
-export async function* installRelayStream(
-  req: InstallRelayRequest,
+// Generic SSE-frame reader used by both first-install and re-install.
+// Exposed as an internal helper because both routes emit the same
+// `progress`/`done`/`error` envelope; only the URL differs.
+async function* sseStream<T extends { event: string; data: unknown }>(
+  url: string,
+  body: unknown,
   signal?: AbortSignal,
-): AsyncGenerator<InstallRelayEvent> {
-  const res = await fetch(`${BASE}/api/servers/install-relay`, {
+): AsyncGenerator<T> {
+  const res = await fetch(`${BASE}${url}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     credentials: "include",
-    body: JSON.stringify(req),
+    body: JSON.stringify(body),
     signal,
   });
   if (!res.ok) {
-    const body = (await res
+    const errBody = (await res
       .json()
       .catch(() => ({ message: `HTTP ${res.status}` }))) as {
       error?: string;
@@ -203,14 +212,14 @@ export async function* installRelayStream(
     yield {
       event: "error",
       data: {
-        kind: body.error ?? "http_error",
-        message: body.message ?? `request failed with status ${res.status}`,
+        kind: errBody.error ?? "http_error",
+        message: errBody.message ?? `request failed with status ${res.status}`,
       },
-    };
+    } as T;
     return;
   }
   if (!res.body) {
-    yield { event: "error", data: { kind: "no_body", message: "server returned empty stream" } };
+    yield { event: "error", data: { kind: "no_body", message: "server returned empty stream" } } as T;
     return;
   }
   const reader = res.body.getReader();
@@ -220,8 +229,6 @@ export async function* installRelayStream(
     const { value, done } = await reader.read();
     if (done) break;
     buf += decoder.decode(value, { stream: true });
-    // SSE frames are `\n\n`-separated blocks of `event:`/`data:` lines.
-    // Same in-place unroll the agent-planforge client uses.
     let frameEnd: number;
     while ((frameEnd = buf.indexOf("\n\n")) >= 0) {
       const frame = buf.slice(0, frameEnd);
@@ -237,17 +244,69 @@ export async function* installRelayStream(
       try {
         data = JSON.parse(dataStr);
       } catch {
-        // Malformed frame — surface as error but don't abort the loop;
-        // the server may recover on the next frame.
         yield {
           event: "error",
           data: { kind: "parse_error", message: `malformed data frame: ${dataStr.slice(0, 120)}` },
-        };
+        } as T;
         continue;
       }
-      yield { event: eventName, data } as InstallRelayEvent;
+      yield { event: eventName, data } as T;
     }
   }
+}
+
+export async function* installRelayStream(
+  req: InstallRelayRequest,
+  signal?: AbortSignal,
+): AsyncGenerator<InstallRelayEvent> {
+  yield* sseStream<InstallRelayEvent>("/api/servers/install-relay", req, signal);
+}
+
+export interface ReinstallRelayRequest {
+  sshUser?: string;
+  sshPort?: number;
+  sshPassword?: string;
+  sshPrivateKey?: string;
+  sshPassphrase?: string;
+  /** install.sh v0.2.0 env surface — defaults derived from the stored relayMode if omitted. */
+  relayMode?: RelayMode;
+  traefikNetwork?: string;
+  traefikCertResolver?: string;
+  relayBind?: string;
+  relayDomain?: string;
+  traefikEmail?: string;
+  appsDir?: string;
+  /** Force a fresh AUTH_TOKEN on the VPS instead of preserving the current one. */
+  rotateToken?: boolean;
+}
+
+export type ReinstallRelayEvent =
+  | { event: "progress"; data: { stream: "stdout" | "stderr"; line: string } }
+  | {
+      event: "done";
+      data: {
+        serverId: string;
+        name: string;
+        host: string;
+        relayUrl: string;
+        tokenRotated: boolean;
+        /** True when the VPS-side .env was wiped out-of-band and install.sh emitted a different token than DB. */
+        tokenDiverged?: boolean;
+        relayMode?: RelayMode;
+      };
+    }
+  | { event: "error"; data: { kind: string; message: string } };
+
+export async function* reinstallRelayStream(
+  serverId: string,
+  req: ReinstallRelayRequest,
+  signal?: AbortSignal,
+): AsyncGenerator<ReinstallRelayEvent> {
+  yield* sseStream<ReinstallRelayEvent>(
+    `/api/servers/${encodeURIComponent(serverId)}/install-relay`,
+    req,
+    signal,
+  );
 }
 
 export async function createServer(data: { name: string; host: string; relayUrl?: string; relayToken?: string }): Promise<{ server: Server }> {

@@ -15,8 +15,15 @@ import { probeVps } from "../services/probe-vps.js";
 
 /** Strip sensitive fields from server objects */
 function sanitizeServer(server: any) {
-  const { relayToken, sshKeyPath, ...safe } = server;
-  return { ...safe, hasRelayToken: !!relayToken };
+  const { relayToken, sshKeyPath, hostKeySha256, ...safe } = server;
+  return {
+    ...safe,
+    hasRelayToken: !!relayToken,
+    // Surface the existence of a stored fingerprint so the re-install
+    // UI can warn ("legacy row, no fingerprint pinned — re-TOFU on
+    // re-install") without leaking the fingerprint itself.
+    hasHostKeyPinned: !!hostKeySha256,
+  };
 }
 
 export const serversRouter = new Hono();
@@ -276,11 +283,14 @@ const installRelaySchema = z
     // rejects with `host_key_rejected` on mismatch — closes the MITM
     // window between probe and install. Format matches `onHostKey`
     // output: base64, 44 chars.
+    // SHA-256 base64 is exactly 44 chars (32 bytes → 44 base64 chars
+    // including the trailing `=`). A pasted `SHA256:abc=` prefix or a
+    // truncated value would never match downstream and produce a
+    // confusing host_key_rejected — reject loudly here instead.
     expectedHostKeySha256: z
       .string()
-      .min(1)
-      .max(64)
-      .regex(/^[A-Za-z0-9+/=]+$/, "expectedHostKeySha256 must be base64")
+      .length(44)
+      .regex(/^[A-Za-z0-9+/]+=$/, "expectedHostKeySha256 must be raw base64 sha256 (no SHA256: prefix)")
       .optional(),
   })
   .merge(installEnvSchema)
@@ -506,6 +516,10 @@ serversRouter.post("/install-relay", async (c) => {
       }
 
       // Token-parse succeeded — create the Server row now.
+      // Persist the host-key fingerprint (captured by the wizard's
+      // probe and echoed back as `expectedHostKeySha256`) so re-install
+      // can pin it later; also record the resolved `relayMode` so the
+      // re-install UI can default to the same mode without asking.
       const server = await prisma.server.create({
         data: {
           name: input.name,
@@ -513,6 +527,12 @@ serversRouter.post("/install-relay", async (c) => {
           relayUrl: parsedOutput.value.relayUrl,
           relayToken: parsedOutput.value.relayToken,
           userId: actor.isAdmin ? null : actor.userId,
+          ...(input.expectedHostKeySha256
+            ? { hostKeySha256: input.expectedHostKeySha256 }
+            : {}),
+          ...(parsedOutput.value.relayMode
+            ? { relayMode: parsedOutput.value.relayMode }
+            : {}),
         },
       });
       await audit(
@@ -565,20 +585,292 @@ serversRouter.post("/install-relay", async (c) => {
   });
 });
 
-// POST /api/servers/:id/install-relay — re-install for an existing
-// server. Not yet implemented; distinct from first-install because the
-// DB row already exists and host-key TOFU becomes strict-match. Filed
-// as v0.3+ follow-up in agent-tasks `252556e3` known-follow-ups.
+const reinstallRelaySchema = z
+  .object({
+    // Opt-in auth-token rotation. Default: false — install.sh re-uses
+    // the existing /opt/agent-relay/.env token, so the relay stays
+    // reachable with the same token recorded in our DB. Flip on when
+    // the operator believes the token has leaked.
+    rotateToken: z.boolean().optional(),
+  })
+  .merge(installEnvSchema)
+  .and(sshAuthSchema);
+
+// POST /api/servers/:id/install-relay — re-install against an already-
+// registered server. Mirrors the first-install flow (same SSH exec, same
+// output parsing) but:
+//   - Operates on an existing Server row (ownership gate, no create).
+//   - Pins the host-key fingerprint from DB when present (legacy rows
+//     without one fall back to TOFU and capture for next time).
+//   - Preserves relayToken by default — install.sh itself re-uses the
+//     token in /opt/agent-relay/.env, so we only overwrite the DB when
+//     the caller explicitly passes rotateToken=true.
+//   - Updates relayUrl / relayMode (and hostKeySha256 on first capture).
 serversRouter.post("/:id/install-relay", async (c) => {
   const actor = getActorContext(c);
   const server = await findOwnedServer(actor, c.req.param("id"));
   if (!server) return c.json({ error: "not_found" }, 404);
 
-  return c.json(
-    {
-      message:
-        "Re-install for an existing server is not yet implemented. Use POST /api/servers/install-relay (no :id) to onboard a new VPS.",
-    },
-    501,
-  );
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request", message: "body must be JSON" }, 400);
+  }
+  const parsed = reinstallRelaySchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      {
+        error: "bad_request",
+        message: parsed.error.issues.map((i) => i.message).join("; "),
+      },
+      400,
+    );
+  }
+  const input = parsed.data;
+
+  // Two locks:
+  //   1. Per-server: the same server can never be re-installed twice
+  //      in parallel. Two concurrent re-installs of DIFFERENT servers
+  //      are fine.
+  //   2. Per-actor: a single non-admin user can't fan out 50 parallel
+  //      re-installs against their owned fleet (would self-DoS the
+  //      panel + spawn 50 SSH sessions). Admin actors share a single
+  //      "admin" key, same as first-install.
+  const installKey = `reinstall:${server.id}`;
+  const actorKey = `reinstall-actor:${actor.userId ?? "admin"}`;
+  if (activeInstalls.has(installKey)) {
+    return c.json(
+      { error: "rate_limited", message: "a re-install is already in progress for this server" },
+      429,
+    );
+  }
+  if (activeInstalls.has(actorKey)) {
+    return c.json(
+      { error: "rate_limited", message: "another re-install is already in progress for your account" },
+      429,
+    );
+  }
+  activeInstalls.add(installKey);
+  activeInstalls.add(actorKey);
+
+  const startTime = Date.now();
+  return streamSSE(c, async (stream) => {
+    let stdoutBuffer = "";
+    const forwardProgress = async (streamKind: "stdout" | "stderr", line: string) => {
+      if (streamKind === "stdout") stdoutBuffer += line + "\n";
+      await stream.writeSSE({
+        event: "progress",
+        data: JSON.stringify({ stream: streamKind, line }),
+      });
+    };
+
+    try {
+      // Resolve effective mode: caller-supplied override > stored mode
+      // from last install > undefined (let install.sh auto-detect).
+      // Stored value is a free-form string column; narrow it to the
+      // enum before forwarding so a corrupted DB value can't end up
+      // shell-injected.
+      const knownModes = ["auto", "greenfield", "existing-traefik", "port-only"] as const;
+      const storedMode = knownModes.find((m) => m === server.relayMode);
+      const effectiveMode = input.relayMode ?? storedMode ?? undefined;
+
+      const baseCommand = buildInstallCommand({
+        relayDomain: input.relayDomain,
+        traefikEmail: input.traefikEmail,
+        appsDir: input.appsDir,
+        relayMode: effectiveMode,
+        traefikNetwork: input.traefikNetwork,
+        traefikCertResolver: input.traefikCertResolver,
+        relayBind: input.relayBind,
+      });
+
+      // Token rotation. install.sh v0.2.0 preserves an existing
+      // AUTH_TOKEN (it reads /opt/agent-relay/.env if present and only
+      // generates a fresh hex token when the file is missing). If the
+      // operator wants a fresh token (e.g. they suspect the current
+      // one has leaked), we have to wipe the existing .env first —
+      // the installer's `--rotate-token` flag would belong upstream
+      // but until then we shell-chain a `sudo rm -f` ahead of the
+      // install command. RELAY_DIR defaults to /opt/agent-relay; the
+      // wizard does not currently expose a custom value, so the path
+      // is hardcoded here. If RELAY_DIR is ever exposed on the route,
+      // template it in.
+      const command = input.rotateToken
+        ? `sudo rm -f /opt/agent-relay/.env && ${baseCommand}`
+        : baseCommand;
+
+      // Capture the fingerprint we see during this connect so we can
+      // update the DB when the stored value is null (legacy row first
+      // re-install). We still advertise acceptAnyHostKey: true because
+      // ssh-executor's hostVerifier needs that flag to fire, even when
+      // expectedHostKeySha256 is set — the latter just turns the verifier
+      // from "accept any" into "accept only this one".
+      let observedHostKeySha256: string | undefined;
+
+      await executeSshCommand({
+        host: server.host,
+        port: input.sshPort,
+        user: input.sshUser,
+        auth: input.sshPassword
+          ? { kind: "password", password: input.sshPassword }
+          : {
+              kind: "privateKey",
+              privateKey: input.sshPrivateKey!,
+              passphrase: input.sshPassphrase,
+            },
+        command,
+        onStdout: (line) => {
+          void forwardProgress("stdout", line);
+        },
+        onStderr: (line) => {
+          void forwardProgress("stderr", line);
+        },
+        acceptAnyHostKey: true,
+        onHostKey: (fp) => {
+          observedHostKeySha256 = fp.sha256;
+        },
+        // Pin to the fingerprint captured at first install when we have
+        // one. Mismatch → ssh2 rejects the handshake → executeSshCommand
+        // throws SshError("host_key_rejected") → the `catch` below maps
+        // it to a stream error with a clearer "was this VPS rebuilt?"
+        // message.
+        ...(server.hostKeySha256
+          ? { expectedHostKeySha256: server.hostKeySha256 }
+          : {}),
+        timeoutMs: 10 * 60 * 1000,
+      });
+
+      // Persist the freshly-observed fingerprint BEFORE parsing the
+      // installer output. Even if parseInstallOutput fails (e.g.
+      // install.sh succeeded on the VPS but its output drifted), the
+      // SSH handshake completed and the fingerprint we saw is the
+      // correct one to pin against next time. Skipping this would
+      // leave a legacy row in TOFU mode forever despite a successful
+      // connect.
+      if (!server.hostKeySha256 && observedHostKeySha256) {
+        await prisma.server.update({
+          where: { id: server.id },
+          data: { hostKeySha256: observedHostKeySha256 },
+        });
+      }
+
+      const parsedOutput = parseInstallOutput(stdoutBuffer);
+      if (!parsedOutput.ok) {
+        await audit(
+          "server.reinstall-relay.failed",
+          `${server.name} (${server.host})`,
+          parsedOutput.error.kind,
+          getActor(c),
+          getActorUserId(c),
+        );
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({
+            kind: parsedOutput.error.kind,
+            message: parsedOutput.error.message,
+          }),
+        });
+        return;
+      }
+
+      // Token handling:
+      //   - install.sh preserves the existing AUTH_TOKEN if it sees
+      //     /opt/agent-relay/.env. When the operator opts into
+      //     rotation we wipe that file BEFORE the install runs (see
+      //     command construction above), so install.sh generates a
+      //     fresh token and the emittedToken differs from DB.
+      //   - When rotateToken=false but the emitted token still
+      //     differs (the VPS-side .env was wiped out-of-band), we
+      //     surface that as `tokenDiverged` on the done event so the
+      //     UI can flag the tampering signal AND we update the DB
+      //     because the VPS is now the source of truth.
+      //   - Steady-state: rotateToken=false + emittedToken equals DB →
+      //     no relayToken write at all (idempotent re-install).
+      const emittedToken = parsedOutput.value.relayToken;
+      const tokenChanged = emittedToken !== server.relayToken;
+      const tokenDiverged = tokenChanged && !input.rotateToken;
+      const shouldUpdateToken = input.rotateToken === true || tokenChanged;
+      // `tokenRotated` (on the done event) reports the operator-visible
+      // outcome: was the relay token actually replaced as a result of
+      // this re-install? Only true when we both wiped the .env upstream
+      // AND a different token came back.
+      const tokenRotated = input.rotateToken === true && tokenChanged;
+
+      // Don't persist `auto` as a stored mode — re-install would then
+      // pass RELAY_MODE=auto next time, which is identical to omitting
+      // the env entirely. Either way install.sh re-detects from
+      // scratch, so the stored value carries no information.
+      const persistableMode =
+        parsedOutput.value.relayMode && parsedOutput.value.relayMode !== "auto"
+          ? parsedOutput.value.relayMode
+          : undefined;
+
+      await prisma.server.update({
+        where: { id: server.id },
+        data: {
+          relayUrl: parsedOutput.value.relayUrl,
+          ...(persistableMode ? { relayMode: persistableMode } : {}),
+          ...(shouldUpdateToken ? { relayToken: emittedToken } : {}),
+          // hostKeySha256 was already persisted right after the SSH
+          // handshake (see above), so no need to repeat here.
+        },
+      });
+
+      const auditDetail = [
+        `took ${Math.round((Date.now() - startTime) / 1000)}s`,
+        persistableMode ? `mode=${persistableMode}` : undefined,
+        tokenRotated ? "token-rotated" : undefined,
+        tokenDiverged ? "token-divergence" : undefined,
+        !server.hostKeySha256 && observedHostKeySha256 ? "fingerprint-captured" : undefined,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      await audit(
+        "server.reinstall-relay.success",
+        `${server.name} (${server.host})`,
+        auditDetail,
+        getActor(c),
+        getActorUserId(c),
+      );
+      await stream.writeSSE({
+        event: "done",
+        data: JSON.stringify({
+          serverId: server.id,
+          name: server.name,
+          host: server.host,
+          relayUrl: parsedOutput.value.relayUrl,
+          tokenRotated,
+          tokenDiverged,
+          ...(persistableMode ? { relayMode: persistableMode } : {}),
+        }),
+      });
+    } catch (err) {
+      let kind: string = "install_failed";
+      let message = (err as Error).message ?? "install failed";
+      if (err instanceof SshTimeoutError) {
+        kind = "timeout";
+      } else if (err instanceof SshError) {
+        kind = err.kind;
+        if (err.kind === "host_key_rejected") {
+          message =
+            "Host key does not match the fingerprint captured on first install. Was the VPS rebuilt? Delete this server and onboard it again to re-TOFU.";
+        }
+      }
+      await audit(
+        "server.reinstall-relay.failed",
+        `${server.name} (${server.host})`,
+        kind,
+        getActor(c),
+        getActorUserId(c),
+      );
+      await stream.writeSSE({
+        event: "error",
+        data: JSON.stringify({ kind, message }),
+      });
+    } finally {
+      activeInstalls.delete(installKey);
+      activeInstalls.delete(actorKey);
+    }
+  });
 });

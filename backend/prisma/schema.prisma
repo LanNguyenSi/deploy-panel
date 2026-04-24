@@ -17,6 +17,18 @@ model Server {
   sshKeyPath  String?
   relayUrl    String?
   relayToken  String?
+  // SHA-256 fingerprint (base64) of the SSH host key captured during
+  // the onboarding probe. Re-install pins this: if the VPS was rebuilt
+  // between first-install and re-install, the fingerprint diverges and
+  // ssh-executor refuses the handshake with `host_key_rejected`.
+  // Legacy rows (pre-2026-04-24 wizard) carry null → re-install falls
+  // back to TOFU for those.
+  hostKeySha256 String?
+  // Resolved RELAY_MODE from the last install, parsed out of install.sh
+  // v0.2.0+'s `Mode:` output line. The re-install UI defaults to this
+  // so operators don't have to remember what the original install used.
+  // Null for v0.1.x installers (no Mode line to parse).
+  relayMode   String?
   status      String   @default("unknown") // unknown, online, offline, no-relay
   lastSeenAt  DateTime?
   createdAt   DateTime @default(now())

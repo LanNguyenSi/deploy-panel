@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getServer, getApps, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, setAppLiveUrl, bulkDeploy, type AppWithCount } from "@/lib/api";
+import { getServer, getApps, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, setAppLiveUrl, bulkDeploy, type AppWithCount, type RelayMode } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { usePrompt } from "@/components/PromptDialog";
@@ -11,12 +11,17 @@ import { useScheduleDialog } from "@/components/ScheduleDialog";
 import { requestPermission, notifyDeployResult } from "@/lib/notifications";
 import { isPinned, togglePin } from "@/lib/pinned";
 import EnvVarsPanel from "@/components/EnvVarsPanel";
+import { ServerReinstallDialog } from "@/components/ServerReinstallDialog";
 
 type Panel = { type: "logs" | "deploy" | "preflight" | "env"; app: string };
 
 export default function ServerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [serverName, setServerName] = useState("");
+  const [serverHost, setServerHost] = useState("");
+  const [serverRelayMode, setServerRelayMode] = useState<RelayMode | null>(null);
+  const [serverHasHostKey, setServerHasHostKey] = useState(false);
+  const [reinstallOpen, setReinstallOpen] = useState(false);
   const [apps, setApps] = useState<AppWithCount[]>([]);
   const [loading, setLoading] = useState(true);
   const [panel, setPanel] = useState<Panel | null>(null);
@@ -81,6 +86,9 @@ export default function ServerDetailPage() {
         getApps(id),
       ]);
       setServerName(serverData.server.name);
+      setServerHost(serverData.server.host);
+      setServerRelayMode((serverData.server.relayMode as RelayMode | null | undefined) ?? null);
+      setServerHasHostKey(Boolean(serverData.server.hasHostKeyPinned));
       setApps(appsData.apps);
     } catch (err) {
       console.error("Failed to load:", err);
@@ -246,19 +254,43 @@ export default function ServerDetailPage() {
           <h1 className="page-title">{serverName || "Server"}</h1>
           <p className="page-subtitle">{apps.length} app{apps.length !== 1 ? "s" : ""} registered</p>
         </div>
-        <button
-          onClick={async () => {
-            setSyncing(true);
-            try { await syncServer(id); await load(); toast("Synced successfully", "success"); }
-            catch (err: any) { toast(`Sync failed: ${err.message}`, "error"); }
-            finally { setSyncing(false); }
-          }}
-          disabled={syncing}
-          className="btn btn-secondary"
-        >
-          {syncing ? "Syncing..." : "Sync from Relay"}
-        </button>
+        <div style={{ display: "flex", gap: "var(--space-2)" }}>
+          <button
+            onClick={() => setReinstallOpen(true)}
+            className="btn btn-ghost"
+            title="Re-run install.sh on this server (e.g. to upgrade the relay image)"
+          >
+            Re-install Relay
+          </button>
+          <button
+            onClick={async () => {
+              setSyncing(true);
+              try { await syncServer(id); await load(); toast("Synced successfully", "success"); }
+              catch (err: any) { toast(`Sync failed: ${err.message}`, "error"); }
+              finally { setSyncing(false); }
+            }}
+            disabled={syncing}
+            className="btn btn-secondary"
+          >
+            {syncing ? "Syncing..." : "Sync from Relay"}
+          </button>
+        </div>
       </div>
+
+      {reinstallOpen && (
+        <ServerReinstallDialog
+          serverId={id}
+          serverName={serverName}
+          serverHost={serverHost}
+          defaultMode={serverRelayMode}
+          hasHostKeyPinned={serverHasHostKey}
+          onClose={() => setReinstallOpen(false)}
+          onReinstalled={() => {
+            void load();
+            toast("Relay re-installed", "success");
+          }}
+        />
+      )}
 
       {/* Bulk deploy toolbar */}
       {!loading && apps.length > 1 && (
