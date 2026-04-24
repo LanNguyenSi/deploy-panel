@@ -282,6 +282,21 @@ serversRouter.post("/install-relay", async (c) => {
   }
   const input = parsed.data;
 
+  // Uniqueness pre-check. Running install.sh takes 2–5 minutes; if the
+  // caller accidentally re-onboards an existing host we'd waste the
+  // install window and surface a confusing DB-conflict error at the
+  // very end. Bail fast before any SSH happens.
+  const existing = await prisma.server.findUnique({ where: { host: input.host } });
+  if (existing) {
+    return c.json(
+      {
+        error: "conflict",
+        message: `a server with host ${input.host} is already registered (${existing.name}). Delete it or use the manual form to update its credentials.`,
+      },
+      409,
+    );
+  }
+
   const actorKey = actor.userId ?? "admin";
   if (activeInstalls.has(actorKey)) {
     return c.json(
