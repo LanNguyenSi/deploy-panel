@@ -90,8 +90,9 @@ describe("buildInstallCommand", () => {
 describe("parseInstallOutput", () => {
   /**
    * Fixture pinned against the actual install.sh connection-info block
-   * (agent-relay/install.sh, section "Step 4: Print connection info").
-   * Copy-paste with the colored ANSI escapes preserved.
+   * (agent-relay/install.sh, Step 7 on v0.2.0 — previously "Step 4:
+   * Print connection info" on v0.1.x). Copy-paste with the colored
+   * ANSI escapes preserved.
    *
    * If install.sh reworks its output, this test fails loudly before
    * the silent token-not-found error reaches a user's wizard.
@@ -206,5 +207,170 @@ describe("parseInstallOutput", () => {
     const r = parseInstallOutput(fixture);
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.relayMode).toBeUndefined();
+  });
+
+  // ── Full-block v0.2.0 fixtures ─────────────────────────────────────────
+  //
+  // The above tests use minimal fixtures focused on the `URL:` / `Token:`
+  // / `Mode:` lines. The below fixtures replicate install.sh v0.2.0's
+  // complete Step-7 output block byte-for-byte, including the trailing
+  // info + "Add to deploy-panel" sections and all ANSI color sequences.
+  // They exist as a regression guard: if install.sh reworks its output
+  // layout (line breaks, ANSI wrapping, label spacing), these fail
+  // before the silent token_not_found error hits a real wizard run.
+  //
+  // Kept separate from the minimal-fixture tests so a drift between
+  // "quick-sanity URL/Token lines" and "actual Step-7 block shape" is
+  // immediately visible.
+
+  const FIXTURE_GREENFIELD_V2 =
+    "\n" +
+    "\x1b[36m════════════════════════════════════════════════════════════\x1b[0m\n" +
+    "\x1b[32m agent-relay is ready!\x1b[0m\n" +
+    "\x1b[36m════════════════════════════════════════════════════════════\x1b[0m\n" +
+    "\n" +
+    "  Mode:  \x1b[36mgreenfield\x1b[0m\n" +
+    "  URL:   \x1b[36mhttps://relay.example.com\x1b[0m\n" +
+    "  Token: \x1b[33mgreenfield-token-abc123\x1b[0m\n" +
+    "\n" +
+    "  Health:    curl -s $URL/health\n" +
+    "  API:       curl -s -H 'Authorization: Bearer $TOKEN' $URL/api/apps\n" +
+    "  MCP:       $URL/mcp\n" +
+    "\n" +
+    "  Apps dir:  /home/deploy/apps\n" +
+    "  Config:    /opt/agent-relay/.env\n" +
+    "\n" +
+    "  \x1b[36mAdd to deploy-panel:\x1b[0m\n" +
+    "    Name:       vps-greenfield\n" +
+    "    Host:       192.168.1.100\n" +
+    "    Relay URL:  https://relay.example.com\n" +
+    "    Relay Token: greenfield-token-abc123\n";
+
+  const FIXTURE_EXISTING_TRAEFIK_V2 =
+    "\n" +
+    "\x1b[36m════════════════════════════════════════════════════════════\x1b[0m\n" +
+    "\x1b[32m agent-relay is ready!\x1b[0m\n" +
+    "\x1b[36m════════════════════════════════════════════════════════════\x1b[0m\n" +
+    "\n" +
+    "  Mode:  \x1b[36mexisting-traefik\x1b[0m\n" +
+    "  URL:   \x1b[36mhttps://relay.example.com\x1b[0m\n" +
+    "  Token: \x1b[33mexisting-traefik-tok-xyz\x1b[0m\n" +
+    "\n" +
+    "  Health:    curl -s $URL/health\n" +
+    "  API:       curl -s -H 'Authorization: Bearer $TOKEN' $URL/api/apps\n" +
+    "  MCP:       $URL/mcp\n" +
+    "\n" +
+    "  Apps dir:  /root/git\n" +
+    "  Config:    /opt/agent-relay/.env\n" +
+    "\n" +
+    "  \x1b[36mAdd to deploy-panel:\x1b[0m\n" +
+    "    Name:       vps-with-traefik\n" +
+    "    Host:       10.0.0.5\n" +
+    "    Relay URL:  https://relay.example.com\n" +
+    "    Relay Token: existing-traefik-tok-xyz\n";
+
+  const FIXTURE_PORT_ONLY_V2_PUBLIC =
+    "\n" +
+    "\x1b[36m════════════════════════════════════════════════════════════\x1b[0m\n" +
+    "\x1b[32m agent-relay is ready!\x1b[0m\n" +
+    "\x1b[36m════════════════════════════════════════════════════════════\x1b[0m\n" +
+    "\n" +
+    "  Mode:  \x1b[36mport-only\x1b[0m\n" +
+    "  URL:   \x1b[36mhttp://147.93.126.206:8222\x1b[0m\n" +
+    "  Token: \x1b[33mport-only-pub-tok-999\x1b[0m\n" +
+    "\n" +
+    "  \x1b[33mPort-only mode: no TLS.\x1b[0m\n" +
+    "  Bind: 0.0.0.0:8222.\n" +
+    "  If this host is reachable from the internet, ensure a firewall or\n" +
+    "  reverse proxy handles TLS termination for :8222.\n" +
+    "\n" +
+    "  Health:    curl -s $URL/health\n" +
+    "  API:       curl -s -H 'Authorization: Bearer $TOKEN' $URL/api/apps\n" +
+    "  MCP:       $URL/mcp\n" +
+    "\n" +
+    "  Apps dir:  /home/deploy/apps\n" +
+    "  Config:    /opt/agent-relay/.env\n" +
+    "\n" +
+    "  \x1b[36mAdd to deploy-panel:\x1b[0m\n" +
+    "    Name:       vps-portonly\n" +
+    "    Host:       147.93.126.206\n" +
+    "    Relay URL:  http://147.93.126.206:8222\n" +
+    "    Relay Token: port-only-pub-tok-999\n";
+
+  const FIXTURE_PORT_ONLY_V2_LOOPBACK =
+    "\n" +
+    "\x1b[36m════════════════════════════════════════════════════════════\x1b[0m\n" +
+    "\x1b[32m agent-relay is ready!\x1b[0m\n" +
+    "\x1b[36m════════════════════════════════════════════════════════════\x1b[0m\n" +
+    "\n" +
+    "  Mode:  \x1b[36mport-only\x1b[0m\n" +
+    "  URL:   \x1b[36mhttp://147.93.126.206:8222\x1b[0m\n" +
+    "  Token: \x1b[33mport-only-loop-tok-111\x1b[0m\n" +
+    "\n" +
+    "  \x1b[33mPort-only mode: no TLS.\x1b[0m\n" +
+    "  Bind: 127.0.0.1:8222.\n" +
+    "  \x1b[33mLoopback bind:\x1b[0m the URL above is NOT reachable from outside this host.\n" +
+    "  Front it with a local reverse proxy, or re-run with RELAY_BIND=0.0.0.0\n" +
+    "  if deploy-panel should reach it directly.\n" +
+    "\n" +
+    "  Health:    curl -s $URL/health\n" +
+    "  API:       curl -s -H 'Authorization: Bearer $TOKEN' $URL/api/apps\n" +
+    "  MCP:       $URL/mcp\n" +
+    "\n" +
+    "  Apps dir:  /home/deploy/apps\n" +
+    "  Config:    /opt/agent-relay/.env\n" +
+    "\n" +
+    "  \x1b[36mAdd to deploy-panel:\x1b[0m\n" +
+    "    Name:       vps-loopback\n" +
+    "    Host:       147.93.126.206\n" +
+    "    Relay URL:  http://147.93.126.206:8222\n" +
+    "    Relay Token: port-only-loop-tok-111\n";
+
+  it("parses the full v0.2.0 greenfield block end-to-end", () => {
+    const r = parseInstallOutput(FIXTURE_GREENFIELD_V2);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.relayMode).toBe("greenfield");
+      expect(r.value.relayUrl).toBe("https://relay.example.com");
+      expect(r.value.relayToken).toBe("greenfield-token-abc123");
+    }
+  });
+
+  it("parses the full v0.2.0 existing-traefik block end-to-end", () => {
+    const r = parseInstallOutput(FIXTURE_EXISTING_TRAEFIK_V2);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.relayMode).toBe("existing-traefik");
+      expect(r.value.relayUrl).toBe("https://relay.example.com");
+      expect(r.value.relayToken).toBe("existing-traefik-tok-xyz");
+    }
+  });
+
+  it("parses the full v0.2.0 port-only block with public bind (0.0.0.0)", () => {
+    // The public-bind variant carries the "If this host is reachable from
+    // the internet..." warning text, which contains `:8222.` — confirm
+    // the URL regex doesn't greedily grab that period-terminated fragment
+    // instead of the real URL.
+    const r = parseInstallOutput(FIXTURE_PORT_ONLY_V2_PUBLIC);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.relayMode).toBe("port-only");
+      expect(r.value.relayUrl).toBe("http://147.93.126.206:8222");
+      expect(r.value.relayToken).toBe("port-only-pub-tok-999");
+    }
+  });
+
+  it("parses the full v0.2.0 port-only block with loopback bind (127.0.0.1)", () => {
+    // The loopback variant adds a second ANSI block ("Loopback bind:")
+    // between the URL line and the info section. The URL is still the
+    // external host IP, NOT 127.0.0.1 — the loopback text is advisory
+    // only, matching the B2 fix in install.sh.
+    const r = parseInstallOutput(FIXTURE_PORT_ONLY_V2_LOOPBACK);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.relayMode).toBe("port-only");
+      expect(r.value.relayUrl).toBe("http://147.93.126.206:8222");
+      expect(r.value.relayToken).toBe("port-only-loop-tok-111");
+    }
   });
 });
