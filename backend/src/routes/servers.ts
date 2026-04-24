@@ -632,16 +632,18 @@ serversRouter.post("/:id/install-relay", async (c) => {
   // Two locks:
   //   1. Per-server: the same server can never be re-installed twice
   //      in parallel. Two concurrent re-installs of DIFFERENT servers
-  //      are fine.
+  //      are fine. Also blocks an in-flight update-image on the same
+  //      server — both routes mutate the relay container.
   //   2. Per-actor: a single non-admin user can't fan out 50 parallel
   //      re-installs against their owned fleet (would self-DoS the
   //      panel + spawn 50 SSH sessions). Admin actors share a single
   //      "admin" key, same as first-install.
   const installKey = `reinstall:${server.id}`;
+  const updateImageKey = `update-image:${server.id}`;
   const actorKey = `reinstall-actor:${actor.userId ?? "admin"}`;
-  if (activeInstalls.has(installKey)) {
+  if (activeInstalls.has(installKey) || activeInstalls.has(updateImageKey)) {
     return c.json(
-      { error: "rate_limited", message: "a re-install is already in progress for this server" },
+      { error: "rate_limited", message: "an install or update is already in progress for this server" },
       429,
     );
   }
@@ -917,14 +919,14 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
   const input = parsed.data;
 
   // Same two-level lock as re-install: one per server, one per actor.
-  // Uses distinct key prefix so an update and a re-install of the same
-  // server can't coexist either — both mutate the relay container.
-  const installKey = `update-image:${server.id}`;
-  const actorKey = `update-image-actor:${actor.userId ?? "admin"}`;
-  // Guard against racing against an in-flight re-install too (shared
-  // container surface).
+  // The per-server key is distinct from the reinstall key, and we also
+  // block against an in-flight reinstall — the re-install route
+  // symmetrically blocks against this one. Both routes mutate the
+  // relay container.
+  const updateKey = `update-image:${server.id}`;
   const reinstallKey = `reinstall:${server.id}`;
-  if (activeInstalls.has(installKey) || activeInstalls.has(reinstallKey)) {
+  const actorKey = `update-image-actor:${actor.userId ?? "admin"}`;
+  if (activeInstalls.has(updateKey) || activeInstalls.has(reinstallKey)) {
     return c.json(
       {
         error: "rate_limited",
@@ -939,7 +941,7 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
       429,
     );
   }
-  activeInstalls.add(installKey);
+  activeInstalls.add(updateKey);
   activeInstalls.add(actorKey);
 
   const startTime = Date.now();
@@ -1064,9 +1066,14 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
         },
       });
 
+      const healthMarker = !server.relayUrl
+        ? "health=skipped"
+        : healthOk
+          ? "health=ok"
+          : "health=failed";
       const auditDetail = [
         `took ${Math.round((Date.now() - startTime) / 1000)}s`,
-        healthOk ? "health=ok" : "health=skipped-or-failed",
+        healthMarker,
         !server.hostKeySha256 && observedHostKeySha256 ? "fingerprint-captured" : undefined,
       ]
         .filter(Boolean)
@@ -1111,7 +1118,7 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
         data: JSON.stringify({ kind, message }),
       });
     } finally {
-      activeInstalls.delete(installKey);
+      activeInstalls.delete(updateKey);
       activeInstalls.delete(actorKey);
     }
   });

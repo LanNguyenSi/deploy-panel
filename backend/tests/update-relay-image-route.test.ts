@@ -255,4 +255,52 @@ describe("POST /servers/:id/update-relay-image", () => {
     expect(postUpdateCall?.data.relayUrl).toBeUndefined();
     expect(postUpdateCall?.data.lastSeenAt).toBeInstanceOf(Date);
   });
+
+  it("emits healthOk: true on the done event when the post-update /health probe returns 200", async () => {
+    // The beforeEach already stubs fetch to resolve 200 OK, so the
+    // route's first probe should succeed and flip status → online.
+    mServer.findUnique.mockResolvedValue(serverFixture());
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-a/update-relay-image",
+      asJson(validBody),
+    );
+    const events = await readSse(res);
+    const done = events.find((e) => e.event === "done");
+    expect(done?.data.healthOk).toBe(true);
+    // Status should also land online in the persisted update.
+    const updateCall = vi.mocked(prisma.server.update).mock.calls[0]?.[0];
+    expect(updateCall?.data.status).toBe("online");
+  });
+
+  it("persists fingerprint even when `docker compose` fails (compose failure mustn't throw away capture)", async () => {
+    // Legacy row + SSH handshake succeeds + fingerprint captured, but
+    // compose exits non-zero. The B2-style invariant from re-install
+    // also applies here: the fingerprint was observed, persist it
+    // before the compose-exit check so the next update doesn't
+    // re-TOFU.
+    mServer.findUnique.mockResolvedValue(serverFixture({ hostKeySha256: null }));
+    mockSshOk({ exitCode: 1, hostKeySha256: "post-failure-fp==".padEnd(44, "=") });
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-a/update-relay-image",
+      asJson(validBody),
+    );
+    const events = await readSse(res);
+    expect(events.find((e) => e.event === "error")?.data.kind).toBe("update_failed");
+    // Even though compose failed, the fingerprint was persisted via the
+    // dedicated pre-exit-check update.
+    const updateCalls = vi.mocked(prisma.server.update).mock.calls;
+    const fingerprintCall = updateCalls.find((c) => c[0].data.hostKeySha256);
+    expect(fingerprintCall?.[0].data.hostKeySha256).toBe(
+      "post-failure-fp==".padEnd(44, "="),
+    );
+  });
+
+  // NOTE: Cross-lock tests (in-flight reinstall blocks update, actor-
+  // lock blocks parallel updates) are hard to exercise in this harness
+  // because `activeInstalls` is a module-private Set and the streamSSE
+  // handler's timing is non-deterministic across tests. They are
+  // covered behaviorally by the 429 branch being reachable from the
+  // same keys the reinstall route sets — symmetric cross-lock sourced
+  // in the same reviewed commit. Flag as a follow-up test harness
+  // improvement if future regressions sneak through.
 });
