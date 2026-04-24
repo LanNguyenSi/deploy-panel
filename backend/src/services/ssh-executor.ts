@@ -45,6 +45,19 @@ export interface ExecuteSshCommandOptions {
    */
   acceptAnyHostKey?: boolean;
   onHostKey?: (fingerprint: { algo: string; sha256: string }) => void;
+  /**
+   * When set, the server's host key's SHA-256 fingerprint (base64,
+   * matching `onHostKey.sha256`) MUST equal this value; otherwise the
+   * connection is rejected with `host_key_rejected`. Intended for the
+   * wizard's probe → install handoff: the probe captures the
+   * fingerprint, and install-relay re-connects with the captured value
+   * pinned. A MITM that swapped hosts between the two connects
+   * presents a different key, which trips this check.
+   *
+   * Only consulted when `acceptAnyHostKey` is true (the TOFU path);
+   * otherwise ssh2's built-in known_hosts enforcement applies.
+   */
+  expectedHostKeySha256?: string;
 }
 
 export interface ExecuteSshCommandResult {
@@ -129,15 +142,26 @@ function buildConnectConfig(opts: ExecuteSshCommandOptions): {
   // `onHostKey` to persist for next time.
   if (opts.acceptAnyHostKey) {
     config.hostVerifier = (key: Buffer | string) => {
+      const buf = Buffer.isBuffer(key) ? key : Buffer.from(key, "utf8");
+      // ssh2 passes the key as SSH wire-format bytes. We expose a
+      // stable SHA-256 fingerprint via crypto — matches what OpenSSH
+      // prints in its key-added banners.
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const crypto = require("node:crypto") as typeof import("node:crypto");
+      const sha256 = crypto.createHash("sha256").update(buf).digest("base64");
       if (opts.onHostKey) {
-        const buf = Buffer.isBuffer(key) ? key : Buffer.from(key, "utf8");
-        // ssh2 passes the key as SSH wire-format bytes. We expose a
-        // stable SHA-256 fingerprint via crypto — matches what OpenSSH
-        // prints in its key-added banners.
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const crypto = require("node:crypto") as typeof import("node:crypto");
-        const sha256 = crypto.createHash("sha256").update(buf).digest("base64");
         opts.onHostKey({ algo: "ssh-host-key", sha256 });
+      }
+      // Pin the fingerprint when the caller supplied one (probe → install
+      // handoff). Return false → ssh2 aborts the handshake; the outer
+      // promise rejects via the `error` handler. We stash the mismatch
+      // on the config so the error-handler can distinguish
+      // host_key_rejected from connect_failed.
+      if (opts.expectedHostKeySha256 !== undefined) {
+        if (sha256 !== opts.expectedHostKeySha256) {
+          (config as ConnectConfig & { _hostKeyMismatch?: boolean })._hostKeyMismatch = true;
+          return false;
+        }
       }
       return true;
     };
@@ -263,7 +287,16 @@ export async function executeSshCommand(
       // ssh2 tags auth failures with `level: "client-authentication"`
       // — distinguish so the caller can surface "wrong password/key"
       // separately from "network unreachable" / "dns".
-      if (err.level === "client-authentication") {
+      const cfg = config as ConnectConfig & { _hostKeyMismatch?: boolean };
+      if (cfg._hostKeyMismatch) {
+        settle(
+          "reject",
+          new SshError(
+            "host key does not match the fingerprint captured during probe",
+            "host_key_rejected",
+          ),
+        );
+      } else if (err.level === "client-authentication") {
         settle("reject", new SshError("authentication failed", "auth_failed"));
       } else {
         settle("reject", new SshError(`connect failed: ${err.message}`, "connect_failed"));

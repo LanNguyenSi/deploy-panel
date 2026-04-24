@@ -271,6 +271,17 @@ const installRelaySchema = z
     // same way the create-server form validates these.
     name: z.string().min(1).max(100),
     host: z.string().min(1).max(255),
+    // Optional: base64 SHA-256 host-key fingerprint captured during
+    // the pre-install probe. When present, ssh-executor pins it and
+    // rejects with `host_key_rejected` on mismatch — closes the MITM
+    // window between probe and install. Format matches `onHostKey`
+    // output: base64, 44 chars.
+    expectedHostKeySha256: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[A-Za-z0-9+/=]+$/, "expectedHostKeySha256 must be base64")
+      .optional(),
   })
   .merge(installEnvSchema)
   .and(sshAuthSchema);
@@ -311,7 +322,7 @@ serversRouter.post("/probe-vps", async (c) => {
   const input = parsed.data;
 
   try {
-    const result = await probeVps({
+    const outcome = await probeVps({
       host: input.host,
       port: input.sshPort,
       user: input.sshUser,
@@ -327,11 +338,18 @@ serversRouter.post("/probe-vps", async (c) => {
     await audit(
       "server.probe-vps.success",
       input.host,
-      `mode=${result.suggestedMode}`,
+      `mode=${outcome.probe.suggestedMode} port80=${outcome.probe.port80.kind}`,
       getActor(c),
       getActorUserId(c),
     );
-    return c.json({ probe: result });
+    return c.json({
+      probe: outcome.probe,
+      // Fingerprint of the host key seen during the probe. The wizard
+      // passes it back on install-relay so the backend can MATCH
+      // instead of another blind TOFU accept — MITM between probe and
+      // install is the narrow window we're closing here.
+      ...(outcome.hostKeySha256 ? { hostKeySha256: outcome.hostKeySha256 } : {}),
+    });
   } catch (err) {
     let kind = "probe_failed";
     const message = (err as Error).message ?? "probe failed";
@@ -456,6 +474,13 @@ serversRouter.post("/install-relay", async (c) => {
           void forwardProgress("stderr", line);
         },
         acceptAnyHostKey: true,
+        // Pin the host-key fingerprint the wizard captured during the
+        // probe. If a MITM swapped hosts between probe and install,
+        // the fingerprint differs → ssh2 rejects → we abort before
+        // running install.sh on the attacker's box.
+        ...(input.expectedHostKeySha256
+          ? { expectedHostKeySha256: input.expectedHostKeySha256 }
+          : {}),
         // Covers a slow VPS + Docker pull cold cache. install.sh
         // itself typically finishes in ~2-5 min.
         timeoutMs: 10 * 60 * 1000,

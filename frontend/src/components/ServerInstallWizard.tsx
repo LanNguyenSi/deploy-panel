@@ -11,8 +11,6 @@ import {
 
 type Step = "basics" | "ssh" | "probe" | "options" | "progress" | "done";
 
-type SelectedMode = "auto" | "greenfield" | "existing-traefik" | "port-only";
-
 interface Props {
   /** Called when the wizard completes successfully so the parent can refresh. */
   onCreated: () => void;
@@ -53,7 +51,7 @@ export function ServerInstallWizard({ onCreated, onCancel, onSwitchToManual }: P
 
   // v0.2.0 mode selection. `auto` = let install.sh decide (no env var
   // passed). Anything else overrides. The probe step pre-fills this.
-  const [selectedMode, setSelectedMode] = useState<SelectedMode>("auto");
+  const [selectedMode, setSelectedMode] = useState<RelayMode>("auto");
   const [traefikNetwork, setTraefikNetwork] = useState("");
   const [traefikCertResolver, setTraefikCertResolver] = useState("");
   const [relayBind, setRelayBind] = useState("");
@@ -63,6 +61,27 @@ export function ServerInstallWizard({ onCreated, onCancel, onSwitchToManual }: P
   const [probe, setProbe] = useState<VpsProbeResult | null>(null);
   const [probing, setProbing] = useState(false);
   const [probeError, setProbeError] = useState<{ kind: string; message: string } | null>(null);
+  // Fingerprint captured during the probe; passed back on install-relay
+  // so the backend can pin the host key and abort if a MITM swapped
+  // hosts between the two connects.
+  const [probeHostKeySha256, setProbeHostKeySha256] = useState<string | undefined>(undefined);
+
+  // Invalidate a prior probe when SSH credentials or the target host
+  // change — a stale probe against a different host would silently
+  // mislead the wizard's suggested mode and (worse) pin a fingerprint
+  // that belongs to another VPS.
+  useEffect(() => {
+    if (probe || probeError || probeHostKeySha256 !== undefined) {
+      setProbe(null);
+      setProbeError(null);
+      setProbeHostKeySha256(undefined);
+      setSelectedMode("auto");
+    }
+    // Only react to the identity-forming inputs; not to the probe state
+    // (which we're resetting) or to options that can legitimately
+    // change across a single probe.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [host, sshUser, sshPort, sshPassword, sshPrivateKey, sshPassphrase, authMode]);
 
   // Progress state
   const [logLines, setLogLines] = useState<Array<{ stream: "stdout" | "stderr"; line: string }>>([]);
@@ -106,8 +125,9 @@ export function ServerInstallWizard({ onCreated, onCancel, onSwitchToManual }: P
     setProbing(true);
     setProbe(null);
     setProbeError(null);
+    setProbeHostKeySha256(undefined);
     try {
-      const result = await probeVps({
+      const response = await probeVps({
         host: host.trim(),
         sshUser: sshUser.trim() || undefined,
         sshPort,
@@ -115,12 +135,13 @@ export function ServerInstallWizard({ onCreated, onCancel, onSwitchToManual }: P
           ? { sshPassword }
           : { sshPrivateKey, sshPassphrase: sshPassphrase || undefined }),
       });
-      setProbe(result);
+      setProbe(response.probe);
+      setProbeHostKeySha256(response.hostKeySha256);
       // Pre-fill the mode + network from detection. User can still
       // override in the next step.
-      setSelectedMode(result.suggestedMode);
-      if (result.suggestedTraefikNetwork) {
-        setTraefikNetwork(result.suggestedTraefikNetwork);
+      setSelectedMode(response.probe.suggestedMode);
+      if (response.probe.suggestedTraefikNetwork) {
+        setTraefikNetwork(response.probe.suggestedTraefikNetwork);
       }
     } catch (err) {
       setProbeError({
@@ -156,6 +177,7 @@ export function ServerInstallWizard({ onCreated, onCancel, onSwitchToManual }: P
       ...(traefikNetwork.trim() ? { traefikNetwork: traefikNetwork.trim() } : {}),
       ...(traefikCertResolver.trim() ? { traefikCertResolver: traefikCertResolver.trim() } : {}),
       ...(relayBind.trim() ? { relayBind: relayBind.trim() } : {}),
+      ...(probeHostKeySha256 ? { expectedHostKeySha256: probeHostKeySha256 } : {}),
     };
 
     const controller = new AbortController();
@@ -437,7 +459,7 @@ export function ServerInstallWizard({ onCreated, onCancel, onSwitchToManual }: P
             <select
               id="relay-mode"
               value={selectedMode}
-              onChange={(e) => setSelectedMode(e.target.value as SelectedMode)}
+              onChange={(e) => setSelectedMode(e.target.value as RelayMode)}
               className="input"
             >
               <option value="auto">auto — let install.sh decide on the VPS</option>

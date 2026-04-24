@@ -62,23 +62,37 @@ export interface ProbeVpsOptions {
  * yields an empty DOCKER section, which we map to a free-port-greenfield
  * suggestion the same way install.sh would.
  */
-const PROBE_SCRIPT = `
+// Per-invocation sentinel token keeps the section markers from
+// colliding with arbitrary text in the remote user's login-shell
+// profile (`PROMPT_COMMAND`, MOTD banners, dotfile echoes). The parser
+// expects exactly this token set — any stray `===SS80===` written by
+// a dotfile before the probe runs won't confuse it.
+//
+// Tab delimiter (not `|`) because docker container names and image
+// names cannot contain tabs but CAN in principle contain `|` in
+// hostile scenarios. Tabs also survive the `ss` → stdout path
+// unchanged.
+function buildProbeScript(token: string): string {
+  const marker = (name: string) => `===${name}-${token}===`;
+  return `
 set +e
-echo '===SS80==='
+names="$(docker ps --format '{{.Names}}' 2>/dev/null)"
+echo '${marker("SS80")}'
 ss -H -tlnp 2>/dev/null | awk '$4 ~ /:80$/'
-echo '===SS443==='
+echo '${marker("SS443")}'
 ss -H -tlnp 2>/dev/null | awk '$4 ~ /:443$/'
-echo '===DOCKER==='
-docker ps --format '{{.Names}}|{{.Image}}|{{.Ports}}' 2>/dev/null
-echo '===NETWORKS==='
-for name in $(docker ps --format '{{.Names}}' 2>/dev/null); do
+echo '${marker("DOCKER")}'
+docker ps --format '{{.Names}}\t{{.Image}}\t{{.Ports}}' 2>/dev/null
+echo '${marker("NETWORKS")}'
+for name in $names; do
   nets=$(docker inspect --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$name" 2>/dev/null)
-  printf '%s|%s\\n' "$name" "$nets"
+  printf '%s\\t%s\\n' "$name" "$nets"
 done
-echo '===ALLNETS==='
+echo '${marker("ALLNETS")}'
 docker network ls --format '{{.Name}}' 2>/dev/null
-echo '===END==='
+echo '${marker("END")}'
 `;
+}
 
 function isTraefikImage(image: string): boolean {
   // Mirrors install.sh's is_traefik_image glob.
@@ -104,10 +118,18 @@ function isContainerPublishingPort(row: DockerPsRow, port: number): boolean {
   return new RegExp(`:${port}->`).test(row.ports);
 }
 
-export function parseProbeOutput(stdout: string): Omit<VpsProbeResult, "suggestedMode" | "suggestedTraefikNetwork"> & {
-  suggestedMode: VpsProbeResult["suggestedMode"];
-  suggestedTraefikNetwork?: string;
-} {
+/**
+ * Parse the probe's stdout into a structured summary.
+ *
+ * @param stdout Raw output from running the probe script.
+ * @param token  Per-invocation sentinel token used to bound the section
+ *               markers. Must match the token passed to
+ *               `buildProbeScript`. Passing a mismatched token yields an
+ *               all-free / empty result (tolerant fallback, since a
+ *               failing probe should suggest the safest greenfield-ish
+ *               default rather than throwing mid-wizard).
+ */
+export function parseProbeOutput(stdout: string, token: string): VpsProbeResult {
   // Split the single stdout blob by markers. Lenient line-endings.
   const sections: Record<string, string[]> = {
     SS80: [],
@@ -116,10 +138,11 @@ export function parseProbeOutput(stdout: string): Omit<VpsProbeResult, "suggeste
     NETWORKS: [],
     ALLNETS: [],
   };
+  const markerPattern = new RegExp(`^===([A-Z0-9]+)-${token}===$`);
   let current: keyof typeof sections | null = null;
   for (const rawLine of stdout.split(/\r?\n/)) {
     const line = rawLine.trimEnd();
-    const marker = line.match(/^===([A-Z0-9]+)===$/);
+    const marker = line.match(markerPattern);
     if (marker) {
       const name = marker[1];
       if (name === "END") {
@@ -134,20 +157,26 @@ export function parseProbeOutput(stdout: string): Omit<VpsProbeResult, "suggeste
     if (current && line) sections[current].push(line);
   }
 
-  // Parse docker containers.
+  // Parse docker container network map. Tab-delimited so container
+  // names with `|` (however unlikely) don't confuse the parser.
+  // Networks are sorted alphabetically so `suggestedTraefikNetwork`
+  // is deterministic across runs — Go template map iteration is
+  // deliberately randomized.
   const networksByName: Record<string, string[]> = {};
   for (const line of sections.NETWORKS) {
-    const [name, nets] = line.split("|", 2);
+    const [name, nets] = line.split("\t", 2);
     if (!name) continue;
-    networksByName[name] = (nets ?? "")
+    const names = (nets ?? "")
       .split(/\s+/)
       .map((s) => s.trim())
       .filter((s) => s.length > 0);
+    networksByName[name] = [...names].sort();
   }
 
   const containers: DockerPsRow[] = [];
   for (const line of sections.DOCKER) {
-    const [name, image, ports] = line.split("|");
+    const parts = line.split("\t");
+    const [name, image, ports] = parts;
     if (!name || !image) continue;
     containers.push({
       name,
@@ -204,8 +233,27 @@ export function parseProbeOutput(stdout: string): Omit<VpsProbeResult, "suggeste
   };
 }
 
-export async function probeVps(opts: ProbeVpsOptions): Promise<VpsProbeResult> {
+import { randomBytes } from "node:crypto";
+
+export interface ProbeVpsOutcome {
+  probe: VpsProbeResult;
+  /**
+   * SHA-256 fingerprint of the host key presented during the probe.
+   * Callers can (and should) compare this against the fingerprint seen
+   * by install-relay on the follow-up connect — a mismatch means the
+   * host was swapped between probe and install (MITM or DNS).
+   */
+  hostKeySha256?: string;
+}
+
+export async function probeVps(opts: ProbeVpsOptions): Promise<ProbeVpsOutcome> {
+  // Per-invocation token: keeps our section markers disjoint from
+  // arbitrary text a remote login-shell profile might echo.
+  const token = randomBytes(6).toString("hex");
+  const script = buildProbeScript(token);
+
   let stdoutBuffer = "";
+  let hostKeySha256: string | undefined;
   await executeSshCommand({
     host: opts.host,
     port: opts.port,
@@ -215,14 +263,20 @@ export async function probeVps(opts: ProbeVpsOptions): Promise<VpsProbeResult> {
     // as the `-c` arg; multi-line scripts with actual newlines work
     // fine (no JSON-escape wrapper — that would encode \n as two chars
     // and break the script).
-    command: PROBE_SCRIPT,
+    command: script,
     onStdout: (line) => {
       stdoutBuffer += line + "\n";
     },
     acceptAnyHostKey: opts.acceptAnyHostKey ?? true,
+    onHostKey: (fp) => {
+      hostKeySha256 = fp.sha256;
+    },
     // Short: the probe is two local commands on the VPS. 30s is
     // generous even for a laggy SSH round-trip.
     timeoutMs: opts.timeoutMs ?? 30_000,
   });
-  return parseProbeOutput(stdoutBuffer);
+  return {
+    probe: parseProbeOutput(stdoutBuffer, token),
+    ...(hostKeySha256 ? { hostKeySha256 } : {}),
+  };
 }

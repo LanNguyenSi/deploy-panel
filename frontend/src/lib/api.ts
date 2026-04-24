@@ -113,6 +113,8 @@ export interface InstallRelayRequest {
   traefikNetwork?: string;
   traefikCertResolver?: string;
   relayBind?: string;
+  /** SHA-256 host-key fingerprint captured during the pre-install probe. */
+  expectedHostKeySha256?: string;
 }
 
 // Mirror of the backend probe-vps shape. Shape is stable because the
@@ -143,7 +145,13 @@ export interface ProbeVpsRequest {
   sshPassphrase?: string;
 }
 
-export async function probeVps(req: ProbeVpsRequest): Promise<VpsProbeResult> {
+export interface ProbeVpsResponse {
+  probe: VpsProbeResult;
+  /** SHA-256 fingerprint of the host key presented during the probe. */
+  hostKeySha256?: string;
+}
+
+export async function probeVps(req: ProbeVpsRequest): Promise<ProbeVpsResponse> {
   const res = await fetch(`${BASE}/api/servers/probe-vps`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -161,8 +169,7 @@ export async function probeVps(req: ProbeVpsRequest): Promise<VpsProbeResult> {
     err.kind = body.error ?? "probe_failed";
     throw err;
   }
-  const data = (await res.json()) as { probe: VpsProbeResult };
-  return data.probe;
+  return (await res.json()) as ProbeVpsResponse;
 }
 
 /**
