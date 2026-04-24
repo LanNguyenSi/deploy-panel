@@ -77,6 +77,109 @@ export async function getServer(id: string): Promise<{ server: Server & { apps: 
   return request(`/api/servers/${id}`);
 }
 
+/**
+ * SSE event emitted by POST /api/servers/install-relay. Shape mirrors
+ * `event: <name>` + `data: <json>` frames from the backend route.
+ */
+export type InstallRelayEvent =
+  | { event: "progress"; data: { stream: "stdout" | "stderr"; line: string } }
+  | {
+      event: "done";
+      data: { serverId: string; name: string; host: string; relayUrl: string };
+    }
+  | { event: "error"; data: { kind: string; message: string } };
+
+export interface InstallRelayRequest {
+  name: string;
+  host: string;
+  sshUser?: string;
+  sshPort?: number;
+  sshPassword?: string;
+  sshPrivateKey?: string;
+  sshPassphrase?: string;
+  relayDomain?: string;
+  traefikEmail?: string;
+  appsDir?: string;
+}
+
+/**
+ * Stream install-relay events. Uses a POST + fetch ReadableStream
+ * because EventSource only supports GET. The returned async iterator
+ * yields parsed events in order until the server closes the stream or
+ * an `error`/`done` terminal frame arrives.
+ *
+ * If the initial POST fails the HTTP-request layer (non-200), this
+ * yields a single synthetic `{ event: "error", data }` frame so the
+ * caller can render it identically to server-emitted error frames.
+ */
+export async function* installRelayStream(
+  req: InstallRelayRequest,
+  signal?: AbortSignal,
+): AsyncGenerator<InstallRelayEvent> {
+  const res = await fetch(`${BASE}/api/servers/install-relay`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    credentials: "include",
+    body: JSON.stringify(req),
+    signal,
+  });
+  if (!res.ok) {
+    const body = (await res
+      .json()
+      .catch(() => ({ message: `HTTP ${res.status}` }))) as {
+      error?: string;
+      message?: string;
+    };
+    yield {
+      event: "error",
+      data: {
+        kind: body.error ?? "http_error",
+        message: body.message ?? `request failed with status ${res.status}`,
+      },
+    };
+    return;
+  }
+  if (!res.body) {
+    yield { event: "error", data: { kind: "no_body", message: "server returned empty stream" } };
+    return;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    // SSE frames are `\n\n`-separated blocks of `event:`/`data:` lines.
+    // Same in-place unroll the agent-planforge client uses.
+    let frameEnd: number;
+    while ((frameEnd = buf.indexOf("\n\n")) >= 0) {
+      const frame = buf.slice(0, frameEnd);
+      buf = buf.slice(frameEnd + 2);
+      let eventName = "message";
+      let dataStr = "";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event:")) eventName = line.slice(6).trim();
+        else if (line.startsWith("data:")) dataStr += line.slice(5).trim();
+      }
+      if (dataStr.length === 0) continue;
+      let data: unknown;
+      try {
+        data = JSON.parse(dataStr);
+      } catch {
+        // Malformed frame — surface as error but don't abort the loop;
+        // the server may recover on the next frame.
+        yield {
+          event: "error",
+          data: { kind: "parse_error", message: `malformed data frame: ${dataStr.slice(0, 120)}` },
+        };
+        continue;
+      }
+      yield { event: eventName, data } as InstallRelayEvent;
+    }
+  }
+}
+
 export async function createServer(data: { name: string; host: string; relayUrl?: string; relayToken?: string }): Promise<{ server: Server }> {
   return request("/api/servers", { method: "POST", body: JSON.stringify(data) });
 }
