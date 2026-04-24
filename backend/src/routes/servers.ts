@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { zValidator } from "@hono/zod-validator";
 import { prisma } from "../lib/prisma.js";
@@ -8,6 +9,8 @@ import {
   getActorContext,
   serverOwnershipWhere,
 } from "../lib/ownership.js";
+import { executeSshCommand, SshError, SshTimeoutError } from "../services/ssh-executor.js";
+import { buildInstallCommand, parseInstallOutput } from "../services/install-relay.js";
 
 /** Strip sensitive fields from server objects */
 function sanitizeServer(server: any) {
@@ -182,15 +185,244 @@ serversRouter.get("/:id/system", async (c) => {
   }
 });
 
-// POST /api/servers/:id/install-relay — trigger relay install via SSH
+/**
+ * One concurrent install per actor. Guards against accidental double-
+ * click during the 2–5 minute install window and against concurrency
+ * collisions (two installs racing to create the same Server row).
+ * Stored in-process — fine for single-instance panel deployments; a
+ * multi-instance deploy would need Redis-backed tracking.
+ */
+const activeInstalls = new Set<string>();
+
+const installEnvSchema = z.object({
+  // FQDN for Traefik TLS — validated as a conservative hostname shape.
+  // Letters, digits, dot, hyphen. 253 is the DNS-name cap.
+  relayDomain: z
+    .string()
+    .min(1)
+    .max(253)
+    .regex(/^[a-zA-Z0-9.-]+$/, "relayDomain must be a valid hostname")
+    .optional(),
+  // Let's Encrypt email — zod's built-in email suffices.
+  traefikEmail: z.string().email().optional(),
+  // Absolute path on the VPS. No shell metachars, no `..` segments
+  // (same shape rule agent-relay enforces on compose_file paths since
+  // v0.1.1).
+  appsDir: z
+    .string()
+    .min(1)
+    .max(255)
+    .regex(/^\/[A-Za-z0-9._/-]*$/, "appsDir must be an absolute, simple path")
+    .refine((v) => !v.split("/").includes(".."), "appsDir must not contain `..`")
+    .optional(),
+});
+
+// password XOR privateKey. Both optional per field, but the body must
+// carry exactly one authentication method. Validated by the refine
+// below so the error message is stable.
+const sshAuthSchema = z
+  .object({
+    sshUser: z.string().min(1).max(64).default("root"),
+    sshPort: z.number().int().min(1).max(65535).default(22),
+    sshPassword: z.string().min(1).optional(),
+    sshPrivateKey: z.string().min(1).optional(),
+    sshPassphrase: z.string().min(1).optional(),
+  })
+  .refine(
+    (v) => (v.sshPassword ? 1 : 0) + (v.sshPrivateKey ? 1 : 0) === 1,
+    {
+      message: "exactly one of sshPassword or sshPrivateKey must be provided",
+    },
+  );
+
+const installRelaySchema = z
+  .object({
+    // Server identity the resulting DB row will carry. Validated the
+    // same way the create-server form validates these.
+    name: z.string().min(1).max(100),
+    host: z.string().min(1).max(255),
+  })
+  .merge(installEnvSchema)
+  .and(sshAuthSchema);
+
+// POST /api/servers/install-relay — run the agent-relay installer on a
+// fresh VPS via ephemeral SSH, parse the emitted URL + token, and
+// create the Server row. Admin-only. Streams the installer output as
+// SSE so the wizard can show a live progress view.
+//
+// Security posture (see agent-tasks 252556e3):
+// - Admin-only; non-admin OAuth users cannot onboard servers.
+// - Credentials live in the zod-parsed body for the scope of this
+//   handler and get zeroed by ssh-executor after the connect phase.
+// - No DB write on failure paths — failed installs leave no trace
+//   beyond the audit log entry.
+// - Audit log captures host + success, never creds.
+// - Installer URL is compile-time; not a body field.
+serversRouter.post("/install-relay", async (c) => {
+  const actor = getActorContext(c);
+  if (!actor.isAdmin) {
+    return c.json({ error: "forbidden", message: "admin auth required" }, 403);
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request", message: "body must be JSON" }, 400);
+  }
+  const parsed = installRelaySchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      {
+        error: "bad_request",
+        message: parsed.error.issues.map((i) => i.message).join("; "),
+      },
+      400,
+    );
+  }
+  const input = parsed.data;
+
+  const actorKey = actor.userId ?? "admin";
+  if (activeInstalls.has(actorKey)) {
+    return c.json(
+      { error: "rate_limited", message: "an install is already in progress for this actor" },
+      429,
+    );
+  }
+  activeInstalls.add(actorKey);
+
+  const startTime = Date.now();
+  return streamSSE(c, async (stream) => {
+    // Collect the full stdout so we can parse URL + Token from it
+    // after the command finishes. Stderr is streamed to the client
+    // for diagnostics but not scanned for success markers.
+    let stdoutBuffer = "";
+    const forwardProgress = async (streamKind: "stdout" | "stderr", line: string) => {
+      if (streamKind === "stdout") stdoutBuffer += line + "\n";
+      await stream.writeSSE({
+        event: "progress",
+        data: JSON.stringify({ stream: streamKind, line }),
+      });
+    };
+
+    try {
+      const command = buildInstallCommand({
+        relayDomain: input.relayDomain,
+        traefikEmail: input.traefikEmail,
+        appsDir: input.appsDir,
+      });
+
+      await executeSshCommand({
+        host: input.host,
+        port: input.sshPort,
+        user: input.sshUser,
+        auth: input.sshPassword
+          ? { kind: "password", password: input.sshPassword }
+          : {
+              kind: "privateKey",
+              privateKey: input.sshPrivateKey!,
+              passphrase: input.sshPassphrase,
+            },
+        command,
+        onStdout: (line) => {
+          void forwardProgress("stdout", line);
+        },
+        onStderr: (line) => {
+          void forwardProgress("stderr", line);
+        },
+        acceptAnyHostKey: true,
+        // Covers a slow VPS + Docker pull cold cache. install.sh
+        // itself typically finishes in ~2-5 min.
+        timeoutMs: 10 * 60 * 1000,
+      });
+
+      const parsedOutput = parseInstallOutput(stdoutBuffer);
+      if (!parsedOutput.ok) {
+        await audit(
+          "server.install-relay.failed",
+          input.host,
+          parsedOutput.error.kind,
+          getActor(c),
+          getActorUserId(c),
+        );
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({
+            kind: parsedOutput.error.kind,
+            message: parsedOutput.error.message,
+          }),
+        });
+        return;
+      }
+
+      // Token-parse succeeded — create the Server row now.
+      const server = await prisma.server.create({
+        data: {
+          name: input.name,
+          host: input.host,
+          relayUrl: parsedOutput.value.relayUrl,
+          relayToken: parsedOutput.value.relayToken,
+          userId: actor.isAdmin ? null : actor.userId,
+        },
+      });
+      await audit(
+        "server.install-relay.success",
+        `${server.name} (${server.host})`,
+        `took ${Math.round((Date.now() - startTime) / 1000)}s`,
+        getActor(c),
+        getActorUserId(c),
+      );
+      await stream.writeSSE({
+        event: "done",
+        data: JSON.stringify({
+          serverId: server.id,
+          name: server.name,
+          host: server.host,
+          relayUrl: server.relayUrl,
+        }),
+      });
+    } catch (err) {
+      // Map typed SSH errors into a stable taxonomy the wizard can
+      // branch on. Generic JS errors get a catch-all category so the
+      // client still gets a useful message.
+      let kind: string = "install_failed";
+      let message = (err as Error).message ?? "install failed";
+      if (err instanceof SshTimeoutError) {
+        kind = "timeout";
+      } else if (err instanceof SshError) {
+        kind = err.kind;
+      }
+      await audit(
+        "server.install-relay.failed",
+        input.host,
+        kind,
+        getActor(c),
+        getActorUserId(c),
+      );
+      await stream.writeSSE({
+        event: "error",
+        data: JSON.stringify({ kind, message }),
+      });
+    } finally {
+      activeInstalls.delete(actorKey);
+    }
+  });
+});
+
+// POST /api/servers/:id/install-relay — re-install for an existing
+// server. Not yet implemented; distinct from first-install because the
+// DB row already exists and host-key TOFU becomes strict-match. Filed
+// as v0.3+ follow-up in agent-tasks `252556e3` known-follow-ups.
 serversRouter.post("/:id/install-relay", async (c) => {
   const actor = getActorContext(c);
   const server = await findOwnedServer(actor, c.req.param("id"));
   if (!server) return c.json({ error: "not_found" }, 404);
 
-  // Placeholder — actual SSH installation will use the installer script from agent-relay
-  return c.json({
-    message: "Relay installation not yet implemented — requires SSH integration",
-    hint: "Configure relayUrl and relayToken manually for now",
-  }, 501);
+  return c.json(
+    {
+      message:
+        "Re-install for an existing server is not yet implemented. Use POST /api/servers/install-relay (no :id) to onboard a new VPS.",
+    },
+    501,
+  );
 });
