@@ -12,6 +12,10 @@ interface Props {
   serverId: string;
   serverName: string;
   serverHost: string;
+  /** Stored install dir on the VPS. Pre-fills the advanced field; `null` shows placeholder /opt/agent-relay. */
+  defaultRelayDir: string | null;
+  /** Stored compose-file override. Pre-fills the advanced field; `null` means the default docker-compose.yml. */
+  defaultRelayComposeFile: string | null;
   onClose: () => void;
   /** Called after a successful update so the parent can refresh. */
   onUpdated: () => void;
@@ -28,6 +32,8 @@ export function ServerUpdateImageDialog({
   serverId,
   serverName,
   serverHost,
+  defaultRelayDir,
+  defaultRelayComposeFile,
   onClose,
   onUpdated,
 }: Props) {
@@ -39,6 +45,10 @@ export function ServerUpdateImageDialog({
   const [sshPassword, setSshPassword] = useState("");
   const [sshPrivateKey, setSshPrivateKey] = useState("");
   const [sshPassphrase, setSshPassphrase] = useState("");
+
+  const [relayDir, setRelayDir] = useState(defaultRelayDir ?? "");
+  const [relayComposeFile, setRelayComposeFile] = useState(defaultRelayComposeFile ?? "");
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [logLines, setLogLines] = useState<Array<{ stream: "stdout" | "stderr"; line: string }>>([]);
   const [errorBanner, setErrorBanner] = useState<{ kind: string; message: string } | null>(null);
@@ -80,6 +90,8 @@ export function ServerUpdateImageDialog({
       ...(authMode === "password"
         ? { sshPassword }
         : { sshPrivateKey, sshPassphrase: sshPassphrase || undefined }),
+      ...(relayDir.trim() ? { relayDir: relayDir.trim() } : {}),
+      ...(relayComposeFile.trim() ? { relayComposeFile: relayComposeFile.trim() } : {}),
     };
 
     const controller = new AbortController();
@@ -226,6 +238,55 @@ export function ServerUpdateImageDialog({
                     style={{ marginTop: "var(--space-2)" }}
                   />
                 </>
+              )}
+            </div>
+            <div style={{ gridColumn: "1 / -1" }}>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setShowAdvanced((v) => !v)}
+              >
+                {showAdvanced ? "Hide" : "Show"} advanced
+              </button>
+              {showAdvanced && (
+                <div style={{ marginTop: "var(--space-2)", display: "grid", gap: "var(--space-2)" }}>
+                  <div>
+                    <Label htmlFor="upd-relay-dir">
+                      Relay directory on VPS{" "}
+                      <span style={{ color: "var(--muted)" }}>
+                        ({defaultRelayDir
+                          ? <>stored: <code>{defaultRelayDir}</code></>
+                          : <>default <code>/opt/agent-relay</code>; set if the relay was installed elsewhere, e.g. <code>/root/git/agent-relay</code></>})
+                      </span>
+                    </Label>
+                    <input
+                      id="upd-relay-dir"
+                      type="text"
+                      placeholder={defaultRelayDir ?? "/opt/agent-relay"}
+                      value={relayDir}
+                      onChange={(e) => setRelayDir(e.target.value)}
+                      className="input"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="upd-compose-file">
+                      Compose filename{" "}
+                      <span style={{ color: "var(--muted)" }}>
+                        ({defaultRelayComposeFile
+                          ? <>stored: <code>{defaultRelayComposeFile}</code></>
+                          : <>default <code>docker-compose.yml</code>; set e.g. <code>docker-compose.prod.yml</code> for prod-override installs (Traefik labels, custom container_name)</>})
+                      </span>
+                    </Label>
+                    <input
+                      id="upd-compose-file"
+                      type="text"
+                      placeholder={defaultRelayComposeFile ?? "docker-compose.yml"}
+                      value={relayComposeFile}
+                      onChange={(e) => setRelayComposeFile(e.target.value)}
+                      className="input"
+                    />
+                  </div>
+                </div>
               )}
             </div>
             <div style={{ gridColumn: "1 / -1", display: "flex", gap: "var(--space-2)", justifyContent: "flex-end", marginTop: "var(--space-3)" }}>

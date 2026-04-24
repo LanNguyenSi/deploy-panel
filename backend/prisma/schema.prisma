@@ -29,6 +29,22 @@ model Server {
   // so operators don't have to remember what the original install used.
   // Null for v0.1.x installers (no Mode line to parse).
   relayMode   String?
+  // Directory on the VPS where agent-relay's docker-compose.yml lives.
+  // install.sh defaults to /opt/agent-relay but accepts a custom
+  // RELAY_DIR env var; operators who installed manually or under a
+  // custom path (e.g. /root/git/agent-relay) need the update-image
+  // and re-install flows to know where. Null = fall back to
+  // /opt/agent-relay. The value is validated as an absolute path with
+  // no shell metachars before being templated into SSH commands.
+  relayDir    String?
+  // Compose file basename to use with `docker compose -f <file>`. Null
+  // = use `docker-compose.yml` (the installer default). Operators who
+  // installed manually with a prod override (e.g. `docker-compose.prod.yml`
+  // with `container_name: agent-relay` + Traefik labels) must persist
+  // that filename here so update-image + re-install don't accidentally
+  // recreate the container via the dev compose file and strip Traefik
+  // routing. Validated as a simple filename — no slashes, no metachars.
+  relayComposeFile String?
   status      String   @default("unknown") // unknown, online, offline, no-relay
   lastSeenAt  DateTime?
   createdAt   DateTime @default(now())
