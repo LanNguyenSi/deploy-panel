@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest } from "../lib/relay.js";
 import { findOwnedServer, getActorContext } from "../lib/ownership.js";
+import { setServerStatus } from "../services/server-status.js";
 
 export const syncRouter = new Hono();
 
@@ -74,11 +75,11 @@ syncRouter.post("/:serverId/sync", async (c) => {
       }
     }
 
-    // Update server status
-    await prisma.server.update({
-      where: { id: serverId },
-      data: { status: "online", lastSeenAt: new Date() },
-    });
+    // Sync is a probe-style observation (it hit the relay's API to
+    // enumerate apps). Route through the coordination helper so an
+    // in-flight install / update-image / re-install doesn't get
+    // overridden here.
+    await setServerStatus({ serverId, status: "online", source: "probe" });
 
     return c.json({
       synced: true,
@@ -87,10 +88,7 @@ syncRouter.post("/:serverId/sync", async (c) => {
       updated,
     });
   } catch (err: any) {
-    await prisma.server.update({
-      where: { id: serverId },
-      data: { status: "offline", lastSeenAt: new Date() },
-    });
+    await setServerStatus({ serverId, status: "offline", source: "probe" });
     return c.json({ error: err.message }, 500);
   }
 });

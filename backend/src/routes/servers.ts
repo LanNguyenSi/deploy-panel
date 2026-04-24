@@ -12,6 +12,8 @@ import {
 import { executeSshCommand, SshError, SshTimeoutError } from "../services/ssh-executor.js";
 import { buildInstallCommand, parseInstallOutput } from "../services/install-relay.js";
 import { probeVps } from "../services/probe-vps.js";
+import { activeInstalls } from "../services/active-installs.js";
+import { setServerStatus } from "../services/server-status.js";
 
 /** Strip sensitive fields from server objects */
 function sanitizeServer(server: any) {
@@ -129,10 +131,7 @@ serversRouter.post("/:id/test", async (c) => {
   if (!server) return c.json({ error: "not_found" }, 404);
 
   if (!server.relayUrl) {
-    await prisma.server.update({
-      where: { id: server.id },
-      data: { status: "no-relay", lastSeenAt: new Date() },
-    });
+    await setServerStatus({ serverId: server.id, status: "no-relay", source: "probe" });
     return c.json({ status: "no-relay", message: "No relay URL configured" });
   }
 
@@ -149,23 +148,17 @@ serversRouter.post("/:id/test", async (c) => {
 
     if (response.ok) {
       const data = await response.json();
-      await prisma.server.update({
-        where: { id: server.id },
-        data: { status: "online", lastSeenAt: new Date() },
-      });
+      // Probe source — an in-flight install / re-install / update-image
+      // on this server will short-circuit the write so its final
+      // authoritative status wins.
+      await setServerStatus({ serverId: server.id, status: "online", source: "probe" });
       return c.json({ status: "online", relay: data });
     }
 
-    await prisma.server.update({
-      where: { id: server.id },
-      data: { status: "offline", lastSeenAt: new Date() },
-    });
+    await setServerStatus({ serverId: server.id, status: "offline", source: "probe" });
     return c.json({ status: "offline", message: `Relay responded with ${response.status}` });
   } catch (err: any) {
-    await prisma.server.update({
-      where: { id: server.id },
-      data: { status: "offline", lastSeenAt: new Date() },
-    });
+    await setServerStatus({ serverId: server.id, status: "offline", source: "probe" });
     return c.json({ status: "offline", message: err.message ?? "Connection failed" });
   }
 });
@@ -198,9 +191,11 @@ serversRouter.get("/:id/system", async (c) => {
  * click during the 2–5 minute install window and against concurrency
  * collisions (two installs racing to create the same Server row).
  * Stored in-process — fine for single-instance panel deployments; a
- * multi-instance deploy would need Redis-backed tracking.
+ * multi-instance deploy would need Redis-backed tracking. The Set
+ * itself now lives in `services/active-installs.ts` so the status-
+ * coordination helper can consult it without importing this route
+ * file.
  */
-const activeInstalls = new Set<string>();
 
 const installEnvSchema = z.object({
   // FQDN for Traefik TLS — validated as a conservative hostname shape.
@@ -840,6 +835,15 @@ serversRouter.post("/:id/install-relay", async (c) => {
         where: { id: server.id },
         data: {
           relayUrl: parsedOutput.value.relayUrl,
+          // Reinstall completed successfully. Install.sh just brought
+          // the relay up and pulled the latest image — assert
+          // `status: online` here as the authoritative post-action
+          // state. Without this, probe writes skipped during the
+          // install window would have left whatever stale value the
+          // last pre-install /test wrote (which could be `offline`
+          // from the brief container-missing gap).
+          status: "online",
+          lastSeenAt: new Date(),
           ...(persistableMode ? { relayMode: persistableMode } : {}),
           ...(shouldUpdateToken ? { relayToken: emittedToken } : {}),
           // Persist relayDir on backfill (legacy rows with a
