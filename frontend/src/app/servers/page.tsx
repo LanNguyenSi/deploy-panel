@@ -5,6 +5,7 @@ import Link from "next/link";
 import { getServers, createServer, deleteServer, testServer, getServerSystem, type ServerWithCount, type SystemMetrics } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
+import { ServerInstallWizard } from "@/components/ServerInstallWizard";
 
 export default function ServersPage() {
   const [servers, setServers] = useState<ServerWithCount[]>([]);
@@ -86,7 +87,14 @@ export default function ServersPage() {
 
       {showForm && (
         <div className="animate-slide-up">
-          <AddServerForm onCreated={() => { setShowForm(false); toast("Server added", "success"); load(); }} />
+          <ServerAddPanel
+            onDone={() => {
+              setShowForm(false);
+              toast("Server added", "success");
+              load();
+            }}
+            onCancel={() => setShowForm(false)}
+          />
         </div>
       )}
 
@@ -146,7 +154,91 @@ export default function ServersPage() {
   );
 }
 
-function AddServerForm({ onCreated }: { onCreated: () => void }) {
+/**
+ * Parent panel for the add-server flow. Offers two entry points:
+ * "Install relay for me" (SSH-wizard from ServerInstallWizard) and
+ * "I already have a relay" (legacy manual form). The choice is
+ * local state — no deep links, no cookies; refresh resets to the
+ * chooser.
+ */
+function ServerAddPanel({ onDone, onCancel }: { onDone: () => void; onCancel: () => void }) {
+  const [mode, setMode] = useState<"choose" | "wizard" | "manual">("choose");
+
+  if (mode === "wizard") {
+    return (
+      <ServerInstallWizard
+        onCreated={onDone}
+        onCancel={onCancel}
+        onSwitchToManual={() => setMode("manual")}
+      />
+    );
+  }
+  if (mode === "manual") {
+    return <AddServerForm onCreated={onDone} onCancel={onCancel} onSwitchToWizard={() => setMode("wizard")} />;
+  }
+  return (
+    <div className="card" style={{ padding: "var(--space-5)", marginBottom: "var(--space-6)" }}>
+      <h3 style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: "var(--space-2)" }}>
+        Add Server
+      </h3>
+      <p style={{ fontSize: "var(--text-sm)", color: "var(--muted)", marginBottom: "var(--space-4)" }}>
+        How do you want to connect this server?
+      </p>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "var(--space-3)" }}>
+        <button
+          type="button"
+          className="card"
+          onClick={() => setMode("wizard")}
+          style={{
+            padding: "var(--space-4)",
+            textAlign: "left",
+            cursor: "pointer",
+            border: "1px solid var(--border)",
+            background: "var(--surface)",
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>Install relay for me</div>
+          <div style={{ fontSize: "var(--text-xs)", color: "var(--muted)" }}>
+            Runs agent-relay&apos;s installer on a fresh VPS via ephemeral SSH.
+            Credentials are used once and discarded.
+          </div>
+        </button>
+        <button
+          type="button"
+          className="card"
+          onClick={() => setMode("manual")}
+          style={{
+            padding: "var(--space-4)",
+            textAlign: "left",
+            cursor: "pointer",
+            border: "1px solid var(--border)",
+            background: "var(--surface)",
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 4 }}>I already have a relay</div>
+          <div style={{ fontSize: "var(--text-xs)", color: "var(--muted)" }}>
+            Paste the URL and token from a relay you already installed.
+          </div>
+        </button>
+      </div>
+      <div style={{ marginTop: "var(--space-3)", textAlign: "right" }}>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AddServerForm({
+  onCreated,
+  onCancel,
+  onSwitchToWizard,
+}: {
+  onCreated: () => void;
+  onCancel?: () => void;
+  onSwitchToWizard?: () => void;
+}) {
   const [name, setName] = useState("");
   const [host, setHost] = useState("");
   const [relayUrl, setRelayUrl] = useState("");
@@ -199,10 +291,20 @@ function AddServerForm({ onCreated }: { onCreated: () => void }) {
         </div>
       </div>
       {error && <p className="form-error" style={{ marginTop: "var(--space-3)" }}>{error}</p>}
-      <div style={{ marginTop: "var(--space-4)", display: "flex", gap: "var(--space-2)" }}>
+      <div style={{ marginTop: "var(--space-4)", display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
         <button type="submit" disabled={submitting} className="btn btn-primary">
           {submitting ? "Adding..." : "Add Server"}
         </button>
+        {onSwitchToWizard && (
+          <button type="button" className="btn btn-ghost btn-sm" onClick={onSwitchToWizard}>
+            Or install a relay via SSH
+          </button>
+        )}
+        {onCancel && (
+          <button type="button" className="btn btn-ghost btn-sm" onClick={onCancel} style={{ marginLeft: "auto" }}>
+            Cancel
+          </button>
+        )}
       </div>
     </form>
   );
