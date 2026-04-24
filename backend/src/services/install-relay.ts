@@ -19,6 +19,8 @@
 export const INSTALL_SCRIPT_URL =
   "https://raw.githubusercontent.com/LanNguyenSi/agent-relay/main/install.sh";
 
+export type RelayMode = "auto" | "greenfield" | "existing-traefik" | "port-only";
+
 export interface InstallEnvVars {
   /** FQDN for Traefik TLS. Omit for port-only mode. */
   relayDomain?: string;
@@ -26,6 +28,14 @@ export interface InstallEnvVars {
   traefikEmail?: string;
   /** Host dir on the VPS containing app repos. Defaults to install.sh's own default when omitted. */
   appsDir?: string;
+  /** install.sh v0.2.0 mode. Omit to let the installer auto-detect. */
+  relayMode?: RelayMode;
+  /** Docker network for existing-traefik mode. Default `traefik-public` on the installer side. */
+  traefikNetwork?: string;
+  /** ACME resolver name on an existing Traefik. Default `letsencrypt`. */
+  traefikCertResolver?: string;
+  /** Host bind IP for port-only mode. Default `127.0.0.1`; use `0.0.0.0` to expose publicly. */
+  relayBind?: string;
 }
 
 /**
@@ -62,6 +72,18 @@ export function buildInstallCommand(env: InstallEnvVars): string {
   if (env.appsDir !== undefined) {
     envPairs.push(`APPS_DIR=${shellEscape(env.appsDir)}`);
   }
+  if (env.relayMode !== undefined) {
+    envPairs.push(`RELAY_MODE=${shellEscape(env.relayMode)}`);
+  }
+  if (env.traefikNetwork !== undefined) {
+    envPairs.push(`TRAEFIK_NETWORK=${shellEscape(env.traefikNetwork)}`);
+  }
+  if (env.traefikCertResolver !== undefined) {
+    envPairs.push(`TRAEFIK_CERTRESOLVER=${shellEscape(env.traefikCertResolver)}`);
+  }
+  if (env.relayBind !== undefined) {
+    envPairs.push(`RELAY_BIND=${shellEscape(env.relayBind)}`);
+  }
   const envPrefix = envPairs.length > 0 ? `env ${envPairs.join(" ")} ` : "";
   // INSTALL_SCRIPT_URL is a compile-time constant — not exposed to the
   // caller — so no interpolation risk here. The `|` pipe is shell
@@ -86,6 +108,8 @@ function stripAnsi(s: string): string {
 export interface InstallOutputParseResult {
   relayUrl: string;
   relayToken: string;
+  /** Install mode reported by agent-relay v0.2.0+. Absent for older installers. */
+  relayMode?: RelayMode;
 }
 
 export interface InstallOutputParseError {
@@ -132,8 +156,28 @@ export function parseInstallOutput(
       },
     };
   }
+  // install.sh v0.2.0+ prints `  Mode:  <mode>` above the URL line.
+  // Treat this as optional — older installers (v0.1.x) will still parse
+  // fine because Mode is not required by the contract.
+  const modeMatch = clean.match(/^[ \t]*Mode:\s+(\S+)/m);
+  let relayMode: RelayMode | undefined;
+  if (modeMatch) {
+    const candidate = modeMatch[1];
+    if (
+      candidate === "greenfield" ||
+      candidate === "existing-traefik" ||
+      candidate === "port-only" ||
+      candidate === "auto"
+    ) {
+      relayMode = candidate;
+    }
+  }
   return {
     ok: true,
-    value: { relayUrl: urlMatch[1], relayToken: tokenMatch[1] },
+    value: {
+      relayUrl: urlMatch[1],
+      relayToken: tokenMatch[1],
+      ...(relayMode ? { relayMode } : {}),
+    },
   };
 }

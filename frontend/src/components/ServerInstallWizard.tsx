@@ -1,9 +1,17 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { installRelayStream, type InstallRelayRequest } from "@/lib/api";
+import {
+  installRelayStream,
+  probeVps,
+  type InstallRelayRequest,
+  type RelayMode,
+  type VpsProbeResult,
+} from "@/lib/api";
 
-type Step = "basics" | "ssh" | "options" | "progress" | "done";
+type Step = "basics" | "ssh" | "probe" | "options" | "progress" | "done";
+
+type SelectedMode = "auto" | "greenfield" | "existing-traefik" | "port-only";
 
 interface Props {
   /** Called when the wizard completes successfully so the parent can refresh. */
@@ -43,6 +51,19 @@ export function ServerInstallWizard({ onCreated, onCancel, onSwitchToManual }: P
   const [traefikEmail, setTraefikEmail] = useState("");
   const [appsDir, setAppsDir] = useState("/root/git");
 
+  // v0.2.0 mode selection. `auto` = let install.sh decide (no env var
+  // passed). Anything else overrides. The probe step pre-fills this.
+  const [selectedMode, setSelectedMode] = useState<SelectedMode>("auto");
+  const [traefikNetwork, setTraefikNetwork] = useState("");
+  const [traefikCertResolver, setTraefikCertResolver] = useState("");
+  const [relayBind, setRelayBind] = useState("");
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Probe state
+  const [probe, setProbe] = useState<VpsProbeResult | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [probeError, setProbeError] = useState<{ kind: string; message: string } | null>(null);
+
   // Progress state
   const [logLines, setLogLines] = useState<Array<{ stream: "stdout" | "stderr"; line: string }>>([]);
   const [errorBanner, setErrorBanner] = useState<{ kind: string; message: string } | null>(null);
@@ -51,6 +72,7 @@ export function ServerInstallWizard({ onCreated, onCancel, onSwitchToManual }: P
     name: string;
     host: string;
     relayUrl: string;
+    relayMode?: RelayMode;
   } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const logEndRef = useRef<HTMLDivElement | null>(null);
@@ -79,6 +101,37 @@ export function ServerInstallWizard({ onCreated, onCancel, onSwitchToManual }: P
     };
   }, []);
 
+  const runProbe = async () => {
+    setStep("probe");
+    setProbing(true);
+    setProbe(null);
+    setProbeError(null);
+    try {
+      const result = await probeVps({
+        host: host.trim(),
+        sshUser: sshUser.trim() || undefined,
+        sshPort,
+        ...(authMode === "password"
+          ? { sshPassword }
+          : { sshPrivateKey, sshPassphrase: sshPassphrase || undefined }),
+      });
+      setProbe(result);
+      // Pre-fill the mode + network from detection. User can still
+      // override in the next step.
+      setSelectedMode(result.suggestedMode);
+      if (result.suggestedTraefikNetwork) {
+        setTraefikNetwork(result.suggestedTraefikNetwork);
+      }
+    } catch (err) {
+      setProbeError({
+        kind: (err as { kind?: string }).kind ?? "probe_failed",
+        message: (err as Error).message ?? "probe failed",
+      });
+    } finally {
+      setProbing(false);
+    }
+  };
+
   const startInstall = async () => {
     setStep("progress");
     setLogLines([]);
@@ -96,6 +149,13 @@ export function ServerInstallWizard({ onCreated, onCancel, onSwitchToManual }: P
       relayDomain: relayDomain.trim() || undefined,
       traefikEmail: traefikEmail.trim() || undefined,
       appsDir: appsDir.trim() || undefined,
+      // Only forward RELAY_MODE when the user picked a specific mode —
+      // `auto` is install.sh's default, so omitting lets the VPS-side
+      // detection win in case it sees something the probe missed.
+      ...(selectedMode !== "auto" ? { relayMode: selectedMode } : {}),
+      ...(traefikNetwork.trim() ? { traefikNetwork: traefikNetwork.trim() } : {}),
+      ...(traefikCertResolver.trim() ? { traefikCertResolver: traefikCertResolver.trim() } : {}),
+      ...(relayBind.trim() ? { relayBind: relayBind.trim() } : {}),
     };
 
     const controller = new AbortController();
@@ -277,11 +337,52 @@ export function ServerInstallWizard({ onCreated, onCancel, onSwitchToManual }: P
               type="button"
               className="btn btn-primary"
               disabled={!canAdvanceSsh}
-              onClick={() => setStep("options")}
+              onClick={() => void runProbe()}
             >
-              Next: Install options
+              Next: Probe VPS
             </button>
           </StepActions>
+        </div>
+      )}
+
+      {step === "probe" && (
+        <div>
+          {probing && (
+            <p style={{ fontSize: "var(--text-sm)" }}>
+              Probing <code>{host}</code>… (checking ports 80/443 and existing Docker containers)
+            </p>
+          )}
+          {probeError && (
+            <div className="alert alert-danger">
+              <strong>Probe failed ({probeError.kind}):</strong> {probeError.message}
+              <div style={{ marginTop: "var(--space-2)", display: "flex", gap: "var(--space-2)" }}>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setStep("ssh")}>
+                  Back to SSH
+                </button>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => void runProbe()}>
+                  Retry probe
+                </button>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setStep("options")}>
+                  Skip probe
+                </button>
+              </div>
+            </div>
+          )}
+          {probe && !probing && (
+            <ProbeSummary probe={probe} />
+          )}
+          {probe && !probing && (
+            <StepActions>
+              <button type="button" className="btn btn-ghost" onClick={() => setStep("ssh")}>Back</button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => setStep("options")}
+              >
+                Next: Install options
+              </button>
+            </StepActions>
+          )}
         </div>
       )}
 
@@ -324,8 +425,89 @@ export function ServerInstallWizard({ onCreated, onCancel, onSwitchToManual }: P
               className="input"
             />
           </div>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <Label htmlFor="relay-mode">
+              Install mode{" "}
+              {probe && (
+                <span style={{ color: "var(--muted)" }}>
+                  (suggested: <code>{probe.suggestedMode}</code>)
+                </span>
+              )}
+            </Label>
+            <select
+              id="relay-mode"
+              value={selectedMode}
+              onChange={(e) => setSelectedMode(e.target.value as SelectedMode)}
+              className="input"
+            >
+              <option value="auto">auto — let install.sh decide on the VPS</option>
+              <option value="greenfield">greenfield — create Traefik + Let&apos;s Encrypt</option>
+              <option value="existing-traefik">existing-traefik — reuse a running Traefik</option>
+              <option value="port-only">port-only — no Traefik, no TLS</option>
+            </select>
+          </div>
+          {(selectedMode === "existing-traefik" ||
+            selectedMode === "port-only" ||
+            showAdvanced) && (
+            <div style={{ gridColumn: "1 / -1" }}>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setShowAdvanced((v) => !v)}
+                style={{ marginBottom: "var(--space-2)" }}
+              >
+                {showAdvanced ? "Hide" : "Show"} advanced mode options
+              </button>
+              {showAdvanced && (
+                <div className="grid-form" style={{ marginTop: "var(--space-2)" }}>
+                  <div>
+                    <Label htmlFor="traefik-network">
+                      TRAEFIK_NETWORK{" "}
+                      <span style={{ color: "var(--muted)" }}>(existing-traefik only)</span>
+                    </Label>
+                    <input
+                      id="traefik-network"
+                      type="text"
+                      placeholder="traefik-public"
+                      value={traefikNetwork}
+                      onChange={(e) => setTraefikNetwork(e.target.value)}
+                      className="input"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="traefik-resolver">
+                      TRAEFIK_CERTRESOLVER{" "}
+                      <span style={{ color: "var(--muted)" }}>(existing-traefik only)</span>
+                    </Label>
+                    <input
+                      id="traefik-resolver"
+                      type="text"
+                      placeholder="letsencrypt"
+                      value={traefikCertResolver}
+                      onChange={(e) => setTraefikCertResolver(e.target.value)}
+                      className="input"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="relay-bind">
+                      RELAY_BIND{" "}
+                      <span style={{ color: "var(--muted)" }}>(port-only only)</span>
+                    </Label>
+                    <input
+                      id="relay-bind"
+                      type="text"
+                      placeholder="127.0.0.1"
+                      value={relayBind}
+                      onChange={(e) => setRelayBind(e.target.value)}
+                      className="input"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           <StepActions>
-            <button type="button" className="btn btn-ghost" onClick={() => setStep("ssh")}>Back</button>
+            <button type="button" className="btn btn-ghost" onClick={() => setStep("probe")}>Back</button>
             <button type="button" className="btn btn-primary" onClick={startInstall}>
               Install
             </button>
@@ -383,6 +565,14 @@ export function ServerInstallWizard({ onCreated, onCancel, onSwitchToManual }: P
             <div style={{ marginTop: "var(--space-2)", fontSize: "var(--text-xs)", color: "var(--muted)" }}>
               Relay URL: <code>{doneInfo.relayUrl}</code>
             </div>
+            {doneInfo.relayMode && (
+              <div style={{ marginTop: "var(--space-1)", fontSize: "var(--text-xs)", color: "var(--muted)" }}>
+                Mode: <code>{doneInfo.relayMode}</code>
+                {doneInfo.relayMode === "port-only" && (
+                  <> — wire your reverse proxy to this URL for public access.</>
+                )}
+              </div>
+            )}
           </div>
           <StepActions>
             <button type="button" className="btn btn-primary" onClick={onCreated}>
@@ -395,11 +585,59 @@ export function ServerInstallWizard({ onCreated, onCancel, onSwitchToManual }: P
   );
 }
 
+function ProbeSummary({ probe }: { probe: VpsProbeResult }) {
+  const portOwnerLine = (label: string, owner: VpsProbeResult["port80"]) => {
+    switch (owner.kind) {
+      case "free":
+        return `${label}: free`;
+      case "traefik":
+        return `${label}: Traefik '${owner.name}' (${owner.image})`;
+      case "docker":
+        return `${label}: docker container '${owner.name}' (${owner.image})`;
+      case "proc":
+        return `${label}: process '${owner.process}'`;
+      case "unknown":
+        return `${label}: occupied (owner unknown)`;
+    }
+  };
+
+  const suggestionBlurb = () => {
+    switch (probe.suggestedMode) {
+      case "greenfield":
+        return "No reverse proxy detected. Suggested: greenfield — the relay will install its own Traefik with Let's Encrypt on :80/:443.";
+      case "existing-traefik":
+        return `Existing Traefik detected${probe.suggestedTraefikNetwork ? ` on network '${probe.suggestedTraefikNetwork}'` : ""}. Suggested: existing-traefik — the relay will join it with labels for your domain.`;
+      case "port-only":
+        return "Port 80 is already used by a non-Traefik listener. Suggested: port-only — the relay will bind directly, and you'll need to front it with your existing reverse proxy.";
+    }
+  };
+
+  return (
+    <div style={{ marginBottom: "var(--space-3)" }}>
+      <div className="alert" style={{ background: "var(--surface-muted, rgba(0,0,0,0.03))", marginBottom: "var(--space-3)" }}>
+        <strong>VPS state</strong>
+        <ul style={{ marginTop: "var(--space-2)", marginBottom: 0, paddingLeft: "var(--space-4)", fontSize: "var(--text-sm)" }}>
+          <li>{portOwnerLine("Port 80", probe.port80)}</li>
+          <li>{portOwnerLine("Port 443", probe.port443)}</li>
+          <li>{probe.containers.length === 0 ? "No running containers." : `${probe.containers.length} running container${probe.containers.length === 1 ? "" : "s"}.`}</li>
+        </ul>
+      </div>
+      <div className="alert alert-info">
+        <strong>Suggested mode: <code>{probe.suggestedMode}</code></strong>
+        <p style={{ fontSize: "var(--text-xs)", color: "var(--muted)", marginTop: "var(--space-1)", marginBottom: 0 }}>
+          {suggestionBlurb()} You can override on the next step.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function StepIndicator({ current }: { current: Step }) {
-  const order: Step[] = ["basics", "ssh", "options", "progress", "done"];
+  const order: Step[] = ["basics", "ssh", "probe", "options", "progress", "done"];
   const labels: Record<Step, string> = {
     basics: "Basics",
     ssh: "SSH",
+    probe: "Probe",
     options: "Options",
     progress: "Install",
     done: "Done",
