@@ -36,6 +36,8 @@ export interface Server {
   relayUrl?: string | null;
   /** Absolute install dir on the VPS (default /opt/agent-relay). Null on legacy rows. */
   relayDir?: string | null;
+  /** Compose filename override. Null = default docker-compose.yml. Non-null for prod-override installs. */
+  relayComposeFile?: string | null;
   /** Indicates we have a pinned host-key fingerprint stored — re-install will pin against it. */
   hasHostKeyPinned?: boolean;
 }
@@ -280,6 +282,8 @@ export interface ReinstallRelayRequest {
   appsDir?: string;
   /** Override / backfill the relay's install dir on the VPS (default /opt/agent-relay). */
   relayDir?: string;
+  /** Override / backfill the compose filename (default docker-compose.yml). */
+  relayComposeFile?: string;
   /** Force a fresh AUTH_TOKEN on the VPS instead of preserving the current one. */
   rotateToken?: boolean;
 }
@@ -321,6 +325,8 @@ export interface UpdateRelayImageRequest {
   sshPassphrase?: string;
   /** Override / backfill the relay's install dir on the VPS (default /opt/agent-relay). */
   relayDir?: string;
+  /** Override / backfill the compose filename (default docker-compose.yml). Useful for prod overrides. */
+  relayComposeFile?: string;
 }
 
 export type UpdateRelayImageEvent =

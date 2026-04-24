@@ -23,6 +23,7 @@ export default function ServerDetailPage() {
   const [serverRelayMode, setServerRelayMode] = useState<RelayMode | null>(null);
   const [serverHasHostKey, setServerHasHostKey] = useState(false);
   const [serverRelayDir, setServerRelayDir] = useState<string | null>(null);
+  const [serverRelayComposeFile, setServerRelayComposeFile] = useState<string | null>(null);
   const [reinstallOpen, setReinstallOpen] = useState(false);
   const [updateImageOpen, setUpdateImageOpen] = useState(false);
   const [apps, setApps] = useState<AppWithCount[]>([]);
@@ -93,6 +94,7 @@ export default function ServerDetailPage() {
       setServerRelayMode((serverData.server.relayMode as RelayMode | null | undefined) ?? null);
       setServerHasHostKey(Boolean(serverData.server.hasHostKeyPinned));
       setServerRelayDir(serverData.server.relayDir ?? null);
+      setServerRelayComposeFile(serverData.server.relayComposeFile ?? null);
       setApps(appsData.apps);
     } catch (err) {
       console.error("Failed to load:", err);
@@ -294,6 +296,7 @@ export default function ServerDetailPage() {
           serverName={serverName}
           serverHost={serverHost}
           defaultRelayDir={serverRelayDir}
+          defaultRelayComposeFile={serverRelayComposeFile}
           onClose={() => setUpdateImageOpen(false)}
           onUpdated={() => {
             void load();

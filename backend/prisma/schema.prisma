@@ -37,6 +37,14 @@ model Server {
   // /opt/agent-relay. The value is validated as an absolute path with
   // no shell metachars before being templated into SSH commands.
   relayDir    String?
+  // Compose file basename to use with `docker compose -f <file>`. Null
+  // = use `docker-compose.yml` (the installer default). Operators who
+  // installed manually with a prod override (e.g. `docker-compose.prod.yml`
+  // with `container_name: agent-relay` + Traefik labels) must persist
+  // that filename here so update-image + re-install don't accidentally
+  // recreate the container via the dev compose file and strip Traefik
+  // routing. Validated as a simple filename — no slashes, no metachars.
+  relayComposeFile String?
   status      String   @default("unknown") // unknown, online, offline, no-relay
   lastSeenAt  DateTime?
   createdAt   DateTime @default(now())

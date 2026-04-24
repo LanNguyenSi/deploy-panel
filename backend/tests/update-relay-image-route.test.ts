@@ -342,6 +342,72 @@ describe("POST /servers/:id/update-relay-image", () => {
     expect(relayDirUpdate?.[0].data.relayDir).toBe("/root/git/agent-relay");
   });
 
+  it("templates `-f <compose-file>` into both docker compose invocations when set", async () => {
+    mServer.findUnique.mockResolvedValue(
+      serverFixture({
+        relayDir: "/root/git/agent-relay",
+        relayComposeFile: "docker-compose.prod.yml",
+      }),
+    );
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-a/update-relay-image",
+      asJson(validBody),
+    );
+    await readSse(res);
+    const sshCall = vi.mocked(executeSshCommand).mock.calls[0]?.[0];
+    // Both pull and up -d must get -f so docker doesn't recreate the
+    // container via the dev docker-compose.yml (which would strip
+    // Traefik labels and swap the bind mount).
+    expect(sshCall?.command).toContain("docker compose -f docker-compose.prod.yml pull");
+    expect(sshCall?.command).toContain("docker compose -f docker-compose.prod.yml up -d");
+  });
+
+  it("omits -f when no compose file is stored or supplied (installer default)", async () => {
+    mServer.findUnique.mockResolvedValue(serverFixture({ relayComposeFile: null }));
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-a/update-relay-image",
+      asJson(validBody),
+    );
+    await readSse(res);
+    const sshCall = vi.mocked(executeSshCommand).mock.calls[0]?.[0];
+    expect(sshCall?.command).not.toContain("-f ");
+    expect(sshCall?.command).toContain("docker compose pull");
+  });
+
+  it("body-supplied relayComposeFile overrides stored value and persists", async () => {
+    mServer.findUnique.mockResolvedValue(
+      serverFixture({ relayComposeFile: "docker-compose.yml" }),
+    );
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-a/update-relay-image",
+      asJson({ ...validBody, relayComposeFile: "docker-compose.prod.yml" }),
+    );
+    await readSse(res);
+    const sshCall = vi.mocked(executeSshCommand).mock.calls[0]?.[0];
+    expect(sshCall?.command).toContain("-f docker-compose.prod.yml");
+    const updateCalls = vi.mocked(prisma.server.update).mock.calls;
+    const composeUpdate = updateCalls.find((c) => c[0].data.relayComposeFile);
+    expect(composeUpdate?.[0].data.relayComposeFile).toBe("docker-compose.prod.yml");
+  });
+
+  it("rejects relayComposeFile with path separators (must be basename only)", async () => {
+    mServer.findUnique.mockResolvedValue(serverFixture());
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-a/update-relay-image",
+      asJson({ ...validBody, relayComposeFile: "../etc/passwd" }),
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects relayComposeFile without .yml extension", async () => {
+    mServer.findUnique.mockResolvedValue(serverFixture());
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-a/update-relay-image",
+      asJson({ ...validBody, relayComposeFile: "compose.txt" }),
+    );
+    expect(res.status).toBe(400);
+  });
+
   it("rejects a body-supplied relayDir with shell metachars", async () => {
     mServer.findUnique.mockResolvedValue(serverFixture());
     const res = await appFor({ userId: null, isAdmin: true }).request(

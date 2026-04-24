@@ -14,6 +14,8 @@ interface Props {
   serverHost: string;
   /** Stored install dir on the VPS. Pre-fills the advanced field; `null` shows placeholder /opt/agent-relay. */
   defaultRelayDir: string | null;
+  /** Stored compose-file override. Pre-fills the advanced field; `null` means the default docker-compose.yml. */
+  defaultRelayComposeFile: string | null;
   onClose: () => void;
   /** Called after a successful update so the parent can refresh. */
   onUpdated: () => void;
@@ -31,6 +33,7 @@ export function ServerUpdateImageDialog({
   serverName,
   serverHost,
   defaultRelayDir,
+  defaultRelayComposeFile,
   onClose,
   onUpdated,
 }: Props) {
@@ -44,6 +47,7 @@ export function ServerUpdateImageDialog({
   const [sshPassphrase, setSshPassphrase] = useState("");
 
   const [relayDir, setRelayDir] = useState(defaultRelayDir ?? "");
+  const [relayComposeFile, setRelayComposeFile] = useState(defaultRelayComposeFile ?? "");
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [logLines, setLogLines] = useState<Array<{ stream: "stdout" | "stderr"; line: string }>>([]);
@@ -87,6 +91,7 @@ export function ServerUpdateImageDialog({
         ? { sshPassword }
         : { sshPrivateKey, sshPassphrase: sshPassphrase || undefined }),
       ...(relayDir.trim() ? { relayDir: relayDir.trim() } : {}),
+      ...(relayComposeFile.trim() ? { relayComposeFile: relayComposeFile.trim() } : {}),
     };
 
     const controller = new AbortController();
@@ -244,23 +249,43 @@ export function ServerUpdateImageDialog({
                 {showAdvanced ? "Hide" : "Show"} advanced
               </button>
               {showAdvanced && (
-                <div style={{ marginTop: "var(--space-2)" }}>
-                  <Label htmlFor="upd-relay-dir">
-                    Relay directory on VPS{" "}
-                    <span style={{ color: "var(--muted)" }}>
-                      ({defaultRelayDir
-                        ? <>stored: <code>{defaultRelayDir}</code></>
-                        : <>default <code>/opt/agent-relay</code>; set if the relay was installed elsewhere, e.g. <code>/root/git/agent-relay</code></>})
-                    </span>
-                  </Label>
-                  <input
-                    id="upd-relay-dir"
-                    type="text"
-                    placeholder={defaultRelayDir ?? "/opt/agent-relay"}
-                    value={relayDir}
-                    onChange={(e) => setRelayDir(e.target.value)}
-                    className="input"
-                  />
+                <div style={{ marginTop: "var(--space-2)", display: "grid", gap: "var(--space-2)" }}>
+                  <div>
+                    <Label htmlFor="upd-relay-dir">
+                      Relay directory on VPS{" "}
+                      <span style={{ color: "var(--muted)" }}>
+                        ({defaultRelayDir
+                          ? <>stored: <code>{defaultRelayDir}</code></>
+                          : <>default <code>/opt/agent-relay</code>; set if the relay was installed elsewhere, e.g. <code>/root/git/agent-relay</code></>})
+                      </span>
+                    </Label>
+                    <input
+                      id="upd-relay-dir"
+                      type="text"
+                      placeholder={defaultRelayDir ?? "/opt/agent-relay"}
+                      value={relayDir}
+                      onChange={(e) => setRelayDir(e.target.value)}
+                      className="input"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="upd-compose-file">
+                      Compose filename{" "}
+                      <span style={{ color: "var(--muted)" }}>
+                        ({defaultRelayComposeFile
+                          ? <>stored: <code>{defaultRelayComposeFile}</code></>
+                          : <>default <code>docker-compose.yml</code>; set e.g. <code>docker-compose.prod.yml</code> for prod-override installs (Traefik labels, custom container_name)</>})
+                      </span>
+                    </Label>
+                    <input
+                      id="upd-compose-file"
+                      type="text"
+                      placeholder={defaultRelayComposeFile ?? "docker-compose.yml"}
+                      value={relayComposeFile}
+                      onChange={(e) => setRelayComposeFile(e.target.value)}
+                      className="input"
+                    />
+                  </div>
                 </div>
               )}
             </div>

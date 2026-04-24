@@ -263,6 +263,17 @@ const installEnvSchema = z.object({
     .regex(/^\/[A-Za-z0-9._/-]*$/, "relayDir must be an absolute, simple path")
     .refine((v) => !v.split("/").includes(".."), "relayDir must not contain `..`")
     .optional(),
+  // Compose filename (basename only, no path). Default is
+  // `docker-compose.yml`. Non-default values like
+  // `docker-compose.prod.yml` are needed for prod-override installs
+  // that carry Traefik labels / custom container_name. Strict shape
+  // to be shell-safe when templated into `-f <file>`.
+  relayComposeFile: z
+    .string()
+    .min(1)
+    .max(100)
+    .regex(/^[A-Za-z0-9._-]+\.ya?ml$/, "relayComposeFile must be a YAML filename (no path)")
+    .optional(),
 });
 
 // password XOR privateKey. Both optional per field, but the body must
@@ -546,6 +557,7 @@ serversRouter.post("/install-relay", async (c) => {
             ? { relayMode: parsedOutput.value.relayMode }
             : {}),
           ...(input.relayDir ? { relayDir: input.relayDir } : {}),
+          ...(input.relayComposeFile ? { relayComposeFile: input.relayComposeFile } : {}),
         },
       });
       await audit(
@@ -830,13 +842,24 @@ serversRouter.post("/:id/install-relay", async (c) => {
           relayUrl: parsedOutput.value.relayUrl,
           ...(persistableMode ? { relayMode: persistableMode } : {}),
           ...(shouldUpdateToken ? { relayToken: emittedToken } : {}),
-          // Persist the relayDir if the operator supplied one this
-          // run — typically on a legacy row that was installed under
-          // a non-default path. Future re-install / update-image
-          // calls default to it.
+          // Persist relayDir on backfill (legacy rows with a
+          // non-default path — /root/git/agent-relay etc). Future
+          // calls default to the stored value.
           ...(input.relayDir && input.relayDir !== server.relayDir
             ? { relayDir: input.relayDir }
             : {}),
+          // relayComposeFile semantics on re-install: install.sh
+          // always writes `$RELAY_DIR/docker-compose.yml`, so after a
+          // re-install the prior `docker-compose.prod.yml` override
+          // (if any) is effectively gone. Clear the stored value
+          // unless the operator explicitly set a new one this run.
+          // Update-image will then default to docker-compose.yml,
+          // matching install.sh's post-state.
+          ...(input.relayComposeFile
+            ? { relayComposeFile: input.relayComposeFile }
+            : server.relayComposeFile
+              ? { relayComposeFile: null }
+              : {}),
           // hostKeySha256 was already persisted right after the SSH
           // handshake (see above), so no need to repeat here.
         },
@@ -918,16 +941,22 @@ serversRouter.post("/:id/install-relay", async (c) => {
 //   custom RELAY_DIR, template it in.
 const updateRelayImageSchema = z
   .object({
-    // Optional override for the relay's install dir on the VPS.
-    // When present and valid, the route persists it to `server.relayDir`
-    // so subsequent calls no longer need the operator to supply it.
-    // Same validation shape as installEnvSchema.relayDir.
+    // Optional overrides for the relay's install dir + compose file
+    // on the VPS. When present and valid, the route persists them to
+    // `server.relayDir` / `server.relayComposeFile` so subsequent
+    // calls default to the same values.
     relayDir: z
       .string()
       .min(2)
       .max(255)
       .regex(/^\/[A-Za-z0-9._/-]*$/, "relayDir must be an absolute, simple path")
       .refine((v) => !v.split("/").includes(".."), "relayDir must not contain `..`")
+      .optional(),
+    relayComposeFile: z
+      .string()
+      .min(1)
+      .max(100)
+      .regex(/^[A-Za-z0-9._-]+\.ya?ml$/, "relayComposeFile must be a YAML filename (no path)")
       .optional(),
   })
   .and(sshAuthSchema);
@@ -993,17 +1022,20 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
     };
 
     try {
-      // Resolve effective install dir: body override > stored value >
-      // installer default. Zod validated the body field as shell-safe
-      // (absolute path, `[A-Za-z0-9._/-]+`, no `..`) before it reached
-      // us, and the stored value originates from the same validated
-      // source, so templating into the command body is safe.
+      // Resolve effective install dir + compose file: body override >
+      // stored value > installer default. Zod validated both fields
+      // as shell-safe (absolute path / YAML filename, no `..`, no
+      // metachars) and the stored values originate from the same
+      // validated source, so templating into the command body is safe.
       const effectiveRelayDir = input.relayDir ?? server.relayDir ?? "/opt/agent-relay";
+      const effectiveComposeFile =
+        input.relayComposeFile ?? server.relayComposeFile ?? null;
+      const composeFlag = effectiveComposeFile ? `-f ${effectiveComposeFile} ` : "";
 
       // `set -e` + chained `&&`s make any step failure terminate the
       // command non-zero, which executeSshCommand surfaces via the
       // exit code check below. No silent-swallow of pull errors.
-      const command = `bash -c 'set -e; cd ${effectiveRelayDir} && docker compose pull && docker compose up -d'`;
+      const command = `bash -c 'set -e; cd ${effectiveRelayDir} && docker compose ${composeFlag}pull && docker compose ${composeFlag}up -d'`;
 
       let observedHostKeySha256: string | undefined;
 
@@ -1105,12 +1137,16 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
         data: {
           lastSeenAt: new Date(),
           ...(healthOk ? { status: "online" } : {}),
-          // Persist the relayDir if the operator supplied it this run
-          // (typically backfilling a legacy row that installed at a
-          // non-default path). Subsequent update-image / re-install
-          // calls default to this stored value.
+          // Persist relayDir / relayComposeFile if the operator
+          // supplied either this run (typically backfilling a legacy
+          // row that installed at a non-default path or with a prod
+          // compose override). Subsequent calls default to the stored
+          // value.
           ...(input.relayDir && input.relayDir !== server.relayDir
             ? { relayDir: input.relayDir }
+            : {}),
+          ...(input.relayComposeFile && input.relayComposeFile !== server.relayComposeFile
+            ? { relayComposeFile: input.relayComposeFile }
             : {}),
         },
       });
