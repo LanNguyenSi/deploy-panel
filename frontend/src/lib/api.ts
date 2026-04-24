@@ -309,6 +309,40 @@ export async function* reinstallRelayStream(
   );
 }
 
+export interface UpdateRelayImageRequest {
+  sshUser?: string;
+  sshPort?: number;
+  sshPassword?: string;
+  sshPrivateKey?: string;
+  sshPassphrase?: string;
+}
+
+export type UpdateRelayImageEvent =
+  | { event: "progress"; data: { stream: "stdout" | "stderr"; line: string } }
+  | {
+      event: "done";
+      data: {
+        serverId: string;
+        name: string;
+        host: string;
+        /** Whether the post-update health probe on /health returned 200. */
+        healthOk: boolean;
+      };
+    }
+  | { event: "error"; data: { kind: string; message: string } };
+
+export async function* updateRelayImageStream(
+  serverId: string,
+  req: UpdateRelayImageRequest,
+  signal?: AbortSignal,
+): AsyncGenerator<UpdateRelayImageEvent> {
+  yield* sseStream<UpdateRelayImageEvent>(
+    `/api/servers/${encodeURIComponent(serverId)}/update-relay-image`,
+    req,
+    signal,
+  );
+}
+
 export async function createServer(data: { name: string; host: string; relayUrl?: string; relayToken?: string }): Promise<{ server: Server }> {
   return request("/api/servers", { method: "POST", body: JSON.stringify(data) });
 }
