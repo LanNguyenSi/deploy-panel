@@ -226,6 +226,16 @@ describe("executeSshCommand — ssh2 mock server integration", () => {
     for (const banned of bannedImports) {
       expect(src, `ssh-executor must not depend on ${banned}`).not.toContain(banned);
     }
+    // ESM-purity guard. The backend is `"type": "module"` in prod; any
+    // `require(...)` in this file compiles fine but throws
+    // `ReferenceError: require is not defined` at runtime on the first
+    // call. Vitest's transform provides a shim, so the mocked-SSH tests
+    // above passed for weeks with a hidden `require("node:crypto")`.
+    // This regex catches the regression at source-lint time. Named
+    // imports at the top of the file are the supported path.
+    expect(src, "ssh-executor must not use require(...) — ESM-only module").not.toMatch(
+      /\brequire\s*\(/,
+    );
   });
 
   it("reports the host-key fingerprint via onHostKey on first contact", async () => {

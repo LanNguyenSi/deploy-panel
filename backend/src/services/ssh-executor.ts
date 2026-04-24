@@ -12,6 +12,7 @@
  * See `backend/tests/ssh-executor.test.ts` for the mock-SSH-server
  * coverage (happy path, wrong creds, timeout, streaming, cred-zeroing).
  */
+import { createHash } from "node:crypto";
 import { Client, type ConnectConfig } from "ssh2";
 
 export type SshAuth =
@@ -144,11 +145,11 @@ function buildConnectConfig(opts: ExecuteSshCommandOptions): {
     config.hostVerifier = (key: Buffer | string) => {
       const buf = Buffer.isBuffer(key) ? key : Buffer.from(key, "utf8");
       // ssh2 passes the key as SSH wire-format bytes. We expose a
-      // stable SHA-256 fingerprint via crypto — matches what OpenSSH
-      // prints in its key-added banners.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const crypto = require("node:crypto") as typeof import("node:crypto");
-      const sha256 = crypto.createHash("sha256").update(buf).digest("base64");
+      // stable SHA-256 fingerprint — matches what OpenSSH prints in
+      // its key-added banners. Use the top-level createHash import;
+      // dynamic CJS-style loading from here fails under NodeNext ESM
+      // at runtime, which ssh2 surfaces as a generic connect_failed.
+      const sha256 = createHash("sha256").update(buf).digest("base64");
       if (opts.onHostKey) {
         opts.onHostKey({ algo: "ssh-host-key", sha256 });
       }
