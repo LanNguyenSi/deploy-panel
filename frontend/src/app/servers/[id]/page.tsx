@@ -12,6 +12,7 @@ import { requestPermission, notifyDeployResult } from "@/lib/notifications";
 import { isPinned, togglePin } from "@/lib/pinned";
 import EnvVarsPanel from "@/components/EnvVarsPanel";
 import { ServerReinstallDialog } from "@/components/ServerReinstallDialog";
+import { ServerUpdateImageDialog } from "@/components/ServerUpdateImageDialog";
 
 type Panel = { type: "logs" | "deploy" | "preflight" | "env"; app: string };
 
@@ -22,6 +23,7 @@ export default function ServerDetailPage() {
   const [serverRelayMode, setServerRelayMode] = useState<RelayMode | null>(null);
   const [serverHasHostKey, setServerHasHostKey] = useState(false);
   const [reinstallOpen, setReinstallOpen] = useState(false);
+  const [updateImageOpen, setUpdateImageOpen] = useState(false);
   const [apps, setApps] = useState<AppWithCount[]>([]);
   const [loading, setLoading] = useState(true);
   const [panel, setPanel] = useState<Panel | null>(null);
@@ -256,9 +258,16 @@ export default function ServerDetailPage() {
         </div>
         <div style={{ display: "flex", gap: "var(--space-2)" }}>
           <button
+            onClick={() => setUpdateImageOpen(true)}
+            className="btn btn-ghost"
+            title="Pull latest agent-relay image + restart container (~30s). Does not re-run install.sh."
+          >
+            Update Relay Image
+          </button>
+          <button
             onClick={() => setReinstallOpen(true)}
             className="btn btn-ghost"
-            title="Re-run install.sh on this server (e.g. to upgrade the relay image)"
+            title="Re-run install.sh on this server (mode switches, recovery). Takes 2–5 minutes."
           >
             Re-install Relay
           </button>
@@ -276,6 +285,19 @@ export default function ServerDetailPage() {
           </button>
         </div>
       </div>
+
+      {updateImageOpen && (
+        <ServerUpdateImageDialog
+          serverId={id}
+          serverName={serverName}
+          serverHost={serverHost}
+          onClose={() => setUpdateImageOpen(false)}
+          onUpdated={() => {
+            void load();
+            toast("Relay image updated", "success");
+          }}
+        />
+      )}
 
       {reinstallOpen && (
         <ServerReinstallDialog

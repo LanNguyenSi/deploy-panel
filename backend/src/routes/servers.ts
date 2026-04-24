@@ -874,3 +874,245 @@ serversRouter.post("/:id/install-relay", async (c) => {
     }
   });
 });
+
+// POST /api/servers/:id/update-relay-image — fast-path "pull latest
+// image and restart container" for an already-installed relay. Does
+// NOT touch install.sh, Traefik, networks, compose file, env file, or
+// DB fields other than `lastSeenAt` / `status`. Takes ~10-30s vs
+// re-install's 2-5min. Use re-install instead when you need to switch
+// modes, re-configure Traefik, or recover from a broken install.
+//
+// Contract:
+// - Ownership gate (admin or owner).
+// - Ephemeral SSH credentials in the body; not persisted.
+// - Pins stored host-key fingerprint — mismatch aborts before any
+//   docker command runs.
+// - Command is a single `bash -c` that cd's into /opt/agent-relay and
+//   runs docker compose pull + up -d. Hardcoded path matches the
+//   installer's RELAY_DIR default; if the wizard ever exposes a
+//   custom RELAY_DIR, template it in.
+const updateRelayImageSchema = sshAuthSchema;
+
+serversRouter.post("/:id/update-relay-image", async (c) => {
+  const actor = getActorContext(c);
+  const server = await findOwnedServer(actor, c.req.param("id"));
+  if (!server) return c.json({ error: "not_found" }, 404);
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request", message: "body must be JSON" }, 400);
+  }
+  const parsed = updateRelayImageSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      {
+        error: "bad_request",
+        message: parsed.error.issues.map((i) => i.message).join("; "),
+      },
+      400,
+    );
+  }
+  const input = parsed.data;
+
+  // Same two-level lock as re-install: one per server, one per actor.
+  // Uses distinct key prefix so an update and a re-install of the same
+  // server can't coexist either — both mutate the relay container.
+  const installKey = `update-image:${server.id}`;
+  const actorKey = `update-image-actor:${actor.userId ?? "admin"}`;
+  // Guard against racing against an in-flight re-install too (shared
+  // container surface).
+  const reinstallKey = `reinstall:${server.id}`;
+  if (activeInstalls.has(installKey) || activeInstalls.has(reinstallKey)) {
+    return c.json(
+      {
+        error: "rate_limited",
+        message: "an install or update is already in progress for this server",
+      },
+      429,
+    );
+  }
+  if (activeInstalls.has(actorKey)) {
+    return c.json(
+      { error: "rate_limited", message: "another image update is already in progress for your account" },
+      429,
+    );
+  }
+  activeInstalls.add(installKey);
+  activeInstalls.add(actorKey);
+
+  const startTime = Date.now();
+  return streamSSE(c, async (stream) => {
+    let stdoutBuffer = "";
+    const forwardProgress = async (streamKind: "stdout" | "stderr", line: string) => {
+      if (streamKind === "stdout") stdoutBuffer += line + "\n";
+      await stream.writeSSE({
+        event: "progress",
+        data: JSON.stringify({ stream: streamKind, line }),
+      });
+    };
+
+    try {
+      // Hardcoded RELAY_DIR — matches install.sh's default. The
+      // `set -e` + chained `&&`s make any step failure terminate the
+      // command non-zero, which executeSshCommand surfaces via the
+      // exit code check below. No silent-swallow of pull errors.
+      const command =
+        "bash -c 'set -e; cd /opt/agent-relay && docker compose pull && docker compose up -d'";
+
+      let observedHostKeySha256: string | undefined;
+
+      const result = await executeSshCommand({
+        host: server.host,
+        port: input.sshPort,
+        user: input.sshUser,
+        auth: input.sshPassword
+          ? { kind: "password", password: input.sshPassword }
+          : {
+              kind: "privateKey",
+              privateKey: input.sshPrivateKey!,
+              passphrase: input.sshPassphrase,
+            },
+        command,
+        onStdout: (line) => {
+          void forwardProgress("stdout", line);
+        },
+        onStderr: (line) => {
+          void forwardProgress("stderr", line);
+        },
+        acceptAnyHostKey: true,
+        onHostKey: (fp) => {
+          observedHostKeySha256 = fp.sha256;
+        },
+        ...(server.hostKeySha256
+          ? { expectedHostKeySha256: server.hostKeySha256 }
+          : {}),
+        // Image pulls over slow links can take a minute; 3-minute
+        // ceiling is generous but still well below the 10-minute
+        // install-scale timeout.
+        timeoutMs: 3 * 60 * 1000,
+      });
+
+      // Persist newly observed fingerprint for legacy rows, same
+      // treatment as re-install. Handshake succeeded → capture is
+      // authoritative regardless of whether docker compose exited
+      // cleanly below.
+      if (!server.hostKeySha256 && observedHostKeySha256) {
+        await prisma.server.update({
+          where: { id: server.id },
+          data: { hostKeySha256: observedHostKeySha256 },
+        });
+      }
+
+      // executeSshCommand resolves even on non-zero exit; inspect the
+      // exit code and surface a loud error if compose failed. The
+      // most common cause is "compose file missing" (someone removed
+      // /opt/agent-relay out-of-band) — point them at re-install.
+      if (result.exitCode !== 0) {
+        const kind = "update_failed";
+        const message =
+          "docker compose pull/up failed — see stderr above. If /opt/agent-relay is missing, the relay was never installed or was wiped; run 'Re-install Relay' to bootstrap it.";
+        await audit(
+          "server.update-relay-image.failed",
+          `${server.name} (${server.host})`,
+          `exit=${result.exitCode}`,
+          getActor(c),
+          getActorUserId(c),
+        );
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({ kind, message }),
+        });
+        return;
+      }
+
+      // Post-update health check. The relay may take a few seconds
+      // to come back up after compose recreated the container, so
+      // try a couple of times with short backoffs before marking
+      // offline. Success flips status → online; failure keeps the
+      // previous status (the update DID happen, it's just that the
+      // probe window was too short).
+      let healthOk = false;
+      if (server.relayUrl) {
+        for (const delay of [0, 2000, 4000]) {
+          if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+          try {
+            const headers: Record<string, string> = {};
+            if (server.relayToken) {
+              headers["Authorization"] = `Bearer ${server.relayToken}`;
+            }
+            const response = await fetch(`${server.relayUrl}/health`, {
+              headers,
+              signal: AbortSignal.timeout(5000),
+            });
+            if (response.ok) {
+              healthOk = true;
+              break;
+            }
+          } catch {
+            // fall through to retry
+          }
+        }
+      }
+
+      await prisma.server.update({
+        where: { id: server.id },
+        data: {
+          lastSeenAt: new Date(),
+          ...(healthOk ? { status: "online" } : {}),
+        },
+      });
+
+      const auditDetail = [
+        `took ${Math.round((Date.now() - startTime) / 1000)}s`,
+        healthOk ? "health=ok" : "health=skipped-or-failed",
+        !server.hostKeySha256 && observedHostKeySha256 ? "fingerprint-captured" : undefined,
+      ]
+        .filter(Boolean)
+        .join(" ");
+      await audit(
+        "server.update-relay-image.success",
+        `${server.name} (${server.host})`,
+        auditDetail,
+        getActor(c),
+        getActorUserId(c),
+      );
+      await stream.writeSSE({
+        event: "done",
+        data: JSON.stringify({
+          serverId: server.id,
+          name: server.name,
+          host: server.host,
+          healthOk,
+        }),
+      });
+    } catch (err) {
+      let kind: string = "update_failed";
+      let message = (err as Error).message ?? "update failed";
+      if (err instanceof SshTimeoutError) {
+        kind = "timeout";
+      } else if (err instanceof SshError) {
+        kind = err.kind;
+        if (err.kind === "host_key_rejected") {
+          message =
+            "Host key does not match the fingerprint captured on first install. Was the VPS rebuilt? Run 'Re-install Relay' to re-establish trust.";
+        }
+      }
+      await audit(
+        "server.update-relay-image.failed",
+        `${server.name} (${server.host})`,
+        kind,
+        getActor(c),
+        getActorUserId(c),
+      );
+      await stream.writeSSE({
+        event: "error",
+        data: JSON.stringify({ kind, message }),
+      });
+    } finally {
+      activeInstalls.delete(installKey);
+      activeInstalls.delete(actorKey);
+    }
+  });
+});
