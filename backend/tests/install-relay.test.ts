@@ -64,6 +64,27 @@ describe("buildInstallCommand", () => {
     const cmd = buildInstallCommand({});
     expect(cmd).toContain(INSTALL_SCRIPT_URL);
   });
+
+  it("emits the v0.2.0 env vars when they are supplied", () => {
+    const cmd = buildInstallCommand({
+      relayMode: "existing-traefik",
+      traefikNetwork: "my-edge",
+      traefikCertResolver: "myresolver",
+      relayBind: "0.0.0.0",
+    });
+    expect(cmd).toContain(`RELAY_MODE='existing-traefik'`);
+    expect(cmd).toContain(`TRAEFIK_NETWORK='my-edge'`);
+    expect(cmd).toContain(`TRAEFIK_CERTRESOLVER='myresolver'`);
+    expect(cmd).toContain(`RELAY_BIND='0.0.0.0'`);
+  });
+
+  it("shell-escapes shell metachars in the new v0.2.0 env values too", () => {
+    // Same single-quote-escape trick the original env vars use. A hostile
+    // TRAEFIK_NETWORK value can't break out of its quoting into the
+    // bash -c command body.
+    const cmd = buildInstallCommand({ traefikNetwork: `evil'; rm -rf /` });
+    expect(cmd).toContain(`TRAEFIK_NETWORK='evil'"'"'; rm -rf /'`);
+  });
 });
 
 describe("parseInstallOutput", () => {
@@ -151,5 +172,39 @@ describe("parseInstallOutput", () => {
   it("tolerates tab indentation", () => {
     const r = parseInstallOutput("\tURL: https://x\n\tToken: y\n");
     expect(r.ok).toBe(true);
+  });
+
+  it("captures the Mode line from install.sh v0.2.0 output", () => {
+    // agent-relay v0.2.0 prints a `  Mode:  <mode>` info line above
+    // the URL/Token block. We capture it for UI display; parseInstallOutput
+    // still succeeds without it (v0.1.x back-compat).
+    const fixture =
+      "\n  Mode:  \x1b[36mexisting-traefik\x1b[0m\n" +
+      "  URL:   \x1b[36mhttps://relay.example.com\x1b[0m\n" +
+      "  Token: \x1b[33mtok\x1b[0m\n";
+    const r = parseInstallOutput(fixture);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.relayMode).toBe("existing-traefik");
+      expect(r.value.relayUrl).toBe("https://relay.example.com");
+    }
+  });
+
+  it("leaves relayMode undefined for v0.1.x output (no Mode line)", () => {
+    // Back-compat: operators running install.sh v0.1.x should still
+    // succeed — parseInstallOutput returns { relayMode: undefined }.
+    const r = parseInstallOutput(FIXTURE_DOMAIN_MODE);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.relayMode).toBeUndefined();
+  });
+
+  it("ignores a Mode line with an unknown value instead of crashing", () => {
+    // Defensive: a typoed / unexpected mode value should not block the
+    // parse — URL/Token are the critical path, Mode is advisory.
+    const fixture =
+      "  Mode:  bogus\n  URL:   https://x\n  Token: y\n";
+    const r = parseInstallOutput(fixture);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.relayMode).toBeUndefined();
   });
 });

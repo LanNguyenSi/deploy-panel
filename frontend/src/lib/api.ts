@@ -77,6 +77,8 @@ export async function getServer(id: string): Promise<{ server: Server & { apps: 
   return request(`/api/servers/${id}`);
 }
 
+export type RelayMode = "auto" | "greenfield" | "existing-traefik" | "port-only";
+
 /**
  * SSE event emitted by POST /api/servers/install-relay. Shape mirrors
  * `event: <name>` + `data: <json>` frames from the backend route.
@@ -85,7 +87,13 @@ export type InstallRelayEvent =
   | { event: "progress"; data: { stream: "stdout" | "stderr"; line: string } }
   | {
       event: "done";
-      data: { serverId: string; name: string; host: string; relayUrl: string };
+      data: {
+        serverId: string;
+        name: string;
+        host: string;
+        relayUrl: string;
+        relayMode?: RelayMode;
+      };
     }
   | { event: "error"; data: { kind: string; message: string } };
 
@@ -100,6 +108,68 @@ export interface InstallRelayRequest {
   relayDomain?: string;
   traefikEmail?: string;
   appsDir?: string;
+  /** install.sh v0.2.0 env surface. */
+  relayMode?: RelayMode;
+  traefikNetwork?: string;
+  traefikCertResolver?: string;
+  relayBind?: string;
+  /** SHA-256 host-key fingerprint captured during the pre-install probe. */
+  expectedHostKeySha256?: string;
+}
+
+// Mirror of the backend probe-vps shape. Shape is stable because the
+// wizard treats it as read-only and only drills into `suggestedMode` /
+// `suggestedTraefikNetwork` for the pre-fill.
+export type Port80Owner =
+  | { kind: "free" }
+  | { kind: "traefik"; name: string; image: string }
+  | { kind: "docker"; name: string; image: string }
+  | { kind: "proc"; process: string }
+  | { kind: "unknown" };
+
+export interface VpsProbeResult {
+  port80: Port80Owner;
+  port443: Port80Owner;
+  containers: Array<{ name: string; image: string; ports: string; networks: string[] }>;
+  networks: string[];
+  suggestedMode: "greenfield" | "existing-traefik" | "port-only";
+  suggestedTraefikNetwork?: string;
+}
+
+export interface ProbeVpsRequest {
+  host: string;
+  sshUser?: string;
+  sshPort?: number;
+  sshPassword?: string;
+  sshPrivateKey?: string;
+  sshPassphrase?: string;
+}
+
+export interface ProbeVpsResponse {
+  probe: VpsProbeResult;
+  /** SHA-256 fingerprint of the host key presented during the probe. */
+  hostKeySha256?: string;
+}
+
+export async function probeVps(req: ProbeVpsRequest): Promise<ProbeVpsResponse> {
+  const res = await fetch(`${BASE}/api/servers/probe-vps`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(req),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({ message: `HTTP ${res.status}` }))) as {
+      error?: string;
+      message?: string;
+    };
+    const err = new Error(body.message ?? `probe failed (HTTP ${res.status})`) as Error & {
+      kind?: string;
+    };
+    err.kind = body.error ?? "probe_failed";
+    throw err;
+  }
+  return (await res.json()) as ProbeVpsResponse;
 }
 
 /**

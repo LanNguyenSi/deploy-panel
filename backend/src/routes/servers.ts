@@ -11,6 +11,7 @@ import {
 } from "../lib/ownership.js";
 import { executeSshCommand, SshError, SshTimeoutError } from "../services/ssh-executor.js";
 import { buildInstallCommand, parseInstallOutput } from "../services/install-relay.js";
+import { probeVps } from "../services/probe-vps.js";
 
 /** Strip sensitive fields from server objects */
 function sanitizeServer(server: any) {
@@ -215,6 +216,35 @@ const installEnvSchema = z.object({
     .regex(/^\/[A-Za-z0-9._/-]*$/, "appsDir must be an absolute, simple path")
     .refine((v) => !v.split("/").includes(".."), "appsDir must not contain `..`")
     .optional(),
+  // install.sh v0.2.0 mode selector. Optional: if omitted, install.sh
+  // auto-detects. The wizard's pre-install probe pre-fills this based
+  // on what's already running on the VPS so the user can confirm/override.
+  relayMode: z
+    .enum(["auto", "greenfield", "existing-traefik", "port-only"])
+    .optional(),
+  // Docker network for existing-traefik mode. Network names follow
+  // docker's `[a-zA-Z0-9][a-zA-Z0-9_.-]+` rule.
+  traefikNetwork: z
+    .string()
+    .min(1)
+    .max(255)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "traefikNetwork must be a valid docker network name")
+    .optional(),
+  // ACME resolver name on an existing Traefik. Traefik config keys
+  // are alnum + `_` / `-`.
+  traefikCertResolver: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[A-Za-z0-9_-]+$/, "traefikCertResolver must be alnum/underscore/hyphen")
+    .optional(),
+  // Host bind IP for port-only mode. IPv4 / IPv6 shape (loose).
+  relayBind: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[0-9a-fA-F:.]+$/, "relayBind must be an IP address")
+    .optional(),
 });
 
 // password XOR privateKey. Both optional per field, but the body must
@@ -241,9 +271,103 @@ const installRelaySchema = z
     // same way the create-server form validates these.
     name: z.string().min(1).max(100),
     host: z.string().min(1).max(255),
+    // Optional: base64 SHA-256 host-key fingerprint captured during
+    // the pre-install probe. When present, ssh-executor pins it and
+    // rejects with `host_key_rejected` on mismatch — closes the MITM
+    // window between probe and install. Format matches `onHostKey`
+    // output: base64, 44 chars.
+    expectedHostKeySha256: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[A-Za-z0-9+/=]+$/, "expectedHostKeySha256 must be base64")
+      .optional(),
   })
   .merge(installEnvSchema)
   .and(sshAuthSchema);
+
+const probeVpsSchema = z
+  .object({
+    host: z.string().min(1).max(255),
+  })
+  .and(sshAuthSchema);
+
+// POST /api/servers/probe-vps — run a pre-install diagnostic over
+// ephemeral SSH and return the parsed state (what's on :80 / :443,
+// running docker containers, suggested install mode). Admin-only for
+// the same reason install-relay is: it requires SSH credentials to a
+// target host.
+serversRouter.post("/probe-vps", async (c) => {
+  const actor = getActorContext(c);
+  if (!actor.isAdmin) {
+    return c.json({ error: "forbidden", message: "admin auth required" }, 403);
+  }
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "bad_request", message: "body must be JSON" }, 400);
+  }
+  const parsed = probeVpsSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      {
+        error: "bad_request",
+        message: parsed.error.issues.map((i) => i.message).join("; "),
+      },
+      400,
+    );
+  }
+  const input = parsed.data;
+
+  try {
+    const outcome = await probeVps({
+      host: input.host,
+      port: input.sshPort,
+      user: input.sshUser,
+      auth: input.sshPassword
+        ? { kind: "password", password: input.sshPassword }
+        : {
+            kind: "privateKey",
+            privateKey: input.sshPrivateKey!,
+            passphrase: input.sshPassphrase,
+          },
+      acceptAnyHostKey: true,
+    });
+    await audit(
+      "server.probe-vps.success",
+      input.host,
+      `mode=${outcome.probe.suggestedMode} port80=${outcome.probe.port80.kind}`,
+      getActor(c),
+      getActorUserId(c),
+    );
+    return c.json({
+      probe: outcome.probe,
+      // Fingerprint of the host key seen during the probe. The wizard
+      // passes it back on install-relay so the backend can MATCH
+      // instead of another blind TOFU accept — MITM between probe and
+      // install is the narrow window we're closing here.
+      ...(outcome.hostKeySha256 ? { hostKeySha256: outcome.hostKeySha256 } : {}),
+    });
+  } catch (err) {
+    let kind = "probe_failed";
+    const message = (err as Error).message ?? "probe failed";
+    if (err instanceof SshTimeoutError) {
+      kind = "timeout";
+    } else if (err instanceof SshError) {
+      kind = err.kind;
+    }
+    await audit(
+      "server.probe-vps.failed",
+      input.host,
+      kind,
+      getActor(c),
+      getActorUserId(c),
+    );
+    return c.json({ error: kind, message }, 502);
+  }
+});
 
 // POST /api/servers/install-relay — run the agent-relay installer on a
 // fresh VPS via ephemeral SSH, parse the emitted URL + token, and
@@ -325,6 +449,10 @@ serversRouter.post("/install-relay", async (c) => {
         relayDomain: input.relayDomain,
         traefikEmail: input.traefikEmail,
         appsDir: input.appsDir,
+        relayMode: input.relayMode,
+        traefikNetwork: input.traefikNetwork,
+        traefikCertResolver: input.traefikCertResolver,
+        relayBind: input.relayBind,
       });
 
       await executeSshCommand({
@@ -346,6 +474,13 @@ serversRouter.post("/install-relay", async (c) => {
           void forwardProgress("stderr", line);
         },
         acceptAnyHostKey: true,
+        // Pin the host-key fingerprint the wizard captured during the
+        // probe. If a MITM swapped hosts between probe and install,
+        // the fingerprint differs → ssh2 rejects → we abort before
+        // running install.sh on the attacker's box.
+        ...(input.expectedHostKeySha256
+          ? { expectedHostKeySha256: input.expectedHostKeySha256 }
+          : {}),
         // Covers a slow VPS + Docker pull cold cache. install.sh
         // itself typically finishes in ~2-5 min.
         timeoutMs: 10 * 60 * 1000,
@@ -394,6 +529,12 @@ serversRouter.post("/install-relay", async (c) => {
           name: server.name,
           host: server.host,
           relayUrl: server.relayUrl,
+          // v0.2.0 installers emit a Mode line; older ones don't.
+          // Surfacing it here lets the wizard's Done step show the
+          // resolved mode (purely advisory — not persisted).
+          ...(parsedOutput.value.relayMode
+            ? { relayMode: parsedOutput.value.relayMode }
+            : {}),
         }),
       });
     } catch (err) {
