@@ -71,10 +71,25 @@ const asJson = (body: unknown) => ({
   body: JSON.stringify(body),
 });
 
+// The route now issues TWO SSH calls in the happy path:
+//   1. Preflight grep that detects `build:`-based compose files. Returns
+//      exit 1 in this helper (no `build:` present → proceed).
+//   2. The docker compose pull/up command, which honours the `exitCode`
+//      kwarg below.
+// Tests that exercise the preflight-trips branch use mockSshBuildBased
+// instead. Both helpers fire the optional onHostKey on the FIRST call so
+// fingerprint capture has the same shape as before this preflight landed.
 function mockSshOk({ exitCode = 0, hostKeySha256 }: { exitCode?: number; hostKeySha256?: string } = {}) {
+  let callCount = 0;
   vi.mocked(executeSshCommand).mockImplementation(async (opts) => {
-    if (hostKeySha256 && opts.onHostKey) {
+    callCount += 1;
+    if (callCount === 1 && hostKeySha256 && opts.onHostKey) {
       opts.onHostKey({ algo: "ssh-host-key", sha256: hostKeySha256 });
+    }
+    // The preflight grep is the first call; report "no match" so the
+    // route proceeds to the docker step.
+    if (opts.command.includes("grep -qE")) {
+      return { exitCode: 1, finished: true };
     }
     // Fire a representative stdout line so forwardProgress doesn't
     // starve; the route doesn't parse stdout for this flow.
@@ -82,6 +97,36 @@ function mockSshOk({ exitCode = 0, hostKeySha256 }: { exitCode?: number; hostKey
     opts.onStdout?.("relay Pulled");
     return { exitCode, finished: true };
   });
+}
+
+// Helper for tests that exercise the `build:`-based-compose branch:
+// preflight grep returns 0 (match found), and the route MUST NOT reach
+// the docker call. If it does, the second mock invocation throws so the
+// test fails loudly rather than silently masking the regression.
+function mockSshBuildBased({ hostKeySha256 }: { hostKeySha256?: string } = {}) {
+  let callCount = 0;
+  vi.mocked(executeSshCommand).mockImplementation(async (opts) => {
+    callCount += 1;
+    if (callCount === 1 && hostKeySha256 && opts.onHostKey) {
+      opts.onHostKey({ algo: "ssh-host-key", sha256: hostKeySha256 });
+    }
+    if (opts.command.includes("grep -qE")) {
+      return { exitCode: 0, finished: true };
+    }
+    throw new Error(
+      "docker compose call must not run when preflight detects `build:`-based compose",
+    );
+  });
+}
+
+// Find the docker-compose call regardless of how many SSH calls came
+// before it. Existing tests that asserted on `mock.calls[0]?.[0]` were
+// indexing the (now first) preflight grep — switch to a content-based
+// lookup so the assertion stays anchored to what it actually cares about.
+function dockerCall(): { command: string; expectedHostKeySha256?: string } | undefined {
+  return vi
+    .mocked(executeSshCommand)
+    .mock.calls.find((c) => c[0].command.includes("docker compose"))?.[0];
 }
 
 async function readSse(res: Response): Promise<Array<{ event: string; data: any }>> {
@@ -180,7 +225,7 @@ describe("POST /servers/:id/update-relay-image", () => {
     );
     expect(res.status).toBe(200);
     await readSse(res);
-    const sshCall = vi.mocked(executeSshCommand).mock.calls[0]?.[0];
+    const sshCall = dockerCall();
     expect(sshCall?.command).toMatch(/docker compose pull/);
     expect(sshCall?.command).toMatch(/docker compose up -d/);
     expect(sshCall?.command).not.toMatch(/install\.sh/);
@@ -194,7 +239,7 @@ describe("POST /servers/:id/update-relay-image", () => {
       asJson(validBody),
     );
     await readSse(res);
-    const sshCall = vi.mocked(executeSshCommand).mock.calls[0]?.[0];
+    const sshCall = dockerCall();
     expect(sshCall?.expectedHostKeySha256).toBe("pinned-fp-val==".padEnd(44, "="));
   });
 
@@ -303,7 +348,7 @@ describe("POST /servers/:id/update-relay-image", () => {
     );
     expect(res.status).toBe(200);
     await readSse(res);
-    const sshCall = vi.mocked(executeSshCommand).mock.calls[0]?.[0];
+    const sshCall = dockerCall();
     expect(sshCall?.command).toContain("cd /root/git/agent-relay");
     expect(sshCall?.command).not.toContain("cd /opt/agent-relay");
   });
@@ -315,7 +360,7 @@ describe("POST /servers/:id/update-relay-image", () => {
       asJson(validBody),
     );
     await readSse(res);
-    const sshCall = vi.mocked(executeSshCommand).mock.calls[0]?.[0];
+    const sshCall = dockerCall();
     expect(sshCall?.command).toContain("cd /custom/path");
   });
 
@@ -326,7 +371,7 @@ describe("POST /servers/:id/update-relay-image", () => {
       asJson(validBody),
     );
     await readSse(res);
-    const sshCall = vi.mocked(executeSshCommand).mock.calls[0]?.[0];
+    const sshCall = dockerCall();
     expect(sshCall?.command).toContain("cd /opt/agent-relay");
   });
 
@@ -354,7 +399,7 @@ describe("POST /servers/:id/update-relay-image", () => {
       asJson(validBody),
     );
     await readSse(res);
-    const sshCall = vi.mocked(executeSshCommand).mock.calls[0]?.[0];
+    const sshCall = dockerCall();
     // Both pull and up -d must get -f so docker doesn't recreate the
     // container via the dev docker-compose.yml (which would strip
     // Traefik labels and swap the bind mount).
@@ -369,7 +414,7 @@ describe("POST /servers/:id/update-relay-image", () => {
       asJson(validBody),
     );
     await readSse(res);
-    const sshCall = vi.mocked(executeSshCommand).mock.calls[0]?.[0];
+    const sshCall = dockerCall();
     expect(sshCall?.command).not.toContain("-f ");
     expect(sshCall?.command).toContain("docker compose pull");
   });
@@ -383,7 +428,7 @@ describe("POST /servers/:id/update-relay-image", () => {
       asJson({ ...validBody, relayComposeFile: "docker-compose.prod.yml" }),
     );
     await readSse(res);
-    const sshCall = vi.mocked(executeSshCommand).mock.calls[0]?.[0];
+    const sshCall = dockerCall();
     expect(sshCall?.command).toContain("-f docker-compose.prod.yml");
     const updateCalls = vi.mocked(prisma.server.update).mock.calls;
     const composeUpdate = updateCalls.find((c) => c[0].data.relayComposeFile);
@@ -425,4 +470,124 @@ describe("POST /servers/:id/update-relay-image", () => {
   // same keys the reinstall route sets — symmetric cross-lock sourced
   // in the same reviewed commit. Flag as a follow-up test harness
   // improvement if future regressions sneak through.
+
+  describe("compose-file preflight", () => {
+    it("issues a grep preflight before the docker call", async () => {
+      mServer.findUnique.mockResolvedValue(serverFixture());
+      const res = await appFor({ userId: null, isAdmin: true }).request(
+        "/servers/srv-a/update-relay-image",
+        asJson(validBody),
+      );
+      await readSse(res);
+      const calls = vi.mocked(executeSshCommand).mock.calls;
+      // First call must be the preflight; second must be docker. Order
+      // matters because the preflight short-circuits before any docker
+      // mutation happens.
+      expect(calls[0]?.[0].command).toContain("grep -qE");
+      expect(calls[0]?.[0].command).toContain("build:");
+      expect(calls[1]?.[0].command).toContain("docker compose");
+    });
+
+    it("returns compose_is_build_based and skips docker when the compose file uses `build:`", async () => {
+      mServer.findUnique.mockResolvedValue(serverFixture());
+      mockSshBuildBased();
+      const res = await appFor({ userId: null, isAdmin: true }).request(
+        "/servers/srv-a/update-relay-image",
+        asJson(validBody),
+      );
+      const events = await readSse(res);
+      const err = events.find((e) => e.event === "error");
+      expect(err?.data.kind).toBe("compose_is_build_based");
+      // Message must name the failure mode AND give the operator both
+      // recovery paths (edit compose file OR re-install). Asserting on
+      // these keywords keeps the contract greppable from the route.
+      expect(err?.data.message).toContain("build:");
+      expect(err?.data.message).toContain("image:");
+      expect(err?.data.message).toContain("Re-install Relay");
+      // No docker call must have run — mockSshBuildBased throws if it
+      // does, so reaching this assertion at all is half the proof; we
+      // also verify directly that no `docker compose` ever shipped.
+      const dockerInvoked = vi
+        .mocked(executeSshCommand)
+        .mock.calls.some((c) => c[0].command.includes("docker compose"));
+      expect(dockerInvoked).toBe(false);
+    });
+
+    it("templates the configured compose file into the grep target", async () => {
+      mServer.findUnique.mockResolvedValue(
+        serverFixture({
+          relayDir: "/root/git/agent-relay",
+          relayComposeFile: "docker-compose.prod.yml",
+        }),
+      );
+      const res = await appFor({ userId: null, isAdmin: true }).request(
+        "/servers/srv-a/update-relay-image",
+        asJson(validBody),
+      );
+      await readSse(res);
+      const preflight = vi
+        .mocked(executeSshCommand)
+        .mock.calls.find((c) => c[0].command.includes("grep -qE"))?.[0];
+      // Without templating the override in, the preflight would inspect
+      // a different compose file from the one docker actually uses —
+      // and the build/image classification could disagree.
+      expect(preflight?.command).toContain("docker-compose.prod.yml");
+      expect(preflight?.command).toContain("cd /root/git/agent-relay");
+    });
+
+    it("falls back to docker-compose.yml for the preflight when no compose file is set", async () => {
+      mServer.findUnique.mockResolvedValue(serverFixture({ relayComposeFile: null }));
+      const res = await appFor({ userId: null, isAdmin: true }).request(
+        "/servers/srv-a/update-relay-image",
+        asJson(validBody),
+      );
+      await readSse(res);
+      const preflight = vi
+        .mocked(executeSshCommand)
+        .mock.calls.find((c) => c[0].command.includes("grep -qE"))?.[0];
+      // Matches the docker-compose default — same file the docker step
+      // would implicitly target without `-f`.
+      expect(preflight?.command).toContain("docker-compose.yml");
+    });
+
+    it("captures and persists the host-key fingerprint on the build-based early-return path (legacy row)", async () => {
+      mServer.findUnique.mockResolvedValue(serverFixture({ hostKeySha256: null }));
+      mockSshBuildBased({ hostKeySha256: "preflight-fp==".padEnd(44, "=") });
+      const res = await appFor({ userId: null, isAdmin: true }).request(
+        "/servers/srv-a/update-relay-image",
+        asJson(validBody),
+      );
+      await readSse(res);
+      // The early-return MUST NOT throw away a fresh fingerprint — the
+      // operator already authenticated, so the next legitimate update
+      // shouldn't re-TOFU just because the preflight tripped.
+      const updateCalls = vi.mocked(prisma.server.update).mock.calls;
+      const fingerprintCall = updateCalls.find((c) => c[0].data.hostKeySha256);
+      expect(fingerprintCall?.[0].data.hostKeySha256).toBe(
+        "preflight-fp==".padEnd(44, "="),
+      );
+    });
+
+    it("does not persist the fingerprint twice when both preflight and docker fire onHostKey", async () => {
+      // Defense-in-depth path: helper guards against duplicate writes.
+      mServer.findUnique.mockResolvedValue(serverFixture({ hostKeySha256: null }));
+      vi.mocked(executeSshCommand).mockImplementation(async (opts) => {
+        // Both calls fire onHostKey with the same fingerprint.
+        opts.onHostKey?.({ algo: "ssh-host-key", sha256: "dup==".padEnd(44, "=") });
+        if (opts.command.includes("grep -qE")) {
+          return { exitCode: 1, finished: true };
+        }
+        return { exitCode: 0, finished: true };
+      });
+      const res = await appFor({ userId: null, isAdmin: true }).request(
+        "/servers/srv-a/update-relay-image",
+        asJson(validBody),
+      );
+      await readSse(res);
+      const fingerprintWrites = vi
+        .mocked(prisma.server.update)
+        .mock.calls.filter((c) => c[0].data.hostKeySha256);
+      expect(fingerprintWrites.length).toBe(1);
+    });
+  });
 });

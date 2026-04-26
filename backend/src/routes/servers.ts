@@ -1042,6 +1042,89 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
       const command = `bash -c 'set -e; cd ${effectiveRelayDir} && docker compose ${composeFlag}pull && docker compose ${composeFlag}up -d'`;
 
       let observedHostKeySha256: string | undefined;
+      let fingerprintPersisted = false;
+      const persistFingerprintIfNeeded = async () => {
+        if (fingerprintPersisted) return;
+        if (!server.hostKeySha256 && observedHostKeySha256) {
+          await prisma.server.update({
+            where: { id: server.id },
+            data: { hostKeySha256: observedHostKeySha256 },
+          });
+          fingerprintPersisted = true;
+        }
+      };
+
+      // Preflight: detect compose files that build the image locally
+      // (`build: .`) instead of pulling from a registry. `docker compose
+      // pull` skips build-based services with "relay Skipped No image to
+      // be pulled" and `up -d` is a no-op when config matches the running
+      // container — net effect is a silent success that leaves the relay
+      // on the previous image. Surface a clear error before touching
+      // docker so the operator can fix the compose file (or re-install).
+      //
+      // Two-stage SSH (preflight → docker) was preferred over compounding
+      // both into a single bash command because it keeps the existing
+      // command intact, makes the failure mode trivially testable, and
+      // doesn't entangle exit-code semantics across two unrelated steps.
+      // The grep pattern matches a `build:` directive at any service-key
+      // indentation level (`docker-compose.yml` services typically sit at
+      // 2- or 4-space indent under `services:`); shell metachars are
+      // already shut out by the zod regex on relayDir / relayComposeFile.
+      const inspectFile = effectiveComposeFile ?? "docker-compose.yml";
+      const inspectCommand = `bash -c 'cd ${effectiveRelayDir} && grep -qE "^[[:space:]]+build:" ${inspectFile}'`;
+      const inspectResult = await executeSshCommand({
+        host: server.host,
+        port: input.sshPort,
+        user: input.sshUser,
+        auth: input.sshPassword
+          ? { kind: "password", password: input.sshPassword }
+          : {
+              kind: "privateKey",
+              privateKey: input.sshPrivateKey!,
+              passphrase: input.sshPassphrase,
+            },
+        command: inspectCommand,
+        acceptAnyHostKey: true,
+        onHostKey: (fp) => {
+          observedHostKeySha256 = fp.sha256;
+        },
+        ...(server.hostKeySha256
+          ? { expectedHostKeySha256: server.hostKeySha256 }
+          : {}),
+        // 30s is plenty for a single grep over a file that's typically
+        // <100 lines; the SSH handshake itself is the dominant cost.
+        timeoutMs: 30 * 1000,
+      });
+
+      // Persist captured fingerprint NOW so the early-return branch
+      // below doesn't throw away a fresh capture from a legacy row.
+      await persistFingerprintIfNeeded();
+
+      // grep -q exits 0 when at least one line matches (build: present)
+      // and 1 when nothing matched. Higher exit codes (e.g. 2 for "file
+      // not found") fall through to the existing docker step — that
+      // path's failure handling already explains the missing-relay-dir
+      // recovery, so we don't double-up the error here.
+      if (inspectResult.exitCode === 0) {
+        const kind = "compose_is_build_based";
+        const message =
+          "This server's compose file uses `build:` instead of pulling a registry image. " +
+          "`Update Relay Image` only works with image-based compose. " +
+          "Options: (a) Edit the compose file to use `image: ghcr.io/lannguyensi/agent-relay:latest` and re-run; " +
+          "(b) use `Re-install Relay` to regenerate the compose from install.sh's template.";
+        await audit(
+          "server.update-relay-image.failed",
+          `${server.name} (${server.host})`,
+          kind,
+          getActor(c),
+          getActorUserId(c),
+        );
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({ kind, message }),
+        });
+        return;
+      }
 
       const result = await executeSshCommand({
         host: server.host,
@@ -1074,16 +1157,12 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
         timeoutMs: 3 * 60 * 1000,
       });
 
-      // Persist newly observed fingerprint for legacy rows, same
-      // treatment as re-install. Handshake succeeded → capture is
-      // authoritative regardless of whether docker compose exited
-      // cleanly below.
-      if (!server.hostKeySha256 && observedHostKeySha256) {
-        await prisma.server.update({
-          where: { id: server.id },
-          data: { hostKeySha256: observedHostKeySha256 },
-        });
-      }
+      // Persist newly observed fingerprint for legacy rows. The
+      // preflight already attempted this; this second call is a no-op
+      // unless the preflight call somehow didn't fire onHostKey but the
+      // docker call did (defense-in-depth — fingerprintPersisted gates
+      // a duplicate write).
+      await persistFingerprintIfNeeded();
 
       // executeSshCommand resolves even on non-zero exit; inspect the
       // exit code and surface a loud error if compose failed. The
