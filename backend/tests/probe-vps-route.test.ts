@@ -11,6 +11,15 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
+// dns.lookup is consulted by `assertHostAllowedForNonAdmin` for any
+// public-literal or hostname input. Default it to "resolves to a
+// public address" so the route lets non-admin probes through.
+vi.mock("node:dns", () => ({
+  promises: {
+    lookup: vi.fn().mockResolvedValue([{ address: "203.0.113.4", family: 4 }]),
+  },
+}));
+
 vi.mock("../src/config/index.js", () => ({
   config: {
     NODE_ENV: "test",
@@ -38,6 +47,7 @@ vi.mock("../src/services/probe-vps.js", async () => {
 import { probeVps } from "../src/services/probe-vps.js";
 import { serversRouter } from "../src/routes/servers.js";
 import { SshError } from "../src/services/ssh-executor.js";
+import { _resetProbeQuota } from "../src/services/probe-guard.js";
 import { Hono } from "hono";
 
 type ActorVars = {
@@ -71,15 +81,94 @@ const asJson = (body: unknown) => ({
 describe("POST /servers/probe-vps", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    _resetProbeQuota();
   });
 
-  it("rejects non-admin with 403", async () => {
-    const res = await appFor({ userId: "user-a", isAdmin: false }).request(
+  it("rejects unauthenticated actor with 403", async () => {
+    const res = await appFor({ userId: null, isAdmin: false }).request(
       "/servers/probe-vps",
       asJson(validBody),
     );
     expect(res.status).toBe(403);
     expect(probeVps).not.toHaveBeenCalled();
+  });
+
+  it("non-admin can probe a public host", async () => {
+    vi.mocked(probeVps).mockResolvedValue({
+      probe: {
+        port80: { kind: "free" },
+        port443: { kind: "free" },
+        containers: [],
+        networks: [],
+        suggestedMode: "greenfield",
+      },
+    });
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request(
+      "/servers/probe-vps",
+      asJson(validBody),
+    );
+    expect(res.status).toBe(200);
+    expect(probeVps).toHaveBeenCalledOnce();
+  });
+
+  it("non-admin cannot probe a private RFC1918 host", async () => {
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request(
+      "/servers/probe-vps",
+      asJson({ ...validBody, host: "10.0.0.5" }),
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("private_host");
+    expect(probeVps).not.toHaveBeenCalled();
+  });
+
+  it("non-admin cannot probe loopback", async () => {
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request(
+      "/servers/probe-vps",
+      asJson({ ...validBody, host: "127.0.0.1" }),
+    );
+    expect(res.status).toBe(400);
+    expect(probeVps).not.toHaveBeenCalled();
+  });
+
+  it("admin can probe a private host (no host filter for admins)", async () => {
+    vi.mocked(probeVps).mockResolvedValue({
+      probe: {
+        port80: { kind: "free" },
+        port443: { kind: "free" },
+        containers: [],
+        networks: [],
+        suggestedMode: "greenfield",
+      },
+    });
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/probe-vps",
+      asJson({ ...validBody, host: "192.168.1.10" }),
+    );
+    expect(res.status).toBe(200);
+    expect(probeVps).toHaveBeenCalledOnce();
+  });
+
+  it("non-admin gets 429 after exceeding the per-actor probe rate limit", async () => {
+    vi.mocked(probeVps).mockResolvedValue({
+      probe: {
+        port80: { kind: "free" },
+        port443: { kind: "free" },
+        containers: [],
+        networks: [],
+        suggestedMode: "greenfield",
+      },
+    });
+    const app = appFor({ userId: "user-a", isAdmin: false });
+    // 5 probes are allowed, the 6th must be rate-limited
+    for (let i = 0; i < 5; i++) {
+      const ok = await app.request("/servers/probe-vps", asJson(validBody));
+      expect(ok.status).toBe(200);
+    }
+    const blocked = await app.request("/servers/probe-vps", asJson(validBody));
+    expect(blocked.status).toBe(429);
+    const body = (await blocked.json()) as { error: string };
+    expect(body.error).toBe("rate_limited");
   });
 
   it("rejects non-JSON body with 400", async () => {
