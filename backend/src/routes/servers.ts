@@ -14,6 +14,7 @@ import { buildInstallCommand, parseInstallOutput } from "../services/install-rel
 import { probeVps } from "../services/probe-vps.js";
 import { activeInstalls } from "../services/active-installs.js";
 import { setServerStatus } from "../services/server-status.js";
+import { assertHostAllowedForNonAdmin, consumeProbeQuota } from "../services/probe-guard.js";
 
 /** Strip sensitive fields from server objects */
 function sanitizeServer(server: any) {
@@ -321,13 +322,21 @@ const probeVpsSchema = z
 
 // POST /api/servers/probe-vps — run a pre-install diagnostic over
 // ephemeral SSH and return the parsed state (what's on :80 / :443,
-// running docker containers, suggested install mode). Admin-only for
-// the same reason install-relay is: it requires SSH credentials to a
-// target host.
+// running docker containers, suggested install mode).
+//
+// Open to non-admin actors (broker-issued ApiKey with userId) so a
+// per-user onboarding flow can run the same wizard. Two SSRF-style
+// guards apply *only* to non-admin callers:
+//   - Literal-IP host filter via `isPrivateOrLoopbackHost` rejects
+//     loopback / RFC1918 / link-local / IPv6 ULA so the probe can't
+//     be turned into an internal-network scanner.
+//   - Per-actor sliding-window rate limit via `consumeProbeQuota`
+//     caps how fast one actor can fan out probes.
+// Admins keep their existing behavior (no host filter, no rate limit).
 serversRouter.post("/probe-vps", async (c) => {
   const actor = getActorContext(c);
-  if (!actor.isAdmin) {
-    return c.json({ error: "forbidden", message: "admin auth required" }, 403);
+  if (!actor.isAdmin && !actor.userId) {
+    return c.json({ error: "forbidden", message: "auth required" }, 403);
   }
 
   let body: unknown;
@@ -347,6 +356,28 @@ serversRouter.post("/probe-vps", async (c) => {
     );
   }
   const input = parsed.data;
+
+  if (!actor.isAdmin) {
+    const hostCheck = await assertHostAllowedForNonAdmin(input.host);
+    if (!hostCheck.ok) {
+      return c.json(
+        {
+          error: "private_host",
+          message:
+            hostCheck.reason === "literal"
+              ? "non-admin actors cannot probe private/loopback addresses"
+              : "host resolves to a private/loopback address",
+        },
+        400,
+      );
+    }
+    if (!consumeProbeQuota(actor.userId!)) {
+      return c.json(
+        { error: "rate_limited", message: "probe rate limit exceeded; retry shortly" },
+        429,
+      );
+    }
+  }
 
   try {
     const outcome = await probeVps({
@@ -398,21 +429,26 @@ serversRouter.post("/probe-vps", async (c) => {
 
 // POST /api/servers/install-relay — run the agent-relay installer on a
 // fresh VPS via ephemeral SSH, parse the emitted URL + token, and
-// create the Server row. Admin-only. Streams the installer output as
-// SSE so the wizard can show a live progress view.
+// create the Server row. Streams the installer output as SSE so the
+// wizard can show a live progress view.
+//
+// Authorization: any authenticated actor. Non-admin actors land their
+// new server with `userId = actor.userId` so it's only visible to them
+// (mirrors how the re-install / deploy / env routes already work).
+// Admins keep landing rows with `userId = null` (admin-shared fleet).
 //
 // Security posture (see agent-tasks 252556e3):
-// - Admin-only; non-admin OAuth users cannot onboard servers.
 // - Credentials live in the zod-parsed body for the scope of this
 //   handler and get zeroed by ssh-executor after the connect phase.
 // - No DB write on failure paths — failed installs leave no trace
 //   beyond the audit log entry.
 // - Audit log captures host + success, never creds.
 // - Installer URL is compile-time; not a body field.
+// - Per-actor concurrency lock (`activeInstalls`) prevents fan-out.
 serversRouter.post("/install-relay", async (c) => {
   const actor = getActorContext(c);
-  if (!actor.isAdmin) {
-    return c.json({ error: "forbidden", message: "admin auth required" }, 403);
+  if (!actor.isAdmin && !actor.userId) {
+    return c.json({ error: "forbidden", message: "auth required" }, 403);
   }
 
   let body: unknown;
@@ -433,16 +469,43 @@ serversRouter.post("/install-relay", async (c) => {
   }
   const input = parsed.data;
 
+  // Same SSRF guard as probe-vps for non-admin actors. install.sh
+  // SSH-execs against the supplied host as root, so the same
+  // private-IP / DNS-resolved-private filter applies — otherwise a
+  // non-admin could bypass the probe gate by jumping straight to
+  // install.
+  if (!actor.isAdmin) {
+    const hostCheck = await assertHostAllowedForNonAdmin(input.host);
+    if (!hostCheck.ok) {
+      return c.json(
+        {
+          error: "private_host",
+          message:
+            hostCheck.reason === "literal"
+              ? "non-admin actors cannot install against private/loopback addresses"
+              : "host resolves to a private/loopback address",
+        },
+        400,
+      );
+    }
+  }
+
   // Uniqueness pre-check. Running install.sh takes 2–5 minutes; if the
   // caller accidentally re-onboards an existing host we'd waste the
   // install window and surface a confusing DB-conflict error at the
   // very end. Bail fast before any SSH happens.
+  //
+  // The 409 message leaks another tenant's server name to a non-admin
+  // caller, so condition the rich detail on `actor.isAdmin` and give
+  // non-admins a generic conflict instead.
   const existing = await prisma.server.findUnique({ where: { host: input.host } });
   if (existing) {
     return c.json(
       {
         error: "conflict",
-        message: `a server with host ${input.host} is already registered (${existing.name}). Delete it or use the manual form to update its credentials.`,
+        message: actor.isAdmin
+          ? `a server with host ${input.host} is already registered (${existing.name}). Delete it or use the manual form to update its credentials.`
+          : "this host is already onboarded; contact your admin if you believe this is an error",
       },
       409,
     );
