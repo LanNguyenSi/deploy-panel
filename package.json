@@ -1,5 +1,8 @@
 {
   "name": "deploy-panel",
   "private": true,
-  "workspaces": ["backend", "frontend"]
+  "workspaces": ["backend", "frontend"],
+  "overrides": {
+    "postcss": "^8.5.10"
+  }
 }
