@@ -22,7 +22,7 @@ All endpoints are served by the Hono backend on `PORT` (default `3001`) and pref
 | POST   | `/api/servers/:id/test`           | Test relay connectivity, pings relay `/health`       |
 | GET    | `/api/servers/:id/system`         | Get system info (CPU, memory, disk) from relay       |
 | POST   | `/api/servers/:serverId/sync`     | Sync apps list from relay to local database          |
-| POST   | `/api/servers/:id/install-relay`  | Placeholder for SSH-based relay installation (501)   |
+| POST   | `/api/servers/:id/install-relay`  | Install or reinstall agent-relay on the VPS over SSH (long-running; locks per server and per actor) |
 
 ## Apps
 
