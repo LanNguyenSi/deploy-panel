@@ -1,198 +1,75 @@
 # deploy-panel
 
-Web-based control panel for managing VPS deployments. Works together with [agent-relay](https://github.com/LanNguyenSi/agent-relay) to provide a visual interface for server management, app deployments, rollbacks, and deploy history.
+Web control panel for VPS deployments, paired with [agent-relay](https://github.com/LanNguyenSi/agent-relay).
 
-## Features
+[![CI](https://github.com/LanNguyenSi/deploy-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/LanNguyenSi/deploy-panel/actions/workflows/ci.yml)
 
-- **Server management** -- add, edit, remove VPS servers; test relay connectivity
-- **App management** -- view apps per server, trigger deploys and rollbacks, run preflight checks, view logs
-- **Deploy history** -- filterable timeline of all deployments with status, commit SHAs, duration
-- **Dashboard** -- overview of server fleet with online/offline counts, app totals, and recent deploys
-- **Relay integration** -- proxies deploy/rollback/logs/preflight requests to agent-relay instances running on each VPS
+<!-- TODO: hero screenshot of the dashboard -->
 
-## Architecture
+deploy-panel is a Next.js + Hono app that drives a fleet of VPS servers running [agent-relay](https://github.com/LanNguyenSi/agent-relay). It tracks servers, apps, and deploy history in PostgreSQL via Prisma, and proxies deploy / rollback / logs / preflight requests to each VPS's relay over HTTP. Built so a small team (or solo operator) can ship to a handful of boxes without juggling SSH tabs.
 
-```
-Browser --> Next.js frontend --> Hono backend --> agent-relay on VPS
-                                     |
-                                  PostgreSQL
-```
-
-| Layer    | Stack                                   |
-|----------|-----------------------------------------|
-| Frontend | Next.js 15, React 19                    |
-| Backend  | Hono, Prisma, Zod, Node.js 20+          |
-| Database | PostgreSQL 16                            |
-| Relay    | HTTP client proxying to agent-relay APIs |
-
-The backend stores server/app/deploy metadata in PostgreSQL via Prisma. When a deploy, rollback, log fetch, or preflight check is requested, the backend looks up the server's `relayUrl` and `relayToken`, then forwards the request to the agent-relay instance on that VPS.
-
-## Backend API Reference
-
-All endpoints are prefixed with `/api`.
-
-### Health
-
-| Method | Path          | Description              |
-|--------|---------------|--------------------------|
-| GET    | `/api/health` | Health check (returns OK) |
-
-### Servers
-
-| Method | Path                            | Description                                        |
-|--------|---------------------------------|----------------------------------------------------|
-| GET    | `/api/servers`                  | List all servers (includes app count)               |
-| GET    | `/api/servers/:id`              | Get single server with its apps and deploy count    |
-| POST   | `/api/servers`                  | Add a new server                                    |
-| PATCH  | `/api/servers/:id`              | Update server fields                                |
-| DELETE | `/api/servers/:id`              | Delete server (cascades to apps and deploys)         |
-| POST   | `/api/servers/:id/test`         | Test relay connectivity (pings relay `/health`)      |
-| GET    | `/api/servers/:id/system`       | Get system info (CPU, memory, disk) from relay        |
-| POST   | `/api/servers/:serverId/sync`   | Sync apps list from relay to local database           |
-| POST   | `/api/servers/:id/install-relay`| Placeholder for SSH-based relay installation (501)   |
-
-### Apps
-
-All app endpoints are nested under a server: `/api/servers/:serverId/apps`.
-
-| Method | Path                                            | Description                                    |
-|--------|-------------------------------------------------|------------------------------------------------|
-| GET    | `/api/servers/:serverId/apps`                   | List apps for a server                          |
-| POST   | `/api/servers/:serverId/apps/:name/deploy`      | Trigger deploy (proxied to agent-relay)          |
-| POST   | `/api/servers/:serverId/apps/:name/rollback`    | Trigger rollback (proxied to agent-relay)        |
-| GET    | `/api/servers/:serverId/apps/:name/logs`        | Fetch app logs (proxied to agent-relay)          |
-| GET    | `/api/servers/:serverId/apps/:name/preflight`   | Run preflight checks (proxied to agent-relay)    |
-
-### Deploys
-
-| Method | Path           | Description                                                        |
-|--------|----------------|--------------------------------------------------------------------|
-| GET    | `/api/deploys` | List deploys with optional filters: `serverId`, `appId`, `status`, `limit`, `offset`. Response includes `total` for pagination. |
-
-### Audit
-
-| Method | Path          | Description                                                        |
-|--------|---------------|--------------------------------------------------------------------|
-| GET    | `/api/audit`  | List audit log entries. Supports `limit` and `offset` query params; response includes `total` for pagination. |
-
-### Scheduled Deploys
-
-| Method | Path                    | Description                        |
-|--------|-------------------------|------------------------------------|
-| GET    | `/api/scheduled`        | List all scheduled deploy entries   |
-| POST   | `/api/scheduled`        | Create a new scheduled deploy       |
-| DELETE | `/api/scheduled/:id`    | Delete a scheduled deploy           |
-
-### API v1 (CI/CD Pipeline Integration)
-
-All v1 endpoints are prefixed with `/api/v1` and authenticated via `PANEL_TOKEN` (Bearer token).
-
-| Method | Path                  | Description                                                        |
-|--------|-----------------------|--------------------------------------------------------------------|
-| GET    | `/api/v1/servers`     | List all servers                                                    |
-| GET    | `/api/v1/apps`        | List all apps (optionally filtered by server)                       |
-| POST   | `/api/v1/deploy`      | Trigger a deploy for a given app                                    |
-| GET    | `/api/v1/deploy/:id`  | Get status of a specific deploy                                     |
-| GET    | `/api/v1/deploys`     | List deploys with `offset`/`total` pagination                       |
-| POST   | `/api/v1/rollback`    | Trigger a rollback for a given app                                  |
-| GET    | `/api/v1/logs`        | Fetch logs for a given app                                          |
-| POST   | `/api/v1/preflight`   | Run preflight checks for a given app                                |
-
-## Frontend Pages
-
-| Route              | Page             | Description                                                                 |
-|--------------------|------------------|-----------------------------------------------------------------------------|
-| `/`                | Dashboard        | Overview with server count, app count, online status, and recent deploys     |
-| `/servers`         | Server List      | Add/remove servers, test relay connections, view status badges               |
-| `/servers/[id]`    | App Management   | View apps on a server; deploy, rollback, view logs, run preflight checks     |
-| `/deploys`         | Deploy History   | Filterable table of all deployments with status, commit, duration, timestamp |
-| `/login`           | Login            | Authentication page                                                          |
-| `/audit`           | Audit Log        | Filterable audit trail of user actions                                       |
-| `/settings`        | Settings         | Panel configuration and user preferences                                     |
-
-## Relay Integration
-
-deploy-panel communicates with [agent-relay](https://github.com/LanNguyenSi/agent-relay) instances via HTTP. Each server record stores a `relayUrl` (e.g. `http://vps-ip:3002`) and an optional `relayToken` for Bearer authentication.
-
-When the panel triggers a deploy, rollback, log fetch, or preflight check, the backend:
-
-1. Looks up the server's relay credentials from the database
-2. Forwards the request to the agent-relay HTTP API (e.g. `POST /api/deploy`, `POST /api/rollback`, `GET /api/logs`, `GET /api/preflight`)
-3. Records the result in the `deploys` table and updates the app status
-
-Requests to agent-relay have a 30-second timeout. If the relay is unreachable or returns an error, the deploy is marked as failed.
-
-## Running Locally
-
-### Prerequisites
-
-- Node.js 20+
-- Docker (for PostgreSQL)
-
-### Quick Start
+## Try it in 60 seconds
 
 ```bash
 git clone https://github.com/LanNguyenSi/deploy-panel.git
 cd deploy-panel
-cp .env.example .env        # edit .env if needed
-make setup                  # installs deps, starts PostgreSQL, runs Prisma generate + push
-make dev                    # starts backend (port 3001) + frontend (port 3000)
+cp .env.example .env
+
+# installs deps, starts PostgreSQL in Docker, runs prisma generate + db push
+make setup
+
+# starts backend on :3001 and frontend on :3000
+make dev
 ```
 
-### Make Targets
+Open http://localhost:3000, add a server (host + `relayUrl` + optional `relayToken`), hit "Test connection", then deploy from the app list.
 
-| Target         | Description                                   |
-|----------------|-----------------------------------------------|
-| `make setup`   | Install deps, start DB, generate Prisma client |
-| `make dev`     | Run backend + frontend concurrently            |
-| `make build`   | Build both backend and frontend                |
-| `make docker-up` | Start PostgreSQL container                   |
-| `make docker-down` | Stop PostgreSQL container                  |
-| `make db-generate` | Run `prisma generate`                      |
-| `make db-push`     | Run `prisma db push`                       |
-| `make clean`       | Remove build artifacts and node_modules    |
+## What it looks like
 
-## Environment Variables
+Dashboard, fleet overview:
 
-| Variable             | Required | Default                          | Description                          |
-|----------------------|----------|----------------------------------|--------------------------------------|
-| `DATABASE_URL`       | Yes      | --                               | PostgreSQL connection string         |
-| `SESSION_SECRET`     | Yes      | --                               | Session signing secret (min 16 chars)|
-| `PANEL_TOKEN`        | No       | --                               | Bearer token for API v1 (CI/CD) endpoints |
-| `PORT`               | No       | `3001`                           | Backend port                         |
-| `CORS_ORIGINS`       | No       | `http://localhost:3000`          | Allowed CORS origins                 |
-| `FRONTEND_URL`       | No       | `http://localhost:3000`          | Frontend URL                         |
-| `NODE_ENV`           | No       | `development`                    | Node environment                     |
-| `NEXT_PUBLIC_API_URL`| No       | `http://localhost:3001`          | API URL used by the frontend         |
-| `POSTGRES_USER`      | No       | `deploy_panel`                   | PostgreSQL user (Docker)             |
-| `POSTGRES_PASSWORD`  | No       | `deploy_panel`                   | PostgreSQL password (Docker)         |
-| `POSTGRES_DB`        | No       | `deploy_panel`                   | PostgreSQL database name (Docker)    |
-| `FRONTEND_PORT`      | No       | `3000`                           | Host port for frontend (Docker)      |
+```
+# example output
+Servers   3 online / 0 offline / 0 no-relay
+Apps      11 healthy / 1 unhealthy / 0 deploying
+Recent    web-prod      success    2m ago    (a1b2c3d -> e4f5g6h)
+          api-staging   success    14m ago   (9e8d7c6 -> 5b4a3c2)
+          worker-prod   failed     1h ago    (timeout reaching relay)
+```
 
-## Docker Deployment
-
-The project includes a full `docker-compose.yml` that runs PostgreSQL, the backend, and the frontend as containers.
+API v1 deploy from a CI job:
 
 ```bash
-# Build and start all services
-cp .env.example .env
-# Edit .env -- set SESSION_SECRET to a secure value and adjust NEXT_PUBLIC_API_URL
-# to the public URL where the backend will be reachable
-
-docker compose up -d --build
+curl -X POST https://panel.example.com/api/v1/deploy \
+  -H "Authorization: Bearer $PANEL_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"serverId": "srv_abc", "appName": "web-prod"}'
 ```
 
-The compose stack includes:
+## Next steps
 
-- **db** -- PostgreSQL 16 Alpine with a persistent volume and health check
-- **backend** -- Multi-stage build (Node 22 Alpine), runs Prisma migrations on startup via entrypoint script, exposes port 3001 internally
-- **frontend** -- Multi-stage build (Node 22 Alpine) with Next.js standalone output, exposed on `FRONTEND_PORT` (default 3000)
+| If you want to... | Read |
+|------|------|
+| Understand the layers (frontend, backend, relay proxy, data model) | [docs/architecture.md](docs/architecture.md) |
+| Configure env vars, ports, sessions, CORS, Docker deployment | [docs/configuration.md](docs/configuration.md) |
+| Call the REST API (panel UI endpoints + `/api/v1` for CI/CD) | [docs/api.md](docs/api.md) |
 
-The backend waits for the database health check before starting. The frontend waits for the backend health check before starting. Only the frontend port is published to the host by default.
+## Development
 
-### Post-deploy smoke check
+```bash
+make setup          # one-time: deps, DB, Prisma client
+make dev            # backend + frontend, hot reload
+make build          # build both workspaces
+make docker-up      # start PostgreSQL only (port 5433)
+make docker-down    # stop PostgreSQL
+make db-generate    # prisma generate
+make db-push        # prisma db push (apply schema)
+make clean          # remove dist + node_modules
+```
 
-After a deploy, run the smoke check to verify the critical paths (auth, Prisma-backed queries, fleet reachability) against the running instance:
+Workspaces: `backend/` (Hono + Prisma + Zod, Node 20+) and `frontend/` (Next.js 15, React 19). Shared root `package.json` declares both as npm workspaces.
+
+After deploying to a real environment, run the smoke check to verify auth, Prisma-backed queries, and fleet reachability against the live instance:
 
 ```bash
 DEPLOY_PANEL_URL=https://deploy-panel.example.com \
@@ -200,17 +77,24 @@ PANEL_TOKEN=... \
 ./scripts/smoke-check.sh
 ```
 
-Exits 0 on success. Unlike `/api/health` (which only proves the Hono process is up), this script exercises real DB queries via Prisma, so schema drift surfaces immediately. Dependencies: `curl`, `jq`.
+Exits 0 on success. Unlike `/api/health` (which only proves the Hono process is up), this script exercises real DB queries, so schema drift surfaces immediately. Requires `curl` and `jq`.
 
-## Data Model
+## Docker deployment
 
-- **Server** -- VPS instances with host, SSH key path, relay URL/token, and connection status (`unknown`, `online`, `offline`, `no-relay`)
-- **App** -- Deployed applications per server with health status (`unknown`, `healthy`, `unhealthy`, `deploying`); unique per server+name
-- **Deploy** -- Deployment history with commit SHAs (before/after), status (`pending`, `running`, `success`, `failed`, `rolled_back`), duration, logs, and trigger source
+The repo ships a full `docker-compose.yml` for db + backend + frontend:
+
+```bash
+cp .env.example .env
+# edit .env: set SESSION_SECRET to a real value, point NEXT_PUBLIC_API_URL at
+# the public URL where the backend will be reachable
+docker compose up -d --build
+```
+
+The backend waits for the db health check before starting, the frontend waits for the backend, and only the frontend port is published by default. See [docs/configuration.md](docs/configuration.md) for the full env var matrix and production notes.
 
 ## Related
 
-- [agent-relay](https://github.com/LanNguyenSi/agent-relay) -- VPS daemon that executes deployments
+- [agent-relay](https://github.com/LanNguyenSi/agent-relay), the VPS daemon that actually runs deploys; deploy-panel is the UI in front of it.
 
 ## License
 
