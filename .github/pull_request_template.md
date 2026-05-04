@@ -8,8 +8,7 @@
 
 ## Test plan
 
-- [ ] `npm run build`
-- [ ] `npm test` (affected surface)
+- [ ] Built + tested the affected surface (see CONTRIBUTING for the per-surface commands; root has no fan-out script)
 - [ ] For deployment-path changes: dogfood against `docker-compose.prod.yml` or a staging VPS
 - [ ] Manual smoke check: <!-- command or scenario -->
 

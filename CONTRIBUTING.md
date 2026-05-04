@@ -11,12 +11,18 @@ Thanks for your interest. deploy-panel is a web-based control panel for managing
 
 1. Fork, branch off `main` (e.g. `feat/<scope>`, `fix/<scope>`).
 2. Keep changes scoped where possible.
-3. Run the local checks scoped to the affected workspace:
+3. Run the local checks scoped to the affected surface:
 
    ```bash
+   # backend or frontend (npm workspaces)
    npm install
-   npm run build --workspace=<surface>
-   npm run test  --workspace=<surface>
+   npm run build --workspace=<backend|frontend>
+   npm run test  --workspace=<backend|frontend>
+
+   # mcp (standalone npm package, not in root workspaces)
+   cd mcp && npm install && npm run build && npm test
+
+   # action is a GitHub composite action; no npm build, just edit action.yml
    ```
 
 4. For deployment-path changes, dogfood against a real or staging VPS target via `docker compose -f docker-compose.prod.yml`.
