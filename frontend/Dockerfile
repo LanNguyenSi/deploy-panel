@@ -8,6 +8,11 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules node_modules/
 COPY frontend/ frontend/
+# next 15.5.x no longer hoists to the workspace root node_modules,
+# so the binary lives at frontend/node_modules/.bin/next. Copy the
+# nested workspace deps AFTER `COPY frontend/ frontend/` so the
+# source copy does not stomp the just-installed modules.
+COPY --from=deps /app/frontend/node_modules frontend/node_modules/
 COPY package.json ./
 ARG NEXT_PUBLIC_API_URL=http://localhost:3001
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
