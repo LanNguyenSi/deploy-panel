@@ -10,22 +10,35 @@ deploy-panel is configured entirely via environment variables. The backend and f
 
 ## Environment variables
 
-| Variable             | Required | Default                          | Description                          |
-|----------------------|----------|----------------------------------|--------------------------------------|
-| `DATABASE_URL`       | Yes      | (none)                           | PostgreSQL connection string         |
-| `SESSION_SECRET`     | Yes      | (none)                           | Session signing secret, min 16 chars |
-| `PANEL_TOKEN`        | No       | (none)                           | Bearer token for `/api/v1` (CI/CD) endpoints |
-| `PORT`               | No       | `3001`                           | Backend port                         |
-| `CORS_ORIGINS`       | No       | `http://localhost:3000`          | Allowed CORS origins (comma-separated) |
-| `FRONTEND_URL`       | No       | `http://localhost:3000`          | Frontend URL (used for redirects, CSRF) |
-| `NODE_ENV`           | No       | `development`                    | Node environment                     |
-| `NEXT_PUBLIC_API_URL`| No       | `http://localhost:3001`          | API URL the frontend calls           |
-| `POSTGRES_USER`      | No       | `deploy_panel`                   | PostgreSQL user (Docker)             |
-| `POSTGRES_PASSWORD`  | No       | `deploy_panel`                   | PostgreSQL password (Docker)         |
-| `POSTGRES_DB`        | No       | `deploy_panel`                   | PostgreSQL database name (Docker)    |
-| `FRONTEND_PORT`      | No       | `3000`                           | Host port for the frontend container |
+| Variable                | Required | Default                          | Description                          |
+|-------------------------|----------|----------------------------------|--------------------------------------|
+| `DATABASE_URL`          | Yes      | (none)                           | PostgreSQL connection string         |
+| `SESSION_SECRET`        | Yes      | (none)                           | Session signing secret, min 16 chars |
+| `PANEL_TOKEN`           | No       | (none)                           | Bearer token for `/api/v1` (CI/CD) endpoints |
+| `PORT`                  | No       | `3001`                           | Backend port                         |
+| `CORS_ORIGINS`          | No       | `http://localhost:3000`          | Allowed CORS origins (comma-separated) |
+| `FRONTEND_URL`          | No       | `http://localhost:3000`          | Frontend URL (used for redirects, CSRF) |
+| `BACKEND_URL`           | No       | `http://localhost:3001`          | Absolute backend URL, used to build the OAuth callback redirect |
+| `NODE_ENV`              | No       | `development`                    | Node environment                     |
+| `GITHUB_CLIENT_ID`      | No       | (empty)                          | GitHub OAuth App client ID. When unset (or `GITHUB_CLIENT_SECRET` unset), `/api/auth/github/*` returns 503 and the frontend hides the button |
+| `GITHUB_CLIENT_SECRET`  | No       | (empty)                          | GitHub OAuth App client secret. Pair with `GITHUB_CLIENT_ID` to enable the standalone GitHub login flow |
+| `ALLOWED_GITHUB_LOGINS` | No       | (empty)                          | Comma-separated GitHub logins allowed via the identity-broker endpoint. Empty means "any verified GitHub user" (back-compat) |
+| `NEXT_PUBLIC_API_URL`   | No       | `http://localhost:3001`          | API URL the frontend calls           |
+| `POSTGRES_USER`         | No       | `deploy_panel`                   | PostgreSQL user (Docker)             |
+| `POSTGRES_PASSWORD`     | No       | `deploy_panel`                   | PostgreSQL password (Docker)         |
+| `POSTGRES_DB`           | No       | `deploy_panel`                   | PostgreSQL database name (Docker)    |
+| `FRONTEND_PORT`         | No       | `3000`                           | Host port for the frontend container |
 
 `PANEL_TOKEN` is optional in dev but required for any `/api/v1` traffic; without it, all v1 endpoints return 401. Treat it like a service account token.
+
+## Authentication
+
+deploy-panel supports two GitHub-backed paths to a panel session, on top of the email/password flow that ships out of the box:
+
+1. **Standalone GitHub OAuth login.** Set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and `BACKEND_URL` to point at a [GitHub OAuth App](https://github.com/settings/developers). The callback URL registered on the OAuth App must be `${BACKEND_URL}/api/auth/github/callback`. With these unset, `/api/auth/github/*` returns 503 and the frontend hides the "Sign in with GitHub" button.
+2. **Identity-broker registration.** A trusted upstream like [project-pilot](https://github.com/LanNguyenSi/project-pilot) calls `POST /api/auth/register-from-project-pilot` with a user's GitHub access token; deploy-panel re-verifies the token against `api.github.com/user` (it does not blindly trust the broker) and mints a `dp_...` API token. If `ALLOWED_GITHUB_LOGINS` is set, the verified login must be in the comma-separated list, otherwise the request is rejected with 403. Leave it empty to allow any verified user (back-compat).
+
+Both paths share the same `SESSION_SECRET` and underlying user record, so a user can sign in via either path and end up on the same account.
 
 ## Local development
 
