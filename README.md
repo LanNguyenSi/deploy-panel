@@ -52,6 +52,7 @@ curl -X POST https://panel.example.com/api/v1/deploy \
 |------|------|
 | Understand the layers (frontend, backend, relay proxy, data model) | [docs/architecture.md](docs/architecture.md) |
 | Configure env vars, ports, sessions, CORS, Docker deployment | [docs/configuration.md](docs/configuration.md) |
+| Enable GitHub OAuth or the identity-broker registration flow | [docs/configuration.md#authentication](docs/configuration.md#authentication) |
 | Call the REST API (panel UI endpoints + `/api/v1` for CI/CD) | [docs/api.md](docs/api.md) |
 
 ## Development
