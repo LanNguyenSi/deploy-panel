@@ -35,8 +35,10 @@ deploy-panel is configured entirely via environment variables. The backend and f
 
 deploy-panel supports two GitHub-backed paths to a panel session, on top of the email/password flow that ships out of the box:
 
-1. **Standalone GitHub OAuth login.** Set `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, and `BACKEND_URL` to point at a [GitHub OAuth App](https://github.com/settings/developers). The callback URL registered on the OAuth App must be `${BACKEND_URL}/api/auth/github/callback`. With these unset, `/api/auth/github/*` returns 503 and the frontend hides the "Sign in with GitHub" button.
-2. **Identity-broker registration.** A trusted upstream like [project-pilot](https://github.com/LanNguyenSi/project-pilot) calls `POST /api/auth/register-from-project-pilot` with a user's GitHub access token; deploy-panel re-verifies the token against `api.github.com/user` (it does not blindly trust the broker) and mints a `dp_...` API token. If `ALLOWED_GITHUB_LOGINS` is set, the verified login must be in the comma-separated list, otherwise the request is rejected with 403. Leave it empty to allow any verified user (back-compat).
+1. **Standalone GitHub OAuth login.** Set `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` from a [GitHub OAuth App](https://github.com/settings/developers); set `BACKEND_URL` for any non-localhost deployment so the callback URL resolves to the public host. The callback URL registered on the OAuth App must be `${BACKEND_URL}/api/auth/github/callback`. With client ID/secret unset, `/api/auth/github/*` returns 503 and the frontend hides the "Sign in with GitHub" button.
+2. **Identity-broker registration.** A trusted upstream like [project-pilot](https://github.com/LanNguyenSi/project-pilot) calls `POST /api/auth/register-from-project-pilot` with a user's GitHub access token; deploy-panel re-verifies the token against `api.github.com/user` (it does not blindly trust the broker) and mints a `dp_...` API token.
+
+`ALLOWED_GITHUB_LOGINS` applies to both paths: if set, the verified GitHub login must appear in the comma-separated list, otherwise the broker request is rejected with 403 and the OAuth callback redirects to `/login?error=forbidden_github_login`. Leave it empty to allow any verified user (back-compat).
 
 Both paths share the same `SESSION_SECRET` and underlying user record, so a user can sign in via either path and end up on the same account.
 
