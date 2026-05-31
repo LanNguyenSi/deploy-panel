@@ -182,10 +182,18 @@ appsRouter.post("/:name/deploy", async (c) => {
   return c.json({ deploy: { id: deploy.id, status: "running" } }, 202);
 });
 
-// GET /api/deploys/:id — get single deploy status (for polling)
+// GET /api/servers/:serverId/apps/:name/deploys/:deployId — single deploy
+// status (for polling).
+//
+// The parent middleware already proved the actor owns (or admins) the
+// route's :serverId. Scope the deploy lookup to that same serverId so a
+// caller who owns server A can't read a deploy row belonging to server B
+// by passing a foreign deployId (cross-tenant IDOR). 404 stays uniform so
+// we don't leak whether the foreign deploy exists.
 appsRouter.get("/:name/deploys/:deployId", async (c) => {
+  const serverId = getServerId(c);
   const deployId = c.req.param("deployId");
-  const deploy = await prisma.deploy.findUnique({ where: { id: deployId } });
+  const deploy = await prisma.deploy.findFirst({ where: { id: deployId, serverId } });
   if (!deploy) return c.json({ error: "not_found" }, 404);
   return c.json({ deploy });
 });
