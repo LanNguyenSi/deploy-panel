@@ -254,6 +254,7 @@ appsRouter.post("/:name/rollback", async (c) => {
 appsRouter.get("/:name/logs", async (c) => {
   const serverId = getServerId(c);
   const name = c.req.param("name");
+  if (!APP_NAME_PATTERN.test(name)) return c.json({ error: "invalid_app_name" }, 400);
   const lines = Number(c.req.query("lines") ?? 50);
 
   try {
@@ -272,6 +273,7 @@ appsRouter.get("/:name/logs", async (c) => {
 appsRouter.get("/:name/preflight", async (c) => {
   const serverId = getServerId(c);
   const name = c.req.param("name");
+  if (!APP_NAME_PATTERN.test(name)) return c.json({ error: "invalid_app_name" }, 400);
 
   try {
     const result = await relayRequest({

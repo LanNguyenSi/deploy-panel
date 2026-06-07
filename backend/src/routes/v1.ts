@@ -313,6 +313,10 @@ v1Router.post("/preflight", async (c) => {
     return c.json({ error: "bad_request", message: "server and app are required" }, 400);
   }
 
+  if (!APP_NAME_PATTERN.test(appName)) {
+    return c.json({ error: "bad_request", message: "Invalid app name" }, 400);
+  }
+
   const actor = getActorContext(c);
   const srv = await findOwnedServerByIdOrName(actor, server);
   if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
