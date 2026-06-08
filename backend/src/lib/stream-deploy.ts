@@ -1,5 +1,78 @@
 import { prisma } from "./prisma.js";
 import { recoverBrokenDeploy } from "./deploy-recovery.js";
+import { verifyDeployHealth } from "./post-deploy-gate.js";
+
+type Step = { name: string; status: string; durationMs?: number; [k: string]: unknown };
+
+export interface FinalizeDeployOpts {
+  deployId: string;
+  appId: string;
+  serverId: string;
+  appName: string;
+  /** Did the relay report the deploy as successful (exit-code / step level)? */
+  relaySuccess: boolean;
+  commitBefore?: string | null;
+  commitAfter?: string | null;
+  duration?: number | null;
+  steps: Step[];
+}
+
+/**
+ * Single place that writes the terminal deploy + app status. When the relay
+ * reported success we don't take that at face value: we run the post-deploy
+ * health gate (container run-state + public-route probe) and DOWNGRADE to
+ * failed/unhealthy if the app isn't actually serving. A relay-reported
+ * failure is written straight through — there's nothing to second-guess.
+ *
+ * Centralising this means all three relay outcome shapes (SSE `done`, the
+ * JSON fallback, and a stream that ends without a `done` event) gate
+ * identically instead of each re-deriving success inline.
+ */
+export async function finalizeDeploy(opts: FinalizeDeployOpts): Promise<void> {
+  const { deployId, appId, serverId, appName, relaySuccess } = opts;
+  const steps: Step[] = [...opts.steps];
+  let success = relaySuccess;
+
+  if (relaySuccess) {
+    const app = await prisma.app.findUnique({ where: { id: appId }, select: { liveUrl: true } });
+    const verdict = await verifyDeployHealth({ serverId, appName, liveUrl: app?.liveUrl ?? null });
+    if (verdict.healthy) {
+      steps.push({
+        name: "post-deploy health gate",
+        status: "success",
+        durationMs: 0,
+        output: "Containers in a healthy run state and public route reachable",
+      });
+    } else {
+      success = false;
+      steps.push({
+        name: "post-deploy health gate",
+        status: "failure",
+        durationMs: 0,
+        output: verdict.reason ?? "Post-deploy verification failed",
+      });
+      console.log(`[post-deploy-gate] ${appName}: deploy reported success but is unhealthy — ${verdict.reason}`);
+    }
+  }
+
+  await prisma.deploy.update({
+    where: { id: deployId },
+    data: {
+      status: success ? "success" : "failed",
+      // Prisma skips a column passed `undefined` and clears one passed `null`.
+      // The stream-end path passes undefined (no commit info to write); the
+      // others pass resolved values (possibly null).
+      commitBefore: opts.commitBefore,
+      commitAfter: opts.commitAfter,
+      duration: opts.duration,
+      log: JSON.stringify(steps),
+    },
+  });
+  await prisma.app.update({
+    where: { id: appId },
+    data: { status: success ? "healthy" : "unhealthy", lastDeployAt: new Date() },
+  });
+}
 
 /**
  * Deploy via SSE stream from relay — updates DB per step in real-time.
@@ -52,20 +125,20 @@ export async function streamDeploy(opts: {
       const success = data?.result?.success === true || data?.deploy?.status === "success";
       const rawDuration = data?.result?.durationMs ?? data?.deploy?.durationMs;
       const duration = typeof rawDuration === "number" ? Math.round(rawDuration) : null;
+      const jsonSteps = data?.result?.steps ?? data?.deploy?.steps ?? [
+        { name: "deploy", status: success ? "success" : "failed", note: "JSON fallback" },
+      ];
 
-      await prisma.deploy.update({
-        where: { id: deployId },
-        data: {
-          status: success ? "success" : "failed",
-          commitBefore: data?.result?.commitBefore ?? data?.deploy?.commitBefore ?? null,
-          commitAfter: data?.result?.commitAfter ?? data?.deploy?.commitAfter ?? null,
-          duration,
-          log: JSON.stringify(data?.result?.steps ?? data?.deploy?.steps ?? [{ name: "deploy", status: success ? "success" : "failed", note: "JSON fallback" }]),
-        },
-      });
-      await prisma.app.update({
-        where: { id: appId },
-        data: { status: success ? "healthy" : "unhealthy", lastDeployAt: new Date() },
+      await finalizeDeploy({
+        deployId,
+        appId,
+        serverId,
+        appName,
+        relaySuccess: success,
+        commitBefore: data?.result?.commitBefore ?? data?.deploy?.commitBefore ?? null,
+        commitAfter: data?.result?.commitAfter ?? data?.deploy?.commitAfter ?? null,
+        duration,
+        steps: jsonSteps,
       });
       return;
     }
@@ -89,7 +162,7 @@ export async function streamDeploy(opts: {
         } else if (line.startsWith("data: ") && eventType) {
           try {
             const data = JSON.parse(line.slice(6));
-            await handleEvent(eventType, data, deployId, appId, steps);
+            await handleEvent(eventType, data, { deployId, appId, serverId, appName }, steps);
           } catch {}
           eventType = "";
         }
@@ -101,13 +174,13 @@ export async function streamDeploy(opts: {
     if (lastUpdate?.status === "running") {
       // Stream ended without done event — mark based on steps
       const allSuccess = steps.length > 0 && steps.every((s) => s.status === "success" || s.status === "skipped");
-      await prisma.deploy.update({
-        where: { id: deployId },
-        data: { status: allSuccess ? "success" : "failed", log: JSON.stringify(steps) },
-      });
-      await prisma.app.update({
-        where: { id: appId },
-        data: { status: allSuccess ? "healthy" : "unhealthy", lastDeployAt: new Date() },
+      await finalizeDeploy({
+        deployId,
+        appId,
+        serverId,
+        appName,
+        relaySuccess: allSuccess,
+        steps,
       });
     }
   } catch (err) {
@@ -117,13 +190,20 @@ export async function streamDeploy(opts: {
   }
 }
 
+interface EventContext {
+  deployId: string;
+  appId: string;
+  serverId: string;
+  appName: string;
+}
+
 async function handleEvent(
   event: string,
   data: any,
-  deployId: string,
-  appId: string,
+  ctx: EventContext,
   steps: Array<{ name: string; status: string; durationMs: number }>,
 ) {
+  const { deployId, appId, serverId, appName } = ctx;
   if (event === "step") {
     steps.push({ name: data.name, status: data.status, durationMs: data.durationMs ?? 0 });
     // Update DB with current steps — so polling clients see progress
@@ -133,19 +213,16 @@ async function handleEvent(
     }).catch(() => {});
   } else if (event === "done") {
     const success = data.success ?? false;
-    await prisma.deploy.update({
-      where: { id: deployId },
-      data: {
-        status: success ? "success" : "failed",
-        commitBefore: data.commitBefore,
-        commitAfter: data.commitAfter,
-        duration: data.durationMs,
-        log: JSON.stringify(data.steps ?? steps),
-      },
-    });
-    await prisma.app.update({
-      where: { id: appId },
-      data: { status: success ? "healthy" : "unhealthy", lastDeployAt: new Date() },
+    await finalizeDeploy({
+      deployId,
+      appId,
+      serverId,
+      appName,
+      relaySuccess: success,
+      commitBefore: data.commitBefore,
+      commitAfter: data.commitAfter,
+      duration: data.durationMs,
+      steps: data.steps ?? steps,
     });
   } else if (event === "blocked") {
     await prisma.deploy.update({
@@ -160,6 +237,13 @@ async function handleEvent(
     await prisma.deploy.update({
       where: { id: deployId },
       data: { status: "failed", log: data.message ?? "unknown error" },
+    }).catch(() => {});
+    // Mirror the `blocked` branch: a failed deploy must leave the app card
+    // `unhealthy`, not stuck on the transient `deploying` it was set to at
+    // dispatch.
+    await prisma.app.update({
+      where: { id: appId },
+      data: { status: "unhealthy" },
     }).catch(() => {});
   }
 }
