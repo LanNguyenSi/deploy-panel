@@ -30,6 +30,10 @@ const arr = (...rows: object[]) => JSON.stringify(rows);
 
 const okResponse = (status: number) => ({ status }) as unknown as Response;
 const noSleep = () => Promise.resolve();
+// Inject a deterministic resolver so the SSRF guard sees the hostnames in
+// these tests as public, without touching real DNS.
+const publicLookup = async () => [{ address: "93.184.216.34" }];
+const privateLookup = async () => [{ address: "10.0.0.5" }];
 
 describe("parseComposePs", () => {
   it("parses newline-delimited objects (compose v2 JSONL)", () => {
@@ -91,29 +95,73 @@ describe("assessContainers", () => {
 
 describe("probeRoute", () => {
   it("ok for a 200", async () => {
-    const v = await probeRoute("https://x.test/", { fetchImpl: vi.fn().mockResolvedValue(okResponse(200)) });
+    const v = await probeRoute("https://x.test/", { fetchImpl: vi.fn().mockResolvedValue(okResponse(200)), lookupImpl: publicLookup });
     expect(v).toEqual({ ok: true, status: 200 });
   });
 
   it("not ok for a 404 (Traefik no-backend — the incident), carrying the status", async () => {
-    const v = await probeRoute("https://x.test/", { fetchImpl: vi.fn().mockResolvedValue(okResponse(404)) });
+    const v = await probeRoute("https://x.test/", { fetchImpl: vi.fn().mockResolvedValue(okResponse(404)), lookupImpl: publicLookup });
     expect(v).toEqual({ ok: false, status: 404 });
   });
 
   it("not ok for a 503 (Traefik no healthy upstream)", async () => {
-    const v = await probeRoute("https://x.test/", { fetchImpl: vi.fn().mockResolvedValue(okResponse(503)) });
+    const v = await probeRoute("https://x.test/", { fetchImpl: vi.fn().mockResolvedValue(okResponse(503)), lookupImpl: publicLookup });
     expect(v).toEqual({ ok: false, status: 503 });
   });
 
   it("OK for a 401/403 — a backend answered through Traefik, the route is wired (just auth-gated)", async () => {
-    expect((await probeRoute("https://x.test/", { fetchImpl: vi.fn().mockResolvedValue(okResponse(401)) })).ok).toBe(true);
-    expect((await probeRoute("https://x.test/", { fetchImpl: vi.fn().mockResolvedValue(okResponse(403)) })).ok).toBe(true);
+    expect((await probeRoute("https://x.test/", { fetchImpl: vi.fn().mockResolvedValue(okResponse(401)), lookupImpl: publicLookup })).ok).toBe(true);
+    expect((await probeRoute("https://x.test/", { fetchImpl: vi.fn().mockResolvedValue(okResponse(403)), lookupImpl: publicLookup })).ok).toBe(true);
   });
 
   it("not ok on a transport error, carrying the message", async () => {
-    const v = await probeRoute("https://x.test/", { fetchImpl: vi.fn().mockRejectedValue(new Error("ECONNREFUSED")) });
+    const v = await probeRoute("https://x.test/", { fetchImpl: vi.fn().mockRejectedValue(new Error("ECONNREFUSED")), lookupImpl: publicLookup });
     expect(v.ok).toBe(false);
     expect(v.error).toContain("ECONNREFUSED");
+  });
+
+  it("REFUSES (does not fetch) a URL whose host resolves to a private address", async () => {
+    const fetchImpl = vi.fn();
+    const v = await probeRoute("https://internal.example.com/", { fetchImpl, lookupImpl: privateLookup });
+    expect(v).toMatchObject({ ok: true, refused: true });
+    expect(v.error).toContain("non-public address");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES a literal loopback URL without any DNS lookup", async () => {
+    const fetchImpl = vi.fn();
+    const lookupImpl = vi.fn();
+    const v = await probeRoute("http://127.0.0.1:9000/", { fetchImpl, lookupImpl });
+    expect(v).toMatchObject({ ok: true, refused: true });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(lookupImpl).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES alternate IPv4 encodings of loopback (hex / decimal / userinfo)", async () => {
+    const fetchImpl = vi.fn();
+    // new URL() normalizes all of these to 127.0.0.1 before the guard sees them.
+    for (const url of ["http://0x7f000001/", "http://2130706433/", "http://public@127.0.0.1/"]) {
+      const v = await probeRoute(url, { fetchImpl, lookupImpl: vi.fn() });
+      expect(v, url).toMatchObject({ ok: true, refused: true });
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES a bracketed internal IPv6 literal, allows a bracketed public IPv6 literal", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(okResponse(200));
+    const refused = await probeRoute("http://[::1]/", { fetchImpl, lookupImpl: vi.fn() });
+    expect(refused).toMatchObject({ ok: true, refused: true });
+
+    const probed = await probeRoute("https://[2606:4700:4700::1111]/", { fetchImpl, lookupImpl: vi.fn() });
+    expect(probed).toEqual({ ok: true, status: 200 }); // public literal is probed, not refused
+  });
+
+  it("fails CLOSED when the host cannot be resolved (refused, never fetched)", async () => {
+    const fetchImpl = vi.fn();
+    const v = await probeRoute("https://nope.example.com/", { fetchImpl, lookupImpl: async () => { throw new Error("ENOTFOUND"); } });
+    expect(v).toMatchObject({ ok: true, refused: true });
+    expect(v.error).toContain("could not resolve");
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 
@@ -141,6 +189,7 @@ describe("verifyDeployHealth", () => {
       serverId: "srv-a",
       appName: "thd",
       liveUrl: "https://status.opentriologue.ai/",
+      lookupImpl: publicLookup,
       attempts: 2,
       sleepImpl: noSleep,
       relayRequestImpl: relayReturning(jsonl(RUNNING_BACKEND)), // containers fine…
@@ -158,6 +207,7 @@ describe("verifyDeployHealth", () => {
       serverId: "srv-a",
       appName: "thd",
       liveUrl: "https://status.opentriologue.ai/",
+      lookupImpl: publicLookup,
       attempts: 4,
       sleepImpl: noSleep,
       relayRequestImpl: relayReturning(jsonl(RUNNING_BACKEND)),
@@ -177,6 +227,7 @@ describe("verifyDeployHealth", () => {
       serverId: "srv-a",
       appName: "thd",
       liveUrl: "https://status.opentriologue.ai/",
+      lookupImpl: publicLookup,
       attempts: 2,
       sleepImpl: noSleep,
       relayRequestImpl: relayReturning(jsonl(RUNNING_BACKEND, RESTARTING_FRONTEND)),
@@ -192,6 +243,7 @@ describe("verifyDeployHealth", () => {
       serverId: "srv-a",
       appName: "thd",
       liveUrl: "https://gated.opentriologue.ai/",
+      lookupImpl: publicLookup,
       attempts: 2,
       sleepImpl: noSleep,
       relayRequestImpl: relayReturning(jsonl(RUNNING_BACKEND)),
@@ -328,6 +380,7 @@ describe("verifyDeployHealth", () => {
         serverId: "srv-a",
         appName: "thd",
         liveUrl: "https://status.opentriologue.ai/",
+        lookupImpl: publicLookup,
         attempts: 2,
         sleepImpl: noSleep,
         requireHealthyEvidence: true,
@@ -336,6 +389,42 @@ describe("verifyDeployHealth", () => {
       });
       expect(verdict.healthy).toBe(false);
       expect(verdict.reason).toContain("returned HTTP 404");
+    });
+  });
+
+  // ── SSRF guard surfacing ─────────────────────────────────────────────────
+  describe("SSRF-guarded route probe", () => {
+    it("does not fail the deploy when the route is SSRF-refused; surfaces it as a note and never fetches", async () => {
+      const fetchImpl = vi.fn();
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: "https://internal.example.com/",
+        lookupImpl: privateLookup, // resolves to 10.0.0.5
+        attempts: 2,
+        sleepImpl: noSleep,
+        relayRequestImpl: relayReturning(jsonl(RUNNING_BACKEND)),
+        fetchImpl,
+      });
+      expect(verdict.healthy).toBe(true);
+      expect(fetchImpl).not.toHaveBeenCalled(); // never probed the internal host
+      expect(verdict.notes?.join(" ")).toContain("route probe skipped");
+      expect(verdict.notes?.join(" ")).toContain("non-public address");
+    });
+
+    it("carries the SSRF note onto an unhealthy verdict too (crashloop + refused route)", async () => {
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: "http://127.0.0.1:9000/",
+        lookupImpl: vi.fn(), // literal loopback — no lookup needed
+        attempts: 2,
+        sleepImpl: noSleep,
+        relayRequestImpl: relayReturning(jsonl(RUNNING_BACKEND, RESTARTING_FRONTEND)),
+      });
+      expect(verdict.healthy).toBe(false);
+      expect(verdict.reason).toContain('service "frontend" is restarting');
+      expect(verdict.notes?.join(" ")).toContain("route probe skipped");
     });
   });
 });
