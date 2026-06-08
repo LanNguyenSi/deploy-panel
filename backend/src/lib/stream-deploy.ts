@@ -36,12 +36,15 @@ export async function finalizeDeploy(opts: FinalizeDeployOpts): Promise<void> {
   if (relaySuccess) {
     const app = await prisma.app.findUnique({ where: { id: appId }, select: { liveUrl: true } });
     const verdict = await verifyDeployHealth({ serverId, appName, liveUrl: app?.liveUrl ?? null });
+    // Non-fatal observations (e.g. an SSRF-refused route probe) are appended
+    // so the operator sees them whether or not the gate passed.
+    const noteSuffix = verdict.notes?.length ? ` [${verdict.notes.join("; ")}]` : "";
     if (verdict.healthy) {
       steps.push({
         name: "post-deploy health gate",
         status: "success",
         durationMs: 0,
-        output: "Containers in a healthy run state and public route reachable",
+        output: `Containers in a healthy run state and public route reachable${noteSuffix}`,
       });
     } else {
       success = false;
@@ -49,7 +52,7 @@ export async function finalizeDeploy(opts: FinalizeDeployOpts): Promise<void> {
         name: "post-deploy health gate",
         status: "failure",
         durationMs: 0,
-        output: verdict.reason ?? "Post-deploy verification failed",
+        output: `${verdict.reason ?? "Post-deploy verification failed"}${noteSuffix}`,
       });
       console.log(`[post-deploy-gate] ${appName}: deploy reported success but is unhealthy — ${verdict.reason}`);
     }

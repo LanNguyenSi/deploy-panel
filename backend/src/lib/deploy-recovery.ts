@@ -50,6 +50,8 @@ export async function recoverBrokenDeploy(
     requireHealthyEvidence: true,
   });
 
+  const noteSuffix = verdict.notes?.length ? ` [${verdict.notes.join("; ")}]` : "";
+
   if (verdict.healthy) {
     console.log(`[deploy-recovery] ${appName} verified healthy — marking deploy success`);
     await prisma.deploy.update({
@@ -58,7 +60,7 @@ export async function recoverBrokenDeploy(
         status: "success",
         log: JSON.stringify([
           { name: "deploy", status: "success", durationMs: 0 },
-          { name: "recovery", status: "success", durationMs: 0, output: "Connection lost during deploy; verified healthy via post-deploy gate" },
+          { name: "recovery", status: "success", durationMs: 0, output: `Connection lost during deploy; verified healthy via post-deploy gate${noteSuffix}` },
         ]),
       },
     }).catch(() => {});
@@ -74,7 +76,7 @@ export async function recoverBrokenDeploy(
         status: "failed",
         log: JSON.stringify([
           { name: "deploy", status: "failure", durationMs: 0, output: `Connection lost during deploy: ${error}` },
-          { name: "recovery", status: "failure", durationMs: 0, output: verdict.reason ?? "post-deploy health check failed after recovery" },
+          { name: "recovery", status: "failure", durationMs: 0, output: `${verdict.reason ?? "post-deploy health check failed after recovery"}${noteSuffix}` },
         ]),
       },
     }).catch(() => {});

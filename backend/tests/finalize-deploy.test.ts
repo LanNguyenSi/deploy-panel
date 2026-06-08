@@ -78,6 +78,16 @@ describe("finalizeDeploy", () => {
     );
   });
 
+  it("surfaces gate notes (e.g. an SSRF-refused route probe) in the gate step output", async () => {
+    mGate.mockResolvedValue({ healthy: true, notes: ["route probe skipped: 10.0.0.5 is a non-public address"] });
+
+    await finalizeDeploy({ ...base, relaySuccess: true });
+
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps.at(-1).output).toContain("route probe skipped");
+    expect(lastCall(mAppUpdate).data.status).toBe("healthy"); // a note does not fail the deploy
+  });
+
   it("forwards commitBefore/commitAfter/duration to the deploy row", async () => {
     mGate.mockResolvedValue({ healthy: true });
 

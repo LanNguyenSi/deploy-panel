@@ -5,6 +5,7 @@ import { streamDeploy } from "../lib/stream-deploy.js";
 import { audit, getActor, getActorUserId } from "../lib/audit.js";
 import { recoverBrokenDeploy } from "../lib/deploy-recovery.js";
 import { findOwnedServer, getActorContext } from "../lib/ownership.js";
+import { isPrivateOrLoopbackHost } from "../services/probe-guard.js";
 
 export const appsRouter = new Hono();
 
@@ -102,6 +103,14 @@ appsRouter.patch("/:name/live-url", async (c) => {
       const parsed = new URL(raw);
       if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
         return c.json({ error: "liveUrl must use http or https" }, 400);
+      }
+      // Defense-in-depth against SSRF: the post-deploy gate fetches this URL
+      // server-side, so reject an obviously-internal host at write time. A
+      // public hostname that resolves to an internal IP is caught at probe
+      // time by the gate's resolution check (a write-time DNS lookup would be
+      // slow and racy), so we only screen the literal/loopback forms here.
+      if (isPrivateOrLoopbackHost(parsed.hostname)) {
+        return c.json({ error: "liveUrl must be a public address (private/loopback/link-local hosts are not allowed)" }, 400);
       }
       next = parsed.toString();
     } catch {

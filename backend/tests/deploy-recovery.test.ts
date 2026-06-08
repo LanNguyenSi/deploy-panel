@@ -47,6 +47,15 @@ describe("recoverBrokenDeploy", () => {
     expect(steps.at(-1).output).toContain('service "frontend" is restarting');
   });
 
+  it("surfaces gate notes (e.g. an SSRF-refused route probe) in the recovery step output", async () => {
+    mGate.mockResolvedValue({ healthy: true, notes: ["route probe skipped: 10.0.0.5 is a non-public address"] });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps.at(-1).output).toContain("route probe skipped");
+  });
+
   it("runs the gate fail-closed (requireHealthyEvidence) and passes the app's liveUrl", async () => {
     mGate.mockResolvedValue({ healthy: true });
 

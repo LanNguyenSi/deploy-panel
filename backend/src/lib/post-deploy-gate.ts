@@ -1,4 +1,7 @@
+import { isIP } from "node:net";
+import { lookup as dnsLookup } from "node:dns/promises";
 import { relayRequest } from "./relay.js";
+import { isPrivateOrLoopbackHost } from "../services/probe-guard.js";
 
 /**
  * Post-deploy health gate.
@@ -56,6 +59,12 @@ export interface RouteVerdict {
   ok: boolean;
   status?: number;
   error?: string;
+  /**
+   * True when the probe was deliberately NOT issued (SSRF guard refused, or
+   * the URL was unparseable). `ok` stays true so a refusal never fails the
+   * deploy on its own; the caller surfaces `error` as a note instead.
+   */
+  refused?: boolean;
 }
 
 export interface DeployHealthVerdict {
@@ -65,6 +74,13 @@ export interface DeployHealthVerdict {
    * the observed HTTP status so an operator can act without SSHing in.
    */
   reason?: string;
+  /**
+   * Non-fatal observations the operator should see even on a healthy verdict,
+   * e.g. "route probe skipped: liveUrl resolves to a non-public address". A
+   * skipped (not failed) route probe lands here so it is neither silently
+   * ignored nor counted as the deploy being down.
+   */
+  notes?: string[];
 }
 
 export interface VerifyDeployHealthOptions {
@@ -78,6 +94,8 @@ export interface VerifyDeployHealthOptions {
   intervalMs?: number;
   /** Per-probe HTTP timeout in ms. Default 10000. */
   routeTimeoutMs?: number;
+  /** DNS resolver for the SSRF guard. Injectable for tests; defaults to real DNS. */
+  lookupImpl?: DnsLookup;
   /**
    * Fail closed when the app's health cannot be POSITIVELY confirmed.
    *
@@ -207,21 +225,93 @@ export function isRouteDown(status: number): boolean {
   return status === 404 || status === 408 || status >= 500;
 }
 
+export type DnsLookup = (hostname: string) => Promise<Array<{ address: string }>>;
+
+const defaultLookup: DnsLookup = async (hostname) => {
+  // verbatim so the resolver doesn't hide an address family we might dial.
+  const res = await dnsLookup(hostname, { all: true, verbatim: true });
+  return res.map((r) => ({ address: r.address }));
+};
+
+interface HostCheck {
+  allowed: boolean;
+  reason?: string;
+}
+
+/**
+ * Resolution-time SSRF guard for the route probe. Reuses the shared
+ * `isPrivateOrLoopbackHost` predicate (handles bracketed IPv6, IPv4-mapped
+ * hex, and shorthand forms) for both the literal host and every resolved
+ * address. Unlike `probe-guard`'s `assertHostAllowedForNonAdmin` — which fails
+ * OPEN on DNS errors because the SSH connect timeout is its backstop — this
+ * one fails CLOSED: a host we cannot prove is public is refused rather than
+ * fetched blind.
+ *
+ * Residual risk (out of scope, tracked separately): DNS rebinding / TOCTOU —
+ * a resolver can answer public here and private to the subsequent `fetch`.
+ * Fully closing it needs resolve-once-then-dial-the-vetted-IP.
+ */
+async function assertPublicHost(hostname: string, lookupImpl?: DnsLookup): Promise<HostCheck> {
+  const bare = hostname.replace(/^\[|\]$/g, "");
+  // Literal IP (v4 or v6): decide directly, no DNS round-trip — so a public
+  // IPv6 literal liveUrl is probed rather than refused for being unresolvable.
+  if (isIP(bare) !== 0) {
+    return isPrivateOrLoopbackHost(bare)
+      ? { allowed: false, reason: `${hostname} is a non-public address` }
+      : { allowed: true };
+  }
+  // Hostname (incl. "localhost"): block obvious internal names up front.
+  if (isPrivateOrLoopbackHost(hostname)) {
+    return { allowed: false, reason: `${hostname} is a non-public host` };
+  }
+  let addrs: Array<{ address: string }>;
+  try {
+    addrs = await (lookupImpl ?? defaultLookup)(hostname);
+  } catch (err) {
+    return { allowed: false, reason: `could not resolve ${hostname} (${err instanceof Error ? err.message : String(err)})` };
+  }
+  if (addrs.length === 0) return { allowed: false, reason: `${hostname} did not resolve` };
+  const blocked = addrs.find((a) => isPrivateOrLoopbackHost(a.address));
+  if (blocked) return { allowed: false, reason: `${hostname} resolves to a non-public address (${blocked.address})` };
+  return { allowed: true };
+}
+
 /**
  * Issue a single GET against the public route. `ok` is false for a status
  * `isRouteDown` flags, or for a transport error (timeout, DNS, connection
  * refused); otherwise the route is considered reachable.
+ *
+ * Before fetching, the URL's host is run through the SSRF guard
+ * (`assertPublicHost`): if it is, or resolves to, a non-public address — or
+ * the URL is unparseable — the probe is REFUSED (`{ ok: true, refused: true }`)
+ * and never issued, so an operator-set `liveUrl` can't be used to scan
+ * loopback/metadata/internal hosts.
  */
 export async function probeRoute(
   url: string,
-  opts: { fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+  opts: { fetchImpl?: typeof fetch; timeoutMs?: number; lookupImpl?: DnsLookup } = {},
 ): Promise<RouteVerdict> {
+  let hostname: string;
+  try {
+    hostname = new URL(url).hostname;
+  } catch {
+    return { ok: true, refused: true, error: `route probe skipped: invalid liveUrl ${url}` };
+  }
+
+  const guard = await assertPublicHost(hostname, opts.lookupImpl);
+  if (!guard.allowed) {
+    return { ok: true, refused: true, error: `route probe skipped: ${guard.reason}` };
+  }
+
   const fetchImpl = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? 10_000;
   try {
     const res = await fetchImpl(url, {
       method: "GET",
-      redirect: "follow",
+      // Do NOT follow redirects: a 3xx to an internal host would bypass the
+      // SSRF guard above (which only vetted the original host). A 3xx is itself
+      // proof the route is wired and responding, so it counts as reachable.
+      redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (isRouteDown(res.status)) return { ok: false, status: res.status };
@@ -252,11 +342,13 @@ export async function verifyDeployHealth(opts: VerifyDeployHealthOptions): Promi
   const requireEvidence = opts.requireHealthyEvidence ?? false;
 
   let lastReason: string | undefined;
+  let lastNotes: string[] = [];
 
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (attempt > 0) await sleep(intervalMs);
 
     const reasons: string[] = [];
+    const notes: string[] = [];
     let containerConfirmed = false; // positive read: >=1 service, none unhealthy
     let containerInspected = false;
 
@@ -283,21 +375,34 @@ export async function verifyDeployHealth(opts: VerifyDeployHealthOptions): Promi
     // 2. Public route, probed from the panel (sees Traefik the way a user does).
     let routeOk = true;
     if (liveUrl) {
-      const route = await probeRoute(liveUrl, { fetchImpl: opts.fetchImpl, timeoutMs: opts.routeTimeoutMs });
-      routeOk = route.ok;
-      if (!route.ok) {
-        reasons.push(
-          route.status !== undefined
-            ? `public route ${liveUrl} returned HTTP ${route.status}`
-            : `public route ${liveUrl} unreachable (${route.error})`,
-        );
+      const route = await probeRoute(liveUrl, {
+        fetchImpl: opts.fetchImpl,
+        timeoutMs: opts.routeTimeoutMs,
+        lookupImpl: opts.lookupImpl,
+      });
+      if (route.refused) {
+        // The SSRF guard declined to probe this URL. Don't probe, don't fail —
+        // surface WHY as a note (routeOk stays true; container state still
+        // protects).
+        notes.push(route.error ?? "route probe skipped");
+      } else {
+        routeOk = route.ok;
+        if (!route.ok) {
+          reasons.push(
+            route.status !== undefined
+              ? `public route ${liveUrl} returned HTTP ${route.status}`
+              : `public route ${liveUrl} unreachable (${route.error})`,
+          );
+        }
       }
     }
+
+    lastNotes = notes;
 
     if (requireEvidence) {
       // Fail closed: only a positive confirmation (≥1 running service, none
       // unhealthy, route OK) ends the loop early.
-      if (containerConfirmed && routeOk) return { healthy: true };
+      if (containerConfirmed && routeOk) return verdict(true, undefined, notes);
       lastReason =
         reasons.length > 0
           ? reasons.join("; ")
@@ -306,10 +411,18 @@ export async function verifyDeployHealth(opts: VerifyDeployHealthOptions): Promi
             : `could not reach the relay to confirm "${opts.appName}" is running`;
     } else {
       // Optimistic: the absence of bad signals is enough.
-      if (reasons.length === 0) return { healthy: true };
+      if (reasons.length === 0) return verdict(true, undefined, notes);
       lastReason = reasons.join("; ");
     }
   }
 
-  return { healthy: false, reason: lastReason };
+  return verdict(false, lastReason, lastNotes);
+}
+
+function verdict(healthy: boolean, reason: string | undefined, notes: string[]): DeployHealthVerdict {
+  return {
+    healthy,
+    ...(reason ? { reason } : {}),
+    ...(notes.length ? { notes } : {}),
+  };
 }
