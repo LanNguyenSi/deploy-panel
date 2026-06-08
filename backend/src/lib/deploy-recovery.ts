@@ -1,56 +1,27 @@
 import { prisma } from "./prisma.js";
-import { relayRequest } from "./relay.js";
+import { verifyDeployHealth } from "./post-deploy-gate.js";
 
-const HEALTH_CHECK_DELAY = 20_000;    // wait 20s for containers to come up
-const HEALTH_CHECK_RETRIES = 5;       // try 5 times (total ~80s)
-const HEALTH_CHECK_INTERVAL = 12_000;
-
-interface PreflightCheck {
-  name: string;
-  passed: boolean;
-  message: string;
-  critical?: boolean;
-}
+// Recovery polls longer than the post-success gate: when the deploy STREAM
+// drops it is usually because containers are mid-recreate, so give them more
+// time to settle before deciding. ~60s window (5 polls x 12s) preserves the
+// tolerance the old preflight-retry recovery had.
+const RECOVERY_ATTEMPTS = 5;
+const RECOVERY_INTERVAL_MS = 12_000;
 
 /**
- * When a deploy's relay connection breaks (common during container restarts),
- * verify the deploy by checking if containers are running via preflight.
+ * Handle a deploy whose relay STREAM connection broke (common while
+ * containers restart). There is no success signal to trust here, so we run
+ * the post-deploy health gate in its fail-closed mode: the deploy is marked
+ * success/healthy only if we positively confirm the app is up (≥1 running
+ * service, none restarting/crashed/unhealthy, and the public route — if
+ * set — answers). A crashlooping container, or a relay we never manage to
+ * reach within the window, yields failed/unhealthy.
  *
- * We check critical checks only (containers running, health defined) —
- * non-critical checks like git_remote_reachable are ignored.
- */
-async function checkAppHealth(serverId: string, appName: string): Promise<boolean> {
-  for (let i = 0; i < HEALTH_CHECK_RETRIES; i++) {
-    await new Promise((r) => setTimeout(r, i === 0 ? HEALTH_CHECK_DELAY : HEALTH_CHECK_INTERVAL));
-    try {
-      const result = await relayRequest<{ passed?: boolean; checks?: PreflightCheck[] }>({
-        serverId,
-        path: `/api/apps/${appName}/preflight`,
-      });
-
-      // Check if all CRITICAL checks pass (ignore non-critical like git_remote_reachable)
-      if (result.checks) {
-        const criticalChecks = result.checks.filter((c) => c.critical !== false);
-        const allCriticalPassed = criticalChecks.length > 0 && criticalChecks.every((c) => c.passed);
-        if (allCriticalPassed) return true;
-
-        // If containers are running, that's good enough for recovery
-        const containersRunning = result.checks.find((c) => c.name === "containers_running");
-        if (containersRunning?.passed) return true;
-      }
-
-      // Fallback: if overall passed, great
-      if (result.passed) return true;
-    } catch {
-      // Relay might still be restarting — keep trying
-    }
-  }
-  return false;
-}
-
-/**
- * Handle a deploy where the relay connection broke.
- * Checks health to determine if deploy actually succeeded.
+ * This is the recovery-path complement to the gate streamDeploy runs on the
+ * relay-reported-success paths: before, recovery accepted the relay's
+ * `containers_running` preflight check, which passes for ANY existing
+ * container (a crashlooping one still has an ID) — re-opening the exact
+ * crashloop-as-healthy bug the gate exists to close.
  */
 export async function recoverBrokenDeploy(
   deployId: string,
@@ -59,19 +30,35 @@ export async function recoverBrokenDeploy(
   appName: string,
   error: string,
 ) {
-  console.log(`[deploy-recovery] Connection lost for deploy ${deployId} (${appName}). Checking health...`);
+  console.log(`[deploy-recovery] Connection lost for deploy ${deployId} (${appName}). Verifying health...`);
 
-  const healthy = await checkAppHealth(serverId, appName);
+  const app = await prisma.app
+    .findUnique({ where: { id: appId }, select: { liveUrl: true } })
+    .catch((err) => {
+      // Don't let a DB hiccup abort recovery — degrade to no route probe, but
+      // leave a trace so a recurring issue isn't invisible.
+      console.warn(`[deploy-recovery] could not load liveUrl for ${appName}: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    });
 
-  if (healthy) {
-    console.log(`[deploy-recovery] ${appName} is healthy — marking deploy as success`);
+  const verdict = await verifyDeployHealth({
+    serverId,
+    appName,
+    liveUrl: app?.liveUrl ?? null,
+    attempts: RECOVERY_ATTEMPTS,
+    intervalMs: RECOVERY_INTERVAL_MS,
+    requireHealthyEvidence: true,
+  });
+
+  if (verdict.healthy) {
+    console.log(`[deploy-recovery] ${appName} verified healthy — marking deploy success`);
     await prisma.deploy.update({
       where: { id: deployId },
       data: {
         status: "success",
         log: JSON.stringify([
           { name: "deploy", status: "success", durationMs: 0 },
-          { name: "recovery", status: "success", durationMs: 0, note: "Connection lost during deploy, verified via health check" },
+          { name: "recovery", status: "success", durationMs: 0, output: "Connection lost during deploy; verified healthy via post-deploy gate" },
         ]),
       },
     }).catch(() => {});
@@ -80,12 +67,15 @@ export async function recoverBrokenDeploy(
       data: { status: "healthy", lastDeployAt: new Date() },
     }).catch(() => {});
   } else {
-    console.log(`[deploy-recovery] ${appName} is NOT healthy — marking deploy as failed`);
+    console.log(`[deploy-recovery] ${appName} NOT verified healthy — marking deploy failed: ${verdict.reason}`);
     await prisma.deploy.update({
       where: { id: deployId },
       data: {
         status: "failed",
-        log: `Connection lost during deploy: ${error}. Health check after recovery failed.`,
+        log: JSON.stringify([
+          { name: "deploy", status: "failure", durationMs: 0, output: `Connection lost during deploy: ${error}` },
+          { name: "recovery", status: "failure", durationMs: 0, output: verdict.reason ?? "post-deploy health check failed after recovery" },
+        ]),
       },
     }).catch(() => {});
     await prisma.app.update({

@@ -243,4 +243,99 @@ describe("verifyDeployHealth", () => {
     });
     expect(verdict.healthy).toBe(true);
   });
+
+  // ── requireHealthyEvidence (fail-closed / recovery mode) ─────────────────
+  describe("requireHealthyEvidence", () => {
+    it("passes once it positively confirms a running project", async () => {
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        attempts: 3,
+        sleepImpl: noSleep,
+        requireHealthyEvidence: true,
+        relayRequestImpl: relayReturning(jsonl(RUNNING_BACKEND)),
+      });
+      expect(verdict.healthy).toBe(true);
+    });
+
+    it("FAILS when the relay is unreachable for the whole window (contrast with optimistic mode)", async () => {
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        attempts: 2,
+        sleepImpl: noSleep,
+        requireHealthyEvidence: true,
+        relayRequestImpl: vi.fn().mockRejectedValue(new Error("relay timeout")),
+      });
+      expect(verdict.healthy).toBe(false);
+      expect(verdict.reason).toContain("could not reach the relay");
+    });
+
+    it("FAILS when the compose project has nothing running", async () => {
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        attempts: 2,
+        sleepImpl: noSleep,
+        requireHealthyEvidence: true,
+        relayRequestImpl: relayReturning(""), // ps returns no rows
+      });
+      expect(verdict.healthy).toBe(false);
+      expect(verdict.reason).toContain("no running containers");
+    });
+
+    it("still catches a crashloop, naming the container", async () => {
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        attempts: 2,
+        sleepImpl: noSleep,
+        requireHealthyEvidence: true,
+        relayRequestImpl: relayReturning(jsonl(RUNNING_BACKEND, RESTARTING_FRONTEND)),
+      });
+      expect(verdict.healthy).toBe(false);
+      expect(verdict.reason).toContain('service "frontend" is restarting');
+    });
+
+    // The headline non-regression: the recovery window must stay open across
+    // an unreachable poll (containers cycling) and confirm once the relay
+    // comes back, rather than failing on the first miss.
+    it("tolerates the relay being unreachable on an early poll, then confirming", async () => {
+      const relay = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("relay timeout"))
+        .mockResolvedValue({ app: { containers: jsonl(RUNNING_BACKEND) } });
+      const sleep = vi.fn(noSleep);
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        attempts: 3,
+        sleepImpl: sleep,
+        requireHealthyEvidence: true,
+        relayRequestImpl: relay,
+      });
+      expect(verdict.healthy).toBe(true);
+      expect(sleep).toHaveBeenCalledTimes(1); // window stayed open past the miss
+    });
+
+    it("fails when containers are confirmed but the public route is down (404)", async () => {
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: "https://status.opentriologue.ai/",
+        attempts: 2,
+        sleepImpl: noSleep,
+        requireHealthyEvidence: true,
+        relayRequestImpl: relayReturning(jsonl(RUNNING_BACKEND)),
+        fetchImpl: vi.fn().mockResolvedValue(okResponse(404)),
+      });
+      expect(verdict.healthy).toBe(false);
+      expect(verdict.reason).toContain("returned HTTP 404");
+    });
+  });
 });

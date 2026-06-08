@@ -78,6 +78,21 @@ export interface VerifyDeployHealthOptions {
   intervalMs?: number;
   /** Per-probe HTTP timeout in ms. Default 10000. */
   routeTimeoutMs?: number;
+  /**
+   * Fail closed when the app's health cannot be POSITIVELY confirmed.
+   *
+   * Default (false) is optimistic: the gate only downgrades on a bad signal,
+   * so an unreachable relay or an empty `ps` does not flip a deploy red. That
+   * is correct AFTER the relay reported success — the absence of bad news is
+   * trustworthy because we already have a success signal.
+   *
+   * Set true on the connection-lost recovery path, where there is NO success
+   * signal: a poll counts as clean only if we actually read ≥1 running service
+   * with none unhealthy (and the route, if any, answers). A relay we could not
+   * reach, or a project with nothing running, is "not confirmed" and keeps the
+   * window open; if it elapses without a confirmation, the deploy is unhealthy.
+   */
+  requireHealthyEvidence?: boolean;
   // ── Injection seams (tests) ──────────────────────────────────────────────
   relayRequestImpl?: typeof relayRequest;
   fetchImpl?: typeof fetch;
@@ -234,6 +249,7 @@ export async function verifyDeployHealth(opts: VerifyDeployHealthOptions): Promi
   const relayReq = opts.relayRequestImpl ?? relayRequest;
   const sleep = opts.sleepImpl ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const liveUrl = opts.liveUrl?.trim() || null;
+  const requireEvidence = opts.requireHealthyEvidence ?? false;
 
   let lastReason: string | undefined;
 
@@ -241,6 +257,8 @@ export async function verifyDeployHealth(opts: VerifyDeployHealthOptions): Promi
     if (attempt > 0) await sleep(intervalMs);
 
     const reasons: string[] = [];
+    let containerConfirmed = false; // positive read: >=1 service, none unhealthy
+    let containerInspected = false;
 
     // 1. Container run-state, via the relay's `docker compose ps`.
     try {
@@ -251,17 +269,22 @@ export async function verifyDeployHealth(opts: VerifyDeployHealthOptions): Promi
         // can't be the weak link if a future caller forgets to validate.
         path: `/api/apps/${encodeURIComponent(opts.appName)}`,
       });
-      const offenders = assessContainers(parseComposePs(detail.app?.containers ?? null));
+      containerInspected = true;
+      const entries = parseComposePs(detail.app?.containers ?? null);
+      const offenders = assessContainers(entries);
       for (const o of offenders) reasons.push(o.reason);
+      if (entries.length > 0 && offenders.length === 0) containerConfirmed = true;
     } catch {
-      // Relay unreachable for this poll — can't read container state. Do not
-      // fail on this alone (see doc comment); rely on the route probe + the
-      // next polls.
+      // Relay unreachable for this poll — can't read container state. In
+      // optimistic mode we don't fail on this alone (see doc comment); in
+      // strict mode it simply means "not confirmed", so the window stays open.
     }
 
     // 2. Public route, probed from the panel (sees Traefik the way a user does).
+    let routeOk = true;
     if (liveUrl) {
       const route = await probeRoute(liveUrl, { fetchImpl: opts.fetchImpl, timeoutMs: opts.routeTimeoutMs });
+      routeOk = route.ok;
       if (!route.ok) {
         reasons.push(
           route.status !== undefined
@@ -271,8 +294,21 @@ export async function verifyDeployHealth(opts: VerifyDeployHealthOptions): Promi
       }
     }
 
-    if (reasons.length === 0) return { healthy: true };
-    lastReason = reasons.join("; ");
+    if (requireEvidence) {
+      // Fail closed: only a positive confirmation (≥1 running service, none
+      // unhealthy, route OK) ends the loop early.
+      if (containerConfirmed && routeOk) return { healthy: true };
+      lastReason =
+        reasons.length > 0
+          ? reasons.join("; ")
+          : containerInspected
+            ? `no running containers found for "${opts.appName}"`
+            : `could not reach the relay to confirm "${opts.appName}" is running`;
+    } else {
+      // Optimistic: the absence of bad signals is enough.
+      if (reasons.length === 0) return { healthy: true };
+      lastReason = reasons.join("; ");
+    }
   }
 
   return { healthy: false, reason: lastReason };

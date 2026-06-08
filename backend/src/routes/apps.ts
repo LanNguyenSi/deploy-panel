@@ -235,11 +235,12 @@ appsRouter.post("/:name/rollback", async (c) => {
     // relay connection can break the same way — especially when the
     // deploy-panel rolls back itself. Hand the deploy off to
     // recoverBrokenDeploy (same pattern as v1.ts:243 and stream-deploy)
-    // instead of writing `failed` directly. Recovery probes the app via
-    // preflight and flips the deploy row to `success` or `failed` based
-    // on actual container health, not on the relay socket state.
+    // instead of writing `failed` directly. Recovery runs the post-deploy
+    // health gate (container run-state via `docker compose ps` + public
+    // route probe, fail-closed) and flips the deploy row to `success` or
+    // `failed` based on actual container health, not on the relay socket state.
     //
-    // We do NOT await — recovery can take up to ~80s. The HTTP caller
+    // We do NOT await — recovery polls for up to ~1 minute. The HTTP caller
     // still gets the RelayError response immediately; the deploy row
     // stays `running` until recovery writes the final status, matching
     // the v1 rollback semantics.
