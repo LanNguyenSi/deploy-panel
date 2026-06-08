@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-06-08
+
+**Headline: a deploy reported `success` / app `healthy` now means the app
+actually serves. A post-deploy health gate verifies container run-state and
+the public route before a deploy is marked green, closing a gap where a
+crashlooping sibling service or a Traefik 404 hid behind a zero exit code.
+This release also folds in a HIGH-severity IDOR fix and a broad CVE sweep.**
+
+### Added
+
+- **Post-deploy health gate** (PR #88). After the relay reports a deploy
+  success, the panel verifies the real post-deploy state before writing
+  `success` / `healthy`: it polls container run-state via `docker compose ps`
+  (flagging `restarting`, non-zero `exited`, `dead`, or `health=unhealthy`
+  services) and probes the app's public `liveUrl` (404 / 408 / 5xx / transport
+  error count as down; 401 / 403 / 429 are reachable). A crashlooping service
+  or a 404 at the public host now downgrades the deploy to failed / unhealthy,
+  with a step naming the offending container or HTTP code, and the app-list
+  status reflects the verified state.
+- **Non-admin relay install on owned servers** (PR #73). A broker-issued
+  non-admin actor can install the relay on a server they own; previously
+  admin-only.
+- **`build:`-based compose detection in the update-relay-image preflight**
+  (PR #72). Catches a `build:`-based relay compose before an image-only update
+  silently no-ops.
+
+### Security
+
+- **SSRF-harden the post-deploy gate's server-side `liveUrl` probe** (PR #90).
+  The probe resolves the host and refuses loopback / private / link-local /
+  ULA / CGNAT targets (a DNS name pointing at an internal IP is blocked too),
+  fails closed on unresolvable hosts, and no longer follows redirects.
+  `PATCH /live-url` rejects internal literal hosts at write time. Reuses the
+  existing `probe-guard` predicate so the two SSRF surfaces stay in sync.
+- **Scope the deploy lookup to the owned `serverId`** (PR #83). Fixes a HIGH
+  audit finding where a caller could read a deploy row on a server they do not
+  own (cross-tenant IDOR).
+- **CVE sweep** (PRs #74, #77, #78, #80, #81, #84, #85, #86, #87). Bump or
+  override `next`, `hono` (app and `mcp/`), `vitest`, `qs`, `postcss`,
+  `fast-uri`, `ip-address`, `express-rate-limit`, and remediate the MEDIUM
+  audit findings.
+
+### Fixed
+
+- **Connection-lost recovery routed through the health gate** (PR #89). A
+  deploy whose relay stream drops mid-restart is verified with the same gate
+  in a fail-closed mode, instead of trusting the relay's `containers_running`
+  preflight (which passed for any existing container), closing the same
+  crashloop-as-healthy gap on the recovery path.
+- The `error` deploy event now marks the app `unhealthy` instead of leaving it
+  stuck on `deploying` (PR #88).
+
+### Docs
+
+- Document GitHub OAuth setup and the missing backend env vars (PR #82).
+- Add the open-source surface: code of conduct, contributing guide, security
+  policy, issue / PR templates (PR #76).
+- README 60-second hook and restructure into `docs/` (PR #75).
+
 ## [0.2.0] - 2026-04-24
 
 **Headline: fleet onboarding + lifecycle. Fresh VPS → online relay in
