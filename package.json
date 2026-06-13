@@ -4,6 +4,8 @@
   "workspaces": ["backend", "frontend"],
   "overrides": {
     "postcss": "^8.5.10",
+    "esbuild": "^0.28.1",
+    "tsx": "^4.22.4",
     "next": {
       "postcss": "^8.5.10"
     }
