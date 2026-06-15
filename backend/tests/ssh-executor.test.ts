@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { Server, type AuthContext, type Connection, type ServerConfig } from "ssh2";
+import { Client, Server, type AuthContext, type Connection, type ConnectConfig, type ServerConfig } from "ssh2";
 import { generateKeyPairSync } from "node:crypto";
 import {
   classifyConnectionError,
@@ -261,6 +261,33 @@ describe("executeSshCommand — ssh2 mock server integration", () => {
     expect(fingerprints.length).toBe(1);
     // SHA-256 digests are 32 bytes → 44 base64 chars (including padding).
     expect(fingerprints[0].sha256).toMatch(/^[A-Za-z0-9+/=]{40,}$/);
+  });
+
+  it("password path sets authHandler with Buffer and leaves config.password undefined", async () => {
+    // Spy on Client.prototype.connect to capture the ConnectConfig that
+    // buildConnectConfig assembles. We do not replace the implementation —
+    // spyOn wraps the original so the real ssh2 handshake still fires.
+    mock = await startMockSshServer({
+      acceptAuth: () => true,
+      onExec: ({ exit }) => exit(0),
+    });
+    const connectSpy = vi.spyOn(Client.prototype, "connect");
+
+    await executeSshCommand({
+      host: "127.0.0.1",
+      port: mock.port,
+      user: "tester",
+      auth: { kind: "password", password: "s3cr3t" },
+      command: "true",
+      acceptAnyHostKey: true,
+    });
+
+    expect(connectSpy).toHaveBeenCalledOnce();
+    const capturedConfig = connectSpy.mock.calls[0][0] as ConnectConfig;
+
+    // The hardened path must use authHandler, not a plain string on config.
+    expect(capturedConfig.authHandler, "authHandler should be a function").toBeTypeOf("function");
+    expect(capturedConfig.password, "config.password must not be set (Buffer stays in authHandler)").toBeUndefined();
   });
 });
 
