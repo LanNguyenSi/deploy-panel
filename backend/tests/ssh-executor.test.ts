@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Server, type AuthContext, type Connection, type ServerConfig } from "ssh2";
 import { generateKeyPairSync } from "node:crypto";
-import { executeSshCommand, SshError, SshTimeoutError } from "../src/services/ssh-executor.js";
+import {
+  classifyConnectionError,
+  executeSshCommand,
+  SshError,
+  SshTimeoutError,
+} from "../src/services/ssh-executor.js";
 
 /**
  * Stand up an in-process ssh2 Server that serves one connection and
@@ -264,5 +269,59 @@ describe("executeSshCommand — error shape", () => {
     const err = new SshError("nope", "auth_failed");
     expect(err.kind).toBe("auth_failed");
     expect(err).toBeInstanceOf(SshError);
+  });
+});
+
+describe("classifyConnectionError", () => {
+  it("maps a probe-pin mismatch flag to host_key_rejected regardless of message", () => {
+    const result = classifyConnectionError(new Error("ECONNRESET"), true);
+    expect(result.kind).toBe("host_key_rejected");
+  });
+
+  it.each([
+    "Host key verification failed",
+    "host key does not match the pinned fingerprint",
+    "remote host key fingerprint changed",
+    // 'fingerprint'-only message (no 'host key' / 'known_hosts' token) so the
+    // `fingerprint` alternation is covered on its own.
+    "server fingerprint mismatch detected",
+    "key not present in known_hosts",
+  ])("maps a host-key-shaped ssh2 error message to host_key_rejected: %s", (message) => {
+    const result = classifyConnectionError(new Error(message), false);
+    expect(result.kind).toBe("host_key_rejected");
+    // The original ssh2 message is preserved so the caller can show it.
+    expect(result.message).toBe(message);
+  });
+
+  it("maps a client-authentication level error to auth_failed", () => {
+    const err = Object.assign(new Error("All configured authentication methods failed"), {
+      level: "client-authentication",
+    });
+    expect(classifyConnectionError(err, false).kind).toBe("auth_failed");
+  });
+
+  it("prefers auth_failed over host_key_rejected when an auth message also matches the host-key shape", () => {
+    // A client-authentication failure must win even if its message text would
+    // otherwise match HOST_KEY_ERROR_RE — guards the branch ordering.
+    const err = Object.assign(new Error("host key verification failed"), {
+      level: "client-authentication",
+    });
+    expect(classifyConnectionError(err, false).kind).toBe("auth_failed");
+  });
+
+  it("does NOT treat an algorithm/KEX negotiation failure as host_key_rejected", () => {
+    // "no matching host key type" mentions 'host key' but is a client/server
+    // config mismatch, not a key-identity rejection.
+    const result = classifyConnectionError(
+      new Error("Unable to negotiate with 10.0.0.1: no matching host key type found"),
+      false,
+    );
+    expect(result.kind).toBe("connect_failed");
+  });
+
+  it("falls back to connect_failed for a generic network error", () => {
+    const result = classifyConnectionError(new Error("connect ECONNREFUSED 10.0.0.1:22"), false);
+    expect(result.kind).toBe("connect_failed");
+    expect(result.message).toContain("ECONNREFUSED");
   });
 });

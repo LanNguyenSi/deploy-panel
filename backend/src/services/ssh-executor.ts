@@ -89,6 +89,53 @@ export class SshTimeoutError extends SshError {
   }
 }
 
+// ssh2 surfaces a host-key mismatch in two shapes. A probe→install pin
+// mismatch is caught in `hostVerifier` and flagged on the config
+// (`hostKeyMismatch`). A future strict re-install flow's host verification
+// will instead reject inside ssh2 and surface a generic client `error`
+// whose message mentions the host key / fingerprint. Both must map to
+// `host_key_rejected` so the caller can show key-rotation / MITM
+// remediation instead of a cryptic `connect_failed`.
+//
+// TODO: the strict re-install flow does not exist yet, so the exact ssh2
+// message wording is unconfirmed — this substring match is provisional.
+// Once a real mismatch is observed, prefer ssh2's structured error
+// (level/code from the host-verification reject) over free-text matching.
+const HOST_KEY_ERROR_RE = /host[\s-]*key|fingerprint|known[\s_-]*hosts/i;
+// Algorithm / key-exchange negotiation failures (e.g. "Unable to negotiate
+// ... no matching host key type") also mention "host key" but are a
+// client/server config mismatch, NOT a key-identity rejection — exclude
+// them so they stay `connect_failed`.
+const HOST_KEY_NEGOTIATION_RE = /negotiat|no matching/i;
+
+/**
+ * Map an ssh2 client `error` into the executor's SshError taxonomy.
+ * Pure and side-effect-free so the classification is unit-testable in
+ * isolation from the connection machinery.
+ */
+export function classifyConnectionError(
+  err: Error & { level?: string },
+  hostKeyMismatch: boolean,
+): SshError {
+  if (hostKeyMismatch) {
+    return new SshError(
+      "host key does not match the fingerprint captured during probe",
+      "host_key_rejected",
+    );
+  }
+  // ssh2 tags auth failures with `level: "client-authentication"` — keep
+  // that distinct from network / dns failures, and check it before the
+  // host-key message shape so an auth error is never misread as a key
+  // mismatch.
+  if (err.level === "client-authentication") {
+    return new SshError("authentication failed", "auth_failed");
+  }
+  if (HOST_KEY_ERROR_RE.test(err.message) && !HOST_KEY_NEGOTIATION_RE.test(err.message)) {
+    return new SshError(err.message, "host_key_rejected");
+  }
+  return new SshError(`connect failed: ${err.message}`, "connect_failed");
+}
+
 /**
  * Best-effort zero a credential string by overwriting its backing
  * buffer. JavaScript strings are immutable so there is no guaranteed
@@ -285,23 +332,8 @@ export async function executeSshCommand(
     });
 
     client.on("error", (err: Error & { level?: string }) => {
-      // ssh2 tags auth failures with `level: "client-authentication"`
-      // — distinguish so the caller can surface "wrong password/key"
-      // separately from "network unreachable" / "dns".
       const cfg = config as ConnectConfig & { _hostKeyMismatch?: boolean };
-      if (cfg._hostKeyMismatch) {
-        settle(
-          "reject",
-          new SshError(
-            "host key does not match the fingerprint captured during probe",
-            "host_key_rejected",
-          ),
-        );
-      } else if (err.level === "client-authentication") {
-        settle("reject", new SshError("authentication failed", "auth_failed"));
-      } else {
-        settle("reject", new SshError(`connect failed: ${err.message}`, "connect_failed"));
-      }
+      settle("reject", classifyConnectionError(err, cfg._hostKeyMismatch ?? false));
     });
 
     try {
