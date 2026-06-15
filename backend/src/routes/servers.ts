@@ -990,6 +990,38 @@ serversRouter.post("/:id/install-relay", async (c) => {
   });
 });
 
+/**
+ * Build the SSH preflight command that greps a relay's compose file for a
+ * `build:` directive. When `composeFile` is given, grep exactly that file
+ * (matching what `docker compose -f <file>` would use). When it is null,
+ * mirror docker compose's base-file NAME precedence within `relayDir`
+ * (compose.yaml > compose.yml > docker-compose.yaml > docker-compose.yml)
+ * and `exec grep` the FIRST that exists — so a hand-rolled `compose.yaml`
+ * is inspected, not just the install.sh default `docker-compose.yml`.
+ * `exec` makes grep's exit code (0 = build present, 1 = absent) the
+ * command's exit code; if none of the four names exist the loop falls
+ * through to `exit 1` ("not build-based"), leaving the missing-file error
+ * to the docker step.
+ *
+ * Out of scope (pre-existing limitation): compose override files and
+ * docker's parent-directory discovery walk — a `build:` in those still
+ * bypasses this preflight.
+ *
+ * Shell-safe: the four names are literals, and both `relayDir` and
+ * `composeFile` are zod-validated upstream (absolute path / bare YAML
+ * filename, no metachars or quotes) before reaching here.
+ */
+export function buildComposeInspectCommand(
+  relayDir: string,
+  composeFile: string | null,
+): string {
+  const buildGrep = `grep -qE "^[[:space:]]+build:"`;
+  if (composeFile) {
+    return `bash -c 'cd ${relayDir} && ${buildGrep} "${composeFile}"'`;
+  }
+  return `bash -c 'cd ${relayDir} && for f in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do [ -f "$f" ] && exec ${buildGrep} "$f"; done; exit 1'`;
+}
+
 // POST /api/servers/:id/update-relay-image — fast-path "pull latest
 // image and restart container" for an already-installed relay. Does
 // NOT touch install.sh, Traefik, networks, compose file, env file, or
@@ -1133,8 +1165,13 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
       // indentation level (`docker-compose.yml` services typically sit at
       // 2- or 4-space indent under `services:`); shell metachars are
       // already shut out by the zod regex on relayDir / relayComposeFile.
-      const inspectFile = effectiveComposeFile ?? "docker-compose.yml";
-      const inspectCommand = `bash -c 'cd ${effectiveRelayDir} && grep -qE "^[[:space:]]+build:" ${inspectFile}'`;
+      // Probe the compose file (or docker's name-fallback order when none
+      // is stored) for a `build:` directive. See buildComposeInspectCommand
+      // for the fallback rationale, exit-code mapping, and shell-safety.
+      const inspectCommand = buildComposeInspectCommand(
+        effectiveRelayDir,
+        effectiveComposeFile,
+      );
       const inspectResult = await executeSshCommand({
         host: server.host,
         port: input.sshPort,
