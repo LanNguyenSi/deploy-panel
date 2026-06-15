@@ -289,6 +289,57 @@ describe("executeSshCommand — ssh2 mock server integration", () => {
     expect(capturedConfig.authHandler, "authHandler should be a function").toBeTypeOf("function");
     expect(capturedConfig.password, "config.password must not be set (Buffer stays in authHandler)").toBeUndefined();
   });
+
+  it("authHandler forwards a Buffer (not a plain string) to cb on first invocation", () => {
+    // Mutation-confirm: call the captured authHandler with a spy and assert
+    // that the credential object forwarded to cb carries a Buffer password.
+    //
+    // This runs in its own `it` so afterEach → vi.restoreAllMocks() delivers
+    // a clean spy with no prior call history. The `triedPassword` flag in the
+    // authHandler closure stays false because Client.connect is a no-op and
+    // ssh2 never invokes the handler itself.
+    //
+    // The promise returned by executeSshCommand will never resolve (connect
+    // is a no-op so no events fire). It is suppressed with .catch(() => {});
+    // the pending internal timer is .unref()'d inside executeSshCommand so it
+    // does not block the test runner.
+    const cbSpy = vi.fn();
+    const connectSpy = vi.spyOn(Client.prototype, "connect").mockImplementationOnce(
+      function (_config: ConnectConfig) {
+        /* no-op — captures config without opening a TCP connection */
+      } as unknown as (config: ConnectConfig) => void,
+    );
+
+    // connect() is called synchronously inside the Promise constructor, so
+    // connectSpy is already populated by the time this line returns.
+    executeSshCommand({
+      host: "127.0.0.1",
+      port: 22,
+      user: "tester",
+      auth: { kind: "password", password: "s3cr3t" },
+      command: "true",
+      acceptAnyHostKey: true,
+      timeoutMs: 60_000,
+    }).catch(() => {});
+
+    expect(connectSpy).toHaveBeenCalledOnce();
+    const capturedConfig = connectSpy.mock.calls[0][0] as ConnectConfig;
+
+    // Invoke the handler for the first time (triedPassword=false on this fresh closure).
+    (capturedConfig.authHandler as unknown as (
+      methodsLeft: null,
+      partial: boolean,
+      cb: typeof cbSpy,
+    ) => void)(null, false, cbSpy);
+
+    expect(cbSpy).toHaveBeenCalledOnce();
+    const arg = cbSpy.mock.calls[0][0] as { type: string; password: unknown };
+    expect(arg.type).toBe("password");
+    expect(
+      Buffer.isBuffer(arg.password),
+      "password credential must be a Buffer, not a plain string",
+    ).toBe(true);
+  });
 });
 
 describe("executeSshCommand — error shape", () => {

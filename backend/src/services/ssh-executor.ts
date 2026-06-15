@@ -184,10 +184,17 @@ function buildConnectConfig(opts: ExecuteSshCommandOptions): {
     // instead of looping until the timeout fires.
     const buf = Buffer.from(opts.auth.password, "utf8");
     credBuffers.push(buf);
+    // Note: this authHandler intentionally skips the 'none'-first probe
+    // that ssh2's default flow performs — it attempts the password method
+    // directly on the first call. More secure: no auth-method advertising.
     let triedPassword = false;
     config.authHandler = (_methodsLeft, _partial, cb) => {
       if (triedPassword) {
-        cb(false);
+        // @types/ssh2 types NextAuthHandler to only accept AuthenticationType |
+        // AnyAuthMethod, but the ssh2 runtime also accepts `false` to signal
+        // "no more methods" (which triggers a client-authentication error).
+        // Cast to silence the type mismatch without changing runtime behaviour.
+        (cb as (v: unknown) => void)(false);
         return;
       }
       triedPassword = true;
