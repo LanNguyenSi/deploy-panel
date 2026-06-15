@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
@@ -35,9 +35,13 @@ vi.mock("../src/services/ssh-executor.js", async () => {
 });
 
 import { prisma } from "../src/lib/prisma.js";
-import { serversRouter } from "../src/routes/servers.js";
+import { serversRouter, buildComposeInspectCommand } from "../src/routes/servers.js";
 import { executeSshCommand, SshError } from "../src/services/ssh-executor.js";
 import { Hono } from "hono";
+import { execSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 type ActorVars = {
   Variables: { userId?: string; isAdmin?: boolean; authType?: string };
@@ -533,9 +537,11 @@ describe("POST /servers/:id/update-relay-image", () => {
       // and the build/image classification could disagree.
       expect(preflight?.command).toContain("docker-compose.prod.yml");
       expect(preflight?.command).toContain("cd /root/git/agent-relay");
+      // The explicit-file branch greps that single file — no fallback loop.
+      expect(preflight?.command).not.toContain("for f in");
     });
 
-    it("falls back to docker-compose.yml for the preflight when no compose file is set", async () => {
+    it("probes docker's compose-file fallback order when no compose file is set", async () => {
       mServer.findUnique.mockResolvedValue(serverFixture({ relayComposeFile: null }));
       const res = await appFor({ userId: null, isAdmin: true }).request(
         "/servers/srv-a/update-relay-image",
@@ -545,9 +551,13 @@ describe("POST /servers/:id/update-relay-image", () => {
       const preflight = vi
         .mocked(executeSshCommand)
         .mock.calls.find((c) => c[0].command.includes("grep -qE"))?.[0];
-      // Matches the docker-compose default — same file the docker step
-      // would implicitly target without `-f`.
-      expect(preflight?.command).toContain("docker-compose.yml");
+      // Mirror docker's own discovery order so a hand-rolled compose.yaml
+      // (or any of the four canonical names) is inspected for build:, not
+      // just the install.sh default. Probes the FIRST name that exists.
+      expect(preflight?.command).toContain(
+        "for f in compose.yaml compose.yml docker-compose.yaml docker-compose.yml",
+      );
+      expect(preflight?.command).toContain('exec grep -qE "^[[:space:]]+build:" "$f"');
     });
 
     it("captures and persists the host-key fingerprint on the build-based early-return path (legacy row)", async () => {
@@ -589,5 +599,67 @@ describe("POST /servers/:id/update-relay-image", () => {
         .mock.calls.filter((c) => c[0].data.hostKeySha256);
       expect(fingerprintWrites.length).toBe(1);
     });
+  });
+});
+
+// Exercise the REAL shell of buildComposeInspectCommand against a temp
+// dir. The route tests above mock executeSshCommand, so they never run the
+// actual `bash -c` — these confirm the fallback resolution and the
+// safety-critical exit codes (especially `exit 1` on no-file, since
+// exitCode===0 is what trips compose_is_build_based).
+describe("buildComposeInspectCommand (real bash behavior)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "compose-preflight-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Run the command and return its exit code (0 = build: found).
+  function runInspect(composeFile: string | null): number {
+    const cmd = buildComposeInspectCommand(dir, composeFile);
+    try {
+      execSync(cmd, { stdio: "ignore" });
+      return 0;
+    } catch (e) {
+      return (e as { status?: number }).status ?? -1;
+    }
+  }
+
+  const BUILD = "services:\n  relay:\n    build: .\n";
+  const IMAGE = "services:\n  relay:\n    image: ghcr.io/x/y:latest\n";
+
+  it("exits 0 (build-based) for a hand-rolled compose.yaml with build:", () => {
+    writeFileSync(join(dir, "compose.yaml"), BUILD);
+    expect(runInspect(null)).toBe(0);
+  });
+
+  it("exits 1 (not build-based) for an image-based docker-compose.yml", () => {
+    writeFileSync(join(dir, "docker-compose.yml"), IMAGE);
+    expect(runInspect(null)).toBe(1);
+  });
+
+  it("exits 1 (not build-based) when none of the four fallback files exist", () => {
+    // The safety-critical fall-through: a missing compose file must NOT be
+    // misclassified as build-based (which would block every update).
+    expect(runInspect(null)).toBe(1);
+  });
+
+  it("follows docker's precedence: inspects compose.yaml over docker-compose.yml", () => {
+    // compose.yaml (image-based) shadows docker-compose.yml (build-based),
+    // exactly as `docker compose` (no -f) would pick compose.yaml. Probing
+    // the wrong file would here yield exit 0 — so this pins the order.
+    writeFileSync(join(dir, "compose.yaml"), IMAGE);
+    writeFileSync(join(dir, "docker-compose.yml"), BUILD);
+    expect(runInspect(null)).toBe(1);
+  });
+
+  it("greps exactly the explicit compose file when one is given", () => {
+    writeFileSync(join(dir, "docker-compose.prod.yml"), BUILD);
+    // An image-based default exists too; the explicit override must win.
+    writeFileSync(join(dir, "docker-compose.yml"), IMAGE);
+    expect(runInspect("docker-compose.prod.yml")).toBe(0);
   });
 });
