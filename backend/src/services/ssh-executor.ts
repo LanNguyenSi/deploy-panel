@@ -167,11 +167,39 @@ function buildConnectConfig(opts: ExecuteSshCommandOptions): {
 
   if (opts.auth.kind === "password") {
     // Mirror the string into a Buffer we own so we can zero it after.
-    // ssh2 will copy this internally; after its connect-phase it no
-    // longer needs the value.
+    // We pass the Buffer directly via authHandler instead of converting
+    // back to a string with config.password. ssh2's Protocol.js branch:
+    //   if (Buffer.isBuffer(password)) bufferCopy(password, packet, ...)
+    //   else packet.utf8Write(password, ...)
+    // — so no intermediate JS string is ever created and no copy of the
+    // credential lands in config.password. The buf stays in credBuffers
+    // and is zeroed by cleanup() on all exit paths.
+    // @types/ssh2 types PasswordAuthMethod.password as `string`, but the
+    // runtime accepts Buffer; cast to keep TypeScript happy.
+    //
+    // One-shot guard: ssh2 calls authHandler again after a server rejection
+    // (to try the next available method). We only have one password to try,
+    // so on any subsequent call we signal "no more methods" with false,
+    // which makes ssh2 emit an error with level "client-authentication"
+    // instead of looping until the timeout fires.
     const buf = Buffer.from(opts.auth.password, "utf8");
     credBuffers.push(buf);
-    config.password = buf.toString("utf8");
+    // Note: this authHandler intentionally skips the 'none'-first probe
+    // that ssh2's default flow performs — it attempts the password method
+    // directly on the first call. More secure: no auth-method advertising.
+    let triedPassword = false;
+    config.authHandler = (_methodsLeft, _partial, cb) => {
+      if (triedPassword) {
+        // @types/ssh2 types NextAuthHandler to only accept AuthenticationType |
+        // AnyAuthMethod, but the ssh2 runtime also accepts `false` to signal
+        // "no more methods" (which triggers a client-authentication error).
+        // Cast to silence the type mismatch without changing runtime behaviour.
+        (cb as (v: unknown) => void)(false);
+        return;
+      }
+      triedPassword = true;
+      cb({ type: "password", username: opts.user, password: buf as unknown as string });
+    };
   } else {
     const keyBuf = Buffer.from(opts.auth.privateKey, "utf8");
     credBuffers.push(keyBuf);
