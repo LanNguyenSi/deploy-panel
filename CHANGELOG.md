@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-06-16
+
+**Headline: SSH credential hardening, two relay preflight fixes, and two esbuild CVE patches.**
+
+### Security
+
+- **SSH password passed as Buffer via `authHandler` so zeroing reaches ssh2** (PR #96).
+  Previously the password was passed as a string; ssh2 copies strings internally and the
+  copy was never wiped. Passing a Buffer lets ssh2's built-in zeroing reach the credential.
+- **Force esbuild >=0.28.1 and bump tsx to ^4.22.4** (PRs #92, #93). Remediates
+  GHSA-gv7w-rqvm-qjhr and GHSA-g7r4-m6w7-qqqr in the transitive esbuild dependency.
+
+### Fixed
+
+- **Compose-file fallback order probed in `update-relay-image` preflight** (PR #95).
+  The preflight now probes Docker's compose-file search order so the correct file is
+  selected before an image-only update is attempted, preventing silent no-ops when the
+  relay compose file does not live at the default path.
+- **Strict-mode host-key mismatch classified as `host_key_rejected`** (PR #94).
+  A host-key mismatch raised under strict mode now surfaces as `host_key_rejected`
+  instead of a generic connection error, giving callers an actionable signal.
+
 ## [0.3.0] - 2026-06-08
 
 **Headline: a deploy reported `success` / app `healthy` now means the app
