@@ -1,6 +1,6 @@
 # API reference
 
-All endpoints are served by the Hono backend on `PORT` (default `3001`) and prefixed with `/api`. The UI uses the bare `/api/...` paths with cookie-session auth; CI/CD pipelines should use `/api/v1/...` with a `PANEL_TOKEN` Bearer token.
+All endpoints are served by the Hono backend on `PORT` (default `3001`) and prefixed with `/api`. The UI uses the bare `/api/...` paths with cookie-session auth; CI/CD pipelines should use `/api/v1/...` with a `dp_` API key (recommended) or the `PANEL_TOKEN` as a Bearer token.
 
 ## Health
 
@@ -58,7 +58,7 @@ All app endpoints are nested under a server: `/api/servers/:serverId/apps`.
 
 ## API v1 (CI/CD pipeline integration)
 
-All v1 endpoints are prefixed with `/api/v1` and authenticated via `PANEL_TOKEN` (Bearer token). They return JSON and are designed for non-interactive callers (GitHub Actions, GitLab pipelines, cron jobs).
+All v1 endpoints are prefixed with `/api/v1` and authenticated with a Bearer credential: either a `dp_` API key (what the bundled GitHub Action uses) or the `PANEL_TOKEN`. They return JSON and are designed for non-interactive callers (GitHub Actions, GitLab pipelines, cron jobs).
 
 | Method | Path                  | Description                                                        |
 |--------|-----------------------|--------------------------------------------------------------------|
@@ -77,7 +77,15 @@ Example: trigger a deploy from a CI job.
 curl -X POST https://panel.example.com/api/v1/deploy \
   -H "Authorization: Bearer $PANEL_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"serverId": "srv_abc", "appName": "web-prod"}'
+  -d '{"server": "srv_abc", "app": "web-prod"}'
 ```
 
 The response includes a deploy id you can poll via `GET /api/v1/deploy/:id` to wait for `success` / `failed` / `rolled_back`.
+
+## Other endpoints
+
+The backend also exposes endpoints that the panel UI itself uses. They are not part of the stable CI/CD (`/api/v1`) surface and may change:
+
+- `/api/auth/*`: email/password login, GitHub OAuth (`/github/config`, `/github/start`, `/github/callback`), the identity-broker registration endpoint (`POST /api/auth/register-from-project-pilot`), and `/api/auth/check`. See [configuration.md#authentication](configuration.md#authentication).
+- `/api/api-keys`: create, list, and revoke `dp_` API keys (panel-session auth only; rejects API-key auth).
+- `/api/servers/probe-vps` and `/api/servers/:id/update-relay-image`: VPS provisioning helpers used by the server-management UI.

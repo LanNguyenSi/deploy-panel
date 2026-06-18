@@ -1,6 +1,13 @@
 services:
   db:
     image: postgres:16-alpine
+    ports:
+      # Publish the db to the host on 5433 (loopback only) so the documented
+      # local-dev flow works: `make db-push` and `make dev` run prisma and the
+      # backend on the host and connect via DATABASE_URL=...@localhost:5433
+      # (see .env.example). Inside the compose network the backend still uses
+      # db:5432. 5433 avoids colliding with a host-local postgres on 5432.
+      - "127.0.0.1:5433:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-deploy_panel}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deploy_panel}
