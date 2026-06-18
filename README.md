@@ -4,8 +4,6 @@ Web control panel for VPS deployments, paired with [agent-relay](https://github.
 
 [![CI](https://github.com/LanNguyenSi/deploy-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/LanNguyenSi/deploy-panel/actions/workflows/ci.yml)
 
-<!-- TODO: hero screenshot of the dashboard -->
-
 deploy-panel is a Next.js + Hono app that drives a fleet of VPS servers running [agent-relay](https://github.com/LanNguyenSi/agent-relay). It tracks servers, apps, and deploy history in PostgreSQL via Prisma, and proxies deploy / rollback / logs / preflight requests to each VPS's relay over HTTP. Built so a small team (or solo operator) can ship to a handful of boxes without juggling SSH tabs.
 
 ## Try it in 60 seconds
@@ -15,7 +13,7 @@ git clone https://github.com/LanNguyenSi/deploy-panel.git
 cd deploy-panel
 cp .env.example .env
 
-# installs deps, starts PostgreSQL in Docker, runs prisma generate + db push
+# installs deps, brings up the Docker stack, runs prisma generate + db push
 make setup
 
 # starts backend on :3001 and frontend on :3000
@@ -43,7 +41,7 @@ API v1 deploy from a CI job:
 curl -X POST https://panel.example.com/api/v1/deploy \
   -H "Authorization: Bearer $PANEL_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"serverId": "srv_abc", "appName": "web-prod"}'
+  -d '{"server": "srv_abc", "app": "web-prod"}'
 ```
 
 ## Next steps
@@ -54,6 +52,7 @@ curl -X POST https://panel.example.com/api/v1/deploy \
 | Configure env vars, ports, sessions, CORS, Docker deployment | [docs/configuration.md](docs/configuration.md) |
 | Enable GitHub OAuth or the identity-broker registration flow | [docs/configuration.md#authentication](docs/configuration.md#authentication) |
 | Call the REST API (panel UI endpoints + `/api/v1` for CI/CD) | [docs/api.md](docs/api.md) |
+| Drive deploys from an AI agent (MCP server) | [mcp/README.md](mcp/README.md) |
 
 ## Development
 
@@ -61,8 +60,8 @@ curl -X POST https://panel.example.com/api/v1/deploy \
 make setup          # one-time: deps, DB, Prisma client
 make dev            # backend + frontend, hot reload
 make build          # build both workspaces
-make docker-up      # start PostgreSQL only (port 5433)
-make docker-down    # stop PostgreSQL
+make docker-up      # bring up the full Docker stack (db + backend + frontend)
+make docker-down    # stop the Docker stack
 make db-generate    # prisma generate
 make db-push        # prisma db push (apply schema)
 make clean          # remove dist + node_modules

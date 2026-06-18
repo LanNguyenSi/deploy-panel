@@ -29,7 +29,7 @@ deploy-panel is configured entirely via environment variables. The backend and f
 | `POSTGRES_DB`           | No       | `deploy_panel`                   | PostgreSQL database name (Docker)    |
 | `FRONTEND_PORT`         | No       | `3000`                           | Host port for the frontend container |
 
-`PANEL_TOKEN` is optional in dev but required for any `/api/v1` traffic; without it, all v1 endpoints return 401. Treat it like a service account token.
+`PANEL_TOKEN` is one of the Bearer credentials accepted on `/api/v1` (a `dp_` API key is the other, and is what the bundled GitHub Action uses). It is optional in development, where the backend falls through as admin when no token is set. In production it is effectively required: with no `PANEL_TOKEN` set, the auth middleware has no configured secret and rejects every request to an authenticated route with a 500 before any credential is checked. Treat it like a service account token.
 
 ## Authentication
 
@@ -48,7 +48,7 @@ The `.env.example` already wires everything to the docker-compose defaults; for 
 
 ```bash
 cp .env.example .env
-make setup       # installs deps, brings up PostgreSQL, prisma generate + db push
+make setup       # installs deps, brings up the Docker stack, prisma generate + db push
 make dev         # backend on :3001, frontend on :3000
 ```
 
@@ -56,7 +56,7 @@ make dev         # backend on :3001, frontend on :3000
 
 ## Docker deployment
 
-The `docker-compose.yml` runs PostgreSQL, the backend, and the frontend as containers. Multi-stage builds use Node 22 Alpine; the backend runs Prisma migrations on startup via its entrypoint script.
+The `docker-compose.yml` runs PostgreSQL, the backend, and the frontend as containers. Multi-stage builds use Node 22 Alpine; the backend runs `prisma db push` to sync the schema on startup via its entrypoint script.
 
 ```bash
 cp .env.example .env
@@ -71,7 +71,7 @@ docker compose up -d --build
 Container behaviour:
 
 - `db`: PostgreSQL 16 Alpine, persistent volume `pgdata`, healthcheck via `pg_isready`.
-- `backend`: multi-stage build, runs Prisma migrations on startup, exposes `:3001` internally. Healthcheck hits `/api/health`. Not published to the host by default.
+- `backend`: multi-stage build, runs `prisma db push` to sync the schema on startup, exposes `:3001` internally. Healthcheck hits `/api/health`. Not published to the host by default.
 - `frontend`: multi-stage build with Next.js standalone output, published on `${FRONTEND_PORT:-3000}`.
 
 The backend waits for the db health check before starting, and the frontend waits for the backend health check. Put a real reverse proxy (Caddy, nginx, Cloudflare Tunnel) in front of the frontend container for TLS.

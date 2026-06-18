@@ -35,10 +35,10 @@ The frontend is a thin client over the backend's REST API. The backend owns all 
 Each `Server` row stores a `relayUrl` (e.g. `http://vps-ip:3002`) and an optional `relayToken` for Bearer authentication. When the panel triggers a deploy, rollback, log fetch, or preflight check, the backend:
 
 1. Looks up the server's relay credentials from the database.
-2. Forwards the request to the agent-relay HTTP API (e.g. `POST /api/deploy`, `POST /api/rollback`, `GET /api/logs`, `GET /api/preflight`).
+2. Forwards the request to the agent-relay HTTP API (e.g. `POST /api/apps/:name/deploy`, `POST /api/apps/:name/rollback`, `GET /api/apps/:name/logs`, `GET /api/apps/:name/preflight`).
 3. Records the result in the `deploys` table and updates the app status.
 
-Requests to agent-relay use a 30-second timeout. If the relay is unreachable or returns an error, the deploy is marked as failed and the failure is visible in deploy history.
+Relay calls use per-operation timeouts: 5 seconds for connectivity and system-info checks, 5 minutes for standard relay operations (rollback, logs, preflight), and 10 minutes for streaming deploys. If the relay is unreachable or returns an error, the deploy is marked as failed and the failure is visible in deploy history.
 
 ## Data model
 
@@ -57,6 +57,7 @@ Requests to agent-relay use a 30-second timeout. If the relay is unreachable or 
 | `/servers/[id]`    | App Management   | View apps on a server; deploy, rollback, view logs, run preflight checks     |
 | `/deploys`         | Deploy History   | Filterable table of all deployments with status, commit, duration, timestamp |
 | `/audit`           | Audit Log        | Filterable audit trail of user actions                                       |
+| `/scheduled`       | Scheduled Deploys| Fleet-wide overview of upcoming scheduled (cron-like) deploys; cancel or reschedule |
 | `/login`           | Login            | Authentication page                                                          |
 | `/settings`        | Settings         | Panel configuration and user preferences                                     |
 
