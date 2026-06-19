@@ -179,7 +179,7 @@ export default function EnvVarsPanel({
             marginBottom: "var(--space-2)",
             padding: "var(--space-2) var(--space-3)",
             background: "var(--warning-bg)",
-            border: "1px solid var(--warning, #f59e0b)",
+            border: "1px solid var(--warning)",
             borderRadius: "6px",
             color: "var(--warning-fg)",
             fontSize: "var(--text-sm)",

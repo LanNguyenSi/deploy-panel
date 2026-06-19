@@ -909,9 +909,10 @@ a:hover { color: var(--primary-hover); }
   100% { background-position: -200% 0; }
 }
 
+/* Reduced motion: the global rule neutralizes the shimmer; flatten to a
+   clean static surface (this background override is the only extra needed). */
 @media (prefers-reduced-motion: reduce) {
   .skeleton {
-    animation: none;
     background: var(--bg-steel);
   }
 }
@@ -942,13 +943,7 @@ a:hover { color: var(--primary-hover); }
   box-shadow: var(--shadow-modal);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .modal-backdrop,
-  .dialog-panel {
-    animation: none;
-    transition: none;
-  }
-}
+/* (reduced motion is handled globally by the `*` rule near the top.) */
 
 /* ── Alert Blocks ───────────────────────────────────────────────── */
 
