@@ -699,13 +699,11 @@ a:hover { color: var(--primary-hover); }
 .sidebar-link-active {
   color: var(--primary);
   background: var(--primary-muted);
-  box-shadow: inset 2px 0 0 var(--primary);
 }
 
 .sidebar-link-active:hover {
   color: var(--primary-hover);
   background: var(--primary-muted);
-  box-shadow: inset 2px 0 0 var(--primary);
 }
 
 .sidebar-logout {
