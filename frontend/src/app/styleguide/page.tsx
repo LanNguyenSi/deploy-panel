@@ -737,7 +737,7 @@ export default function StyleguidePage() {
                   background: "var(--bg-iron)",
                   border: "1px solid var(--border)",
                   borderRadius: "var(--radius-md)",
-                  boxShadow: "0 16px 48px rgba(0,0,0,.55)",
+                  boxShadow: "var(--shadow-modal)",
                   marginBottom: "var(--space-2)",
                 }}
               />
@@ -752,7 +752,7 @@ export default function StyleguidePage() {
                   background: "var(--bg-iron)",
                   border: "1px solid var(--border)",
                   borderRadius: "var(--radius-md)",
-                  boxShadow: "0 0 0 1px rgba(34,211,238,.45), 0 0 18px rgba(34,211,238,.14)",
+                  boxShadow: "var(--glow-primary)",
                   marginBottom: "var(--space-2)",
                 }}
               />
