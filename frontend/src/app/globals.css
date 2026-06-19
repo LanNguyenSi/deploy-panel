@@ -1,72 +1,107 @@
-/* ── Deploy Panel Design System ─────────────────────────────────── */
+/* ── Deploy Panel — Mission Control Design System ────────────────── */
 
 :root {
-  /* Background layers */
-  --bg: #0a0e17;
-  --bg-subtle: #0f1420;
-  --surface: #141a27;
-  --surface-hover: #1a2233;
-  --surface-secondary: #0d1220;
+  /* ── Surfaces ─────────────────────────────────────────────────── */
+  --bg-void:           #0A0E14; /* deepest app bg */
+  --bg-iron:           #11161F; /* cards / panels */
+  --bg-steel:          #1A2230; /* raised surfaces, inputs, hover */
+  --surface-alt:       #151B26; /* alt rows, code areas */
 
-  /* Borders */
-  --border: #1e293b;
-  --border-hover: #334155;
-  /* Text */
-  --text: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --muted: #64748b;
+  /* Legacy aliases — kept so all component class references survive */
+  --bg:                #0A0E14;
+  --bg-subtle:         #1A2230;
+  --surface:           #11161F;
+  --surface-hover:     #1A2230;
+  --surface-secondary: #0A0E14;
+  --surface-muted:     rgba(21, 27, 38, 0.6); /* tablist / subtle badge bg */
 
-  /* Primary — teal/emerald for deploy actions */
-  --primary: #10b981;
-  --primary-hover: #34d399;
-  --primary-muted: rgba(16, 185, 129, 0.12);
-  --primary-glow: rgba(16, 185, 129, 0.2);
+  /* ── Borders ──────────────────────────────────────────────────── */
+  --border:            #232C3D;
+  --border-hover:      #2E3A4F;
+  --border-strong:     #2E3A4F;
 
-  /* Semantic colors */
-  --success: #22c55e;
-  --success-muted: rgba(34, 197, 94, 0.12);
-  --warning: #f59e0b;
-  --warning-muted: rgba(245, 158, 11, 0.12);
-  --danger: #ef4444;
-  --danger-muted: rgba(239, 68, 68, 0.12);
-  --info: #3b82f6;
-  --info-muted: rgba(59, 130, 246, 0.12);
+  /* ── Text ─────────────────────────────────────────────────────── */
+  --text:              #E5EAF2;
+  --text-secondary:    #94A3B8;
+  --text-muted:        #94A3B8; /* alias for text-secondary */
+  --text-dim:          #5B6678;
+  --muted:             #5B6678;
+  --text-mono:         #CBD5E1; /* color of monospace content */
 
-  /* Typography */
-  --text-xs: 0.75rem;
-  --text-sm: 0.8125rem;
+  /* ── Primary — signal cyan ────────────────────────────────────── */
+  --primary:           #22D3EE;
+  --primary-hover:     #67E8F9;
+  --primary-contrast:  #06121A;
+  --primary-muted:     rgba(34, 211, 238, 0.12);
+  --primary-glow:      rgba(34, 211, 238, 0.2);
+
+  /* ── Accent — amber / AI ──────────────────────────────────────── */
+  --accent:            #FBBF24;
+  --accent-contrast:   #1A1206;
+
+  /* ── Semantic ─────────────────────────────────────────────────── */
+  --success:           #34D399;
+  --success-bg:        rgba(52, 211, 153, 0.12);
+  --success-muted:     rgba(52, 211, 153, 0.12);
+
+  --warning:           #FBBF24;
+  --warning-bg:        rgba(251, 191, 36, 0.12);
+  --warning-fg:        #FCD34D;
+  --warning-muted:     rgba(251, 191, 36, 0.12);
+
+  --danger:            #F87171;
+  --danger-bg:         rgba(248, 113, 113, 0.12);
+  --danger-muted:      rgba(248, 113, 113, 0.12);
+
+  --info:              #38BDF8;
+  --info-muted:        rgba(56, 189, 248, 0.12);
+
+  /* ── Fonts ────────────────────────────────────────────────────── */
+  /* next/font injects --font-display / --font-sans / --font-mono via a   */
+  /* higher-specificity class on <html>; these serve as SSR / no-JS fallbacks */
+  --font-display: 'Sora', system-ui, sans-serif;
+  --font-sans:    'Inter', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+
+  /* ── Typography scale ─────────────────────────────────────────── */
+  --text-xs:   0.75rem;
+  --text-sm:   0.8125rem;
   --text-base: 0.875rem;
-  --text-md: 1rem;
-  --text-lg: 1.25rem;
-  --text-xl: 1.5rem;
-  --text-2xl: 2rem;
+  --text-md:   1rem;
+  --text-lg:   1.25rem;
+  --text-xl:   1.5rem;
+  --text-2xl:  2rem;
 
-  /* Spacing */
-  --space-1: 0.25rem;
-  --space-2: 0.5rem;
-  --space-3: 0.75rem;
-  --space-4: 1rem;
-  --space-5: 1.25rem;
-  --space-6: 1.5rem;
-  --space-8: 2rem;
+  /* ── Spacing ──────────────────────────────────────────────────── */
+  --space-1:  0.25rem;
+  --space-2:  0.5rem;
+  --space-3:  0.75rem;
+  --space-4:  1rem;
+  --space-5:  1.25rem;
+  --space-6:  1.5rem;
+  --space-8:  2rem;
   --space-10: 2.5rem;
   --space-12: 3rem;
 
-  /* Radius */
-  --radius-sm: 4px;
-  --radius: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  /* ── Radius ───────────────────────────────────────────────────── */
+  --radius-sm:   6px;
+  --radius:      10px;
+  --radius-md:   10px;
+  --radius-lg:   12px;
+  --radius-xl:   16px;
+  --radius-pill: 999px;
 
-  /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow: 0 2px 8px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
-  --shadow-glow: 0 0 20px var(--primary-glow);
+  /* ── Shadows & Elevation ──────────────────────────────────────── */
+  --shadow-sm:    0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow:       0 2px 8px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-lg:    0 8px 24px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
+  --shadow-modal: 0 16px 48px rgba(0, 0, 0, 0.55);
+  --shadow-glow:  0 0 20px var(--primary-glow);
+  --glow-primary: 0 0 0 1px rgba(34, 211, 238, 0.45), 0 0 18px rgba(34, 211, 238, 0.14);
 
-  /* Transitions */
-  --transition-fast: 0.12s ease;
-  --transition: 0.2s ease;
+  /* ── Motion ───────────────────────────────────────────────────── */
+  --transition-fast: 100ms ease;
+  --transition:      140ms ease;
 }
 
 /* ── Reset ──────────────────────────────────────────────────────── */
@@ -78,21 +113,51 @@
 }
 
 body {
-  background: var(--bg);
+  background: var(--bg-void);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, sans-serif;
+  font-family: var(--font-sans), system-ui, sans-serif;
   font-size: var(--text-base);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+h1, h2, h3 {
+  font-family: var(--font-display), system-ui, sans-serif;
+}
+
 a { color: var(--primary); text-decoration: none; }
 a:hover { color: var(--primary-hover); }
 
 ::selection {
-  background: var(--primary-muted);
+  background: rgba(34, 211, 238, 0.2);
   color: var(--primary-hover);
+}
+
+/* ── Custom scrollbar ───────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-void);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg-steel);
+  border-radius: var(--radius-pill);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+/* ── Reduced motion ─────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 
 /* ── App Layout ─────────────────────────────────────────────────── */
