@@ -537,16 +537,16 @@ a:hover { color: var(--primary-hover); }
 .log-panel {
   margin-top: var(--space-3);
   padding: var(--space-4);
-  background: var(--bg);
+  background: var(--surface-alt);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-family: var(--font-mono, monospace);
   font-size: var(--text-xs);
   line-height: 1.7;
   overflow: auto;
   max-height: 360px;
   white-space: pre-wrap;
-  color: var(--text-secondary);
+  color: var(--text-mono);
 }
 
 /* ── Empty State ────────────────────────────────────────────────── */
@@ -558,6 +558,7 @@ a:hover { color: var(--primary-hover); }
   justify-content: center;
   padding: var(--space-12) var(--space-4);
   text-align: center;
+  color: var(--text-dim);
 }
 
 .empty-state-icon {
@@ -894,9 +895,9 @@ a:hover { color: var(--primary-hover); }
 .skeleton {
   background: linear-gradient(
     90deg,
-    var(--surface) 25%,
-    var(--surface-hover) 50%,
-    var(--surface) 75%
+    var(--bg-steel) 25%,
+    var(--surface-alt) 50%,
+    var(--bg-steel) 75%
   );
   background-size: 200% 100%;
   animation: skeleton-shimmer 1.5s ease-in-out infinite;
@@ -906,6 +907,86 @@ a:hover { color: var(--primary-hover); }
 @keyframes skeleton-shimmer {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+    background: var(--bg-steel);
+  }
+}
+
+/* ── Modal / Dialog ─────────────────────────────────────────────── */
+
+/* CSS surface classes for any future CSS-class-driven modal/dialog.
+   Current ConfirmDialog / PromptDialog / ScheduleDialog are fully
+   inline-styled and already consume tokens; shadow-modal is the
+   permitted overlay elevation token (see T-003). */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 14, 20, 0.72); /* --bg-void @ ~72% */
+  backdrop-filter: blur(4px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 999;
+}
+
+.dialog-panel {
+  background: var(--bg-iron);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-6);
+  box-shadow: var(--shadow-modal);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-backdrop,
+  .dialog-panel {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* ── Alert Blocks ───────────────────────────────────────────────── */
+
+/* Left-accent-bar treatment: border-width 1px on three sides, 3px on left */
+
+.alert {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  border-style: solid;
+  border-width: 1px 1px 1px 3px;
+  border-color: var(--border);
+  background: var(--bg-iron);
+}
+
+.alert-warning {
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  border-color: var(--warning);
+}
+
+.alert-danger {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.alert-info {
+  background: var(--info-muted);
+  color: var(--info);
+  border-color: var(--info);
+}
+
+.alert-success {
+  background: var(--success-bg);
+  color: var(--success);
+  border-color: var(--success);
 }
 
 /* ── Animations ─────────────────────────────────────────────────── */

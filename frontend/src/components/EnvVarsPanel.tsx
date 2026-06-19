@@ -178,10 +178,10 @@ export default function EnvVarsPanel({
           style={{
             marginBottom: "var(--space-2)",
             padding: "var(--space-2) var(--space-3)",
-            background: "var(--warning-bg, #fef3c7)",
+            background: "var(--warning-bg)",
             border: "1px solid var(--warning, #f59e0b)",
             borderRadius: "6px",
-            color: "var(--warning-fg, #92400e)",
+            color: "var(--warning-fg)",
             fontSize: "var(--text-sm)",
           }}
         >
@@ -299,7 +299,7 @@ export default function EnvVarsPanel({
           style={{
             marginTop: "var(--space-3)",
             padding: "var(--space-2)",
-            background: "var(--surface-alt, #f3f4f6)",
+            background: "var(--surface-alt)",
             borderRadius: "6px",
             fontSize: "var(--text-xs)",
             maxHeight: "12rem",
