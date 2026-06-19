@@ -97,7 +97,7 @@ export default function Sidebar() {
           <nav className="sidebar-nav">
             {/* Dashboard — 4-quadrant grid */}
             <Link href="/" className={navClass("/")}>
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                 <rect x="1" y="1" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
                 <rect x="9" y="1" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
                 <rect x="1" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
@@ -107,7 +107,7 @@ export default function Sidebar() {
             </Link>
             {/* Servers — two rack slabs with status dot */}
             <Link href="/servers" className={navClass("/servers")}>
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                 <rect x="2" y="2" width="12" height="4" rx="1" stroke="currentColor" strokeWidth="1.5" />
                 <rect x="2" y="10" width="12" height="4" rx="1" stroke="currentColor" strokeWidth="1.5" />
                 <circle cx="5" cy="4" r="0.75" fill="currentColor" />
@@ -117,7 +117,7 @@ export default function Sidebar() {
             </Link>
             {/* Deploys — upward arrow (push/deploy to server) with base bar */}
             <Link href="/deploys" className={navClass("/deploys")}>
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                 <path d="M8 13V5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                 <path d="M5 8l3-3 3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
                 <path d="M3 13h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
@@ -126,7 +126,7 @@ export default function Sidebar() {
             </Link>
             {/* Scheduled — calendar */}
             <Link href="/scheduled" className={navClass("/scheduled")}>
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                 <rect x="2" y="3" width="12" height="11" rx="1" stroke="currentColor" strokeWidth="1.5" />
                 <path d="M2 6h12M6 2v2M10 2v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
               </svg>
@@ -134,7 +134,7 @@ export default function Sidebar() {
             </Link>
             {/* Audit Log — document with text lines */}
             <Link href="/audit" className={navClass("/audit")}>
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                 <path d="M4 2h8a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" strokeWidth="1.5" />
                 <path d="M6 5h4M6 8h4M6 11h2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
               </svg>
@@ -146,7 +146,7 @@ export default function Sidebar() {
         <div className="sidebar-bottom">
           {/* Settings — gear */}
           <Link href="/settings" className={navClass("/settings")}>
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <circle cx="8" cy="8" r="2.5" stroke="currentColor" strokeWidth="1.5" />
               <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
@@ -154,7 +154,7 @@ export default function Sidebar() {
           </Link>
           {/* Logout — arrow exiting a box */}
           <button onClick={handleLogout} className="sidebar-link sidebar-logout">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path d="M6 14H3a1 1 0 01-1-1V3a1 1 0 011-1h3M11 11l3-3-3-3M14 8H6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
             Logout
