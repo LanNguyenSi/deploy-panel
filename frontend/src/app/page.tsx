@@ -148,7 +148,7 @@ export default function DashboardPage() {
                         </div>
                       </div>
                     </div>
-                    <span className={`badge badge-${s.status === "online" ? "success" : s.status === "offline" ? "danger" : "neutral"}`}>
+                    <span className={`badge badge-${s.status === "online" ? "success" : s.status === "offline" ? "danger" : s.status === "no-relay" ? "warning" : "neutral"}`}>
                       {s.status}
                     </span>
                   </div>

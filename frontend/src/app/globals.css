@@ -793,6 +793,20 @@ a:hover { color: var(--primary-hover); }
   margin-bottom: var(--space-6);
 }
 
+/* Brand mark container — matches .sidebar-logo treatment, scaled up for the login hero */
+.login-logo-mark {
+  width: 72px;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-steel);
+  color: var(--primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 0 24px var(--primary-glow);
+}
+
 .login-title {
   font-size: var(--text-xl);
   font-weight: 700;
