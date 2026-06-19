@@ -245,8 +245,8 @@ export default function ScheduledPage() {
           style={{
             padding: "var(--space-3)",
             marginBottom: "var(--space-3)",
-            borderColor: "var(--danger, #dc2626)",
-            color: "var(--danger, #dc2626)",
+            borderColor: "var(--danger)",
+            color: "var(--danger)",
           }}
         >
           {error}

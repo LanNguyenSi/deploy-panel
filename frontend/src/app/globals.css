@@ -1,72 +1,113 @@
-/* ── Deploy Panel Design System ─────────────────────────────────── */
+/* ── Deploy Panel — Mission Control Design System ────────────────── */
 
 :root {
-  /* Background layers */
-  --bg: #0a0e17;
-  --bg-subtle: #0f1420;
-  --surface: #141a27;
-  --surface-hover: #1a2233;
-  --surface-secondary: #0d1220;
+  /* ── Surfaces ─────────────────────────────────────────────────── */
+  --bg-void:           #0A0E14; /* deepest app bg */
+  --bg-iron:           #11161F; /* cards / panels */
+  --bg-steel:          #1A2230; /* raised surfaces, inputs, hover */
+  --surface-alt:       #151B26; /* alt rows, code areas */
 
-  /* Borders */
-  --border: #1e293b;
-  --border-hover: #334155;
-  /* Text */
-  --text: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --muted: #64748b;
+  /* Legacy aliases — kept so all component class references survive */
+  --bg:                #0A0E14;
+  --bg-subtle:         #1A2230;
+  --surface:           #11161F;
+  --surface-hover:     #1A2230;
+  --surface-secondary: #0A0E14;
+  --surface-muted:     rgba(21, 27, 38, 0.6); /* tablist / subtle badge bg */
 
-  /* Primary — teal/emerald for deploy actions */
-  --primary: #10b981;
-  --primary-hover: #34d399;
-  --primary-muted: rgba(16, 185, 129, 0.12);
-  --primary-glow: rgba(16, 185, 129, 0.2);
+  /* ── Borders ──────────────────────────────────────────────────── */
+  --border:            #232C3D;
+  --border-hover:      #2E3A4F;
+  --border-strong:     #2E3A4F;
 
-  /* Semantic colors */
-  --success: #22c55e;
-  --success-muted: rgba(34, 197, 94, 0.12);
-  --warning: #f59e0b;
-  --warning-muted: rgba(245, 158, 11, 0.12);
-  --danger: #ef4444;
-  --danger-muted: rgba(239, 68, 68, 0.12);
-  --info: #3b82f6;
-  --info-muted: rgba(59, 130, 246, 0.12);
+  /* ── Text ─────────────────────────────────────────────────────── */
+  --text:              #E5EAF2;
+  --text-secondary:    #94A3B8;
+  --text-muted:        #94A3B8; /* alias for text-secondary */
+  --text-dim:          #7E899A; /* AA (>=4.5:1) for normal text on void/iron/steel */
+  --muted:             #7E899A; /* alias for --text-dim */
+  --text-mono:         #CBD5E1; /* color of monospace content */
 
-  /* Typography */
-  --text-xs: 0.75rem;
-  --text-sm: 0.8125rem;
+  /* ── Primary — signal cyan ────────────────────────────────────── */
+  --primary:           #22D3EE;
+  --primary-hover:     #67E8F9;
+  --primary-contrast:  #06121A;
+  --primary-muted:     rgba(34, 211, 238, 0.12);
+  --primary-glow:      rgba(34, 211, 238, 0.2);
+
+  /* ── Accent — amber / AI ──────────────────────────────────────── */
+  --accent:            #FBBF24;
+  --accent-contrast:   #1A1206;
+
+  /* ── Semantic ─────────────────────────────────────────────────── */
+  --success:           #34D399;
+  --success-bg:        rgba(52, 211, 153, 0.12);
+  --success-muted:     rgba(52, 211, 153, 0.12);
+
+  --warning:           #FBBF24;
+  --warning-bg:        rgba(251, 191, 36, 0.12);
+  --warning-fg:        #FCD34D;
+  --warning-muted:     rgba(251, 191, 36, 0.12);
+
+  --danger:            #F87171;
+  --danger-bg:         rgba(248, 113, 113, 0.12);
+  --danger-muted:      rgba(248, 113, 113, 0.12);
+  --danger-hover:      rgba(248, 113, 113, 0.22); /* stronger tint for hover feedback */
+
+  --info:              #38BDF8;
+  --info-muted:        rgba(56, 189, 248, 0.12);
+
+  /* Neutral slate tint — categorical (non-semantic) badges/tags */
+  --neutral-muted:      rgba(100, 116, 139, 0.12);
+  --neutral-muted-weak: rgba(100, 116, 139, 0.08);
+
+  /* ── Fonts ────────────────────────────────────────────────────── */
+  /* --font-display / --font-sans / --font-mono are defined by next/font on   */
+  /* the <html> element (see layout.tsx) and cascade in from there. We do NOT */
+  /* redeclare them in :root on purpose: a :root declaration TIES next/font's */
+  /* generated class on specificity and would win by source order, shadowing  */
+  /* next/font's metric-matched fallback faces (defeating its CLS reduction). */
+  /* Consumers append `, system-ui, sans-serif` for a generic last resort.    */
+
+  /* ── Typography scale ─────────────────────────────────────────── */
+  --text-xs:   0.75rem;
+  --text-sm:   0.8125rem;
   --text-base: 0.875rem;
-  --text-md: 1rem;
-  --text-lg: 1.25rem;
-  --text-xl: 1.5rem;
-  --text-2xl: 2rem;
+  --text-md:   1rem;
+  --text-lg:   1.25rem;
+  --text-xl:   1.5rem;
+  --text-2xl:  2rem;
 
-  /* Spacing */
-  --space-1: 0.25rem;
-  --space-2: 0.5rem;
-  --space-3: 0.75rem;
-  --space-4: 1rem;
-  --space-5: 1.25rem;
-  --space-6: 1.5rem;
-  --space-8: 2rem;
+  /* ── Spacing ──────────────────────────────────────────────────── */
+  --space-1:  0.25rem;
+  --space-2:  0.5rem;
+  --space-3:  0.75rem;
+  --space-4:  1rem;
+  --space-5:  1.25rem;
+  --space-6:  1.5rem;
+  --space-8:  2rem;
   --space-10: 2.5rem;
   --space-12: 3rem;
 
-  /* Radius */
-  --radius-sm: 4px;
-  --radius: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  /* ── Radius ───────────────────────────────────────────────────── */
+  --radius-sm:   6px;
+  --radius:      10px;
+  --radius-md:   10px;
+  --radius-lg:   12px;
+  --radius-xl:   16px;
+  --radius-pill: 999px;
 
-  /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow: 0 2px 8px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
-  --shadow-glow: 0 0 20px var(--primary-glow);
+  /* ── Shadows & Elevation ──────────────────────────────────────── */
+  --shadow-sm:    0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow:       0 2px 8px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-lg:    0 8px 24px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.2);
+  --shadow-modal: 0 16px 48px rgba(0, 0, 0, 0.55);
+  --shadow-glow:  0 0 20px var(--primary-glow);
+  --glow-primary: 0 0 0 1px rgba(34, 211, 238, 0.45), 0 0 18px rgba(34, 211, 238, 0.14);
 
-  /* Transitions */
-  --transition-fast: 0.12s ease;
-  --transition: 0.2s ease;
+  /* ── Motion ───────────────────────────────────────────────────── */
+  --transition-fast: 100ms ease;
+  --transition:      140ms ease;
 }
 
 /* ── Reset ──────────────────────────────────────────────────────── */
@@ -78,21 +119,55 @@
 }
 
 body {
-  background: var(--bg);
+  background: var(--bg-void);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Roboto, sans-serif;
+  font-family: var(--font-sans), system-ui, sans-serif;
   font-size: var(--text-base);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+h1, h2, h3 {
+  font-family: var(--font-display), system-ui, sans-serif;
+}
+
 a { color: var(--primary); text-decoration: none; }
 a:hover { color: var(--primary-hover); }
 
 ::selection {
-  background: var(--primary-muted);
+  background: rgba(34, 211, 238, 0.2);
   color: var(--primary-hover);
+}
+
+/* ── Custom scrollbar ───────────────────────────────────────────── */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-void);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg-steel);
+  border-radius: var(--radius-pill);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+/* ── Reduced motion ─────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ── App Layout ─────────────────────────────────────────────────── */
@@ -139,11 +214,10 @@ a:hover { color: var(--primary-hover); }
 /* ── Cards ──────────────────────────────────────────────────────── */
 
 .card {
-  background: var(--surface);
+  background: var(--bg-iron);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
-  transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition);
+  border-radius: var(--radius-md);
+  transition: border-color var(--transition);
 }
 
 .card:hover {
@@ -155,17 +229,15 @@ a:hover { color: var(--primary-hover); }
 }
 
 .card-interactive:hover {
-  border-color: var(--primary);
-  box-shadow: var(--shadow), var(--shadow-glow);
-  transform: translateY(-1px);
+  border-color: var(--border-strong);
 }
 
 /* ── Inputs ─────────────────────────────────────────────────────── */
 
 .input {
-  background: var(--bg-subtle);
+  background: var(--bg-steel);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   color: var(--text);
   font-size: var(--text-sm);
   padding: 0.5rem 0.75rem;
@@ -176,11 +248,33 @@ a:hover { color: var(--primary-hover); }
 
 .input:focus {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-muted);
+  box-shadow: var(--glow-primary);
 }
 
 .input::placeholder {
-  color: var(--muted);
+  color: var(--text-dim);
+}
+
+/* Compact, transparent-bg input for table-cell editing (EnvVarsPanel) */
+.input-native {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--text-sm);
+  padding: 0.25rem 0.5rem;
+  outline: none;
+  transition: border-color var(--transition), box-shadow var(--transition);
+  width: 100%;
+}
+
+.input-native:focus {
+  border-color: var(--primary);
+  box-shadow: var(--glow-primary);
+}
+
+.input-native::placeholder {
+  color: var(--text-dim);
 }
 
 /* ── Buttons ────────────────────────────────────────────────────── */
@@ -194,18 +288,22 @@ a:hover { color: var(--primary-hover); }
   font-size: var(--text-sm);
   font-weight: 500;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
+  border-radius: var(--radius-sm);
+  background: var(--bg-steel);
   color: var(--text-secondary);
   cursor: pointer;
-  transition: all var(--transition);
+  transition: color var(--transition), background-color var(--transition), border-color var(--transition);
   white-space: nowrap;
 }
 
 .btn:hover {
-  background: var(--surface-hover);
   border-color: var(--border-hover);
   color: var(--text);
+}
+
+.btn:focus-visible {
+  outline: none;
+  box-shadow: var(--glow-primary);
 }
 
 .btn:active {
@@ -221,38 +319,51 @@ a:hover { color: var(--primary-hover); }
 .btn-primary {
   background: var(--primary);
   border-color: var(--primary);
-  color: #fff;
+  color: var(--primary-contrast);
   font-weight: 600;
 }
 
 .btn-primary:hover {
   background: var(--primary-hover);
   border-color: var(--primary-hover);
-  box-shadow: 0 0 12px var(--primary-glow);
-  color: #fff;
+  color: var(--primary-contrast);
 }
 
 .btn-secondary {
-  background: transparent;
+  background: var(--bg-steel);
   border-color: var(--border);
   color: var(--text-secondary);
 }
 
 .btn-secondary:hover {
-  background: var(--surface);
   border-color: var(--border-hover);
   color: var(--text);
 }
 
 .btn-danger {
-  background: transparent;
+  background: var(--danger-bg);
   border-color: var(--danger);
   color: var(--danger);
 }
 
 .btn-danger:hover {
-  background: var(--danger-muted);
+  background: var(--danger-hover);
   border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* Ghost: transparent at rest — used for back-nav links and inactive tab selectors.
+   Tab-selector active state switches to btn-primary in the page's own class string. */
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
+}
+
+.btn-ghost:hover {
+  background: var(--bg-steel);
+  border-color: transparent;
+  color: var(--text);
 }
 
 .btn-sm {
@@ -270,34 +381,39 @@ a:hover { color: var(--primary-hover); }
   padding: 0.2rem 0.625rem;
   font-size: var(--text-xs);
   font-weight: 600;
-  border-radius: 100px;
+  border-radius: var(--radius-pill);
   letter-spacing: 0.02em;
   text-transform: capitalize;
 }
 
+/* Semantic status variants — bg = *-muted alpha tint, color = solid semantic token */
 .badge-success {
   background: var(--success-muted);
   color: var(--success);
 }
 
+/* server:offline / app:unhealthy / deploy:failed / preflight:fail */
 .badge-danger {
   background: var(--danger-muted);
   color: var(--danger);
 }
 
+/* e.g. deploy:rolled_back / audit:rollback (some pages route no-relay/interrupted here, others to neutral/danger) */
 .badge-warning {
   background: var(--warning-muted);
-  color: var(--warning);
+  color: var(--warning-fg);
 }
 
+/* app:deploying / deploy:running / server.create / api_key.create */
 .badge-info {
   background: var(--info-muted);
   color: var(--info);
 }
 
+/* e.g. deploy:pending, login/logout, unknown states (exact mapping varies per page) */
 .badge-neutral {
-  background: rgba(100, 116, 139, 0.12);
-  color: var(--muted);
+  background: var(--neutral-muted);
+  color: var(--text-secondary);
 }
 
 /* ── Status Dot ─────────────────────────────────────────────────── */
@@ -354,18 +470,18 @@ a:hover { color: var(--primary-hover); }
 }
 
 .tag-production {
-  background: var(--success-muted);
-  color: var(--success);
+  background: var(--primary-muted);
+  color: var(--primary);
 }
 
 .tag-development {
-  background: var(--info-muted);
-  color: var(--info);
+  background: var(--neutral-muted);
+  color: var(--text-secondary);
 }
 
 .tag-ignored {
-  background: rgba(100, 116, 139, 0.12);
-  color: var(--muted);
+  background: var(--neutral-muted-weak);
+  color: var(--text-dim);
 }
 
 /* ── Table ──────────────────────────────────────────────────────── */
@@ -380,7 +496,7 @@ a:hover { color: var(--primary-hover); }
   padding: var(--space-3);
   font-size: var(--text-xs);
   font-weight: 600;
-  color: var(--muted);
+  color: var(--text-dim);
   text-align: left;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -391,15 +507,25 @@ a:hover { color: var(--primary-hover); }
   padding: var(--space-3);
   font-size: var(--text-sm);
   border-bottom: 1px solid var(--border);
-  transition: background var(--transition-fast);
 }
 
 .table tbody tr {
-  transition: background var(--transition-fast);
+  transition: background-color var(--transition-fast);
+}
+
+.table tbody tr:nth-child(even) {
+  background: var(--surface-alt);
 }
 
 .table tbody tr:hover {
-  background: var(--surface);
+  background: var(--bg-steel);
+}
+
+/* Expanded/active row (e.g. deploys detail toggle). Declared after zebra+hover
+   so it wins the same-specificity tie and persists while the row is open. */
+.table tbody tr.row-expanded,
+.table tbody tr.row-expanded:hover {
+  background: var(--primary-muted);
 }
 
 .table tbody tr:last-child td {
@@ -411,16 +537,16 @@ a:hover { color: var(--primary-hover); }
 .log-panel {
   margin-top: var(--space-3);
   padding: var(--space-4);
-  background: var(--bg);
+  background: var(--surface-alt);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-family: var(--font-mono, monospace);
   font-size: var(--text-xs);
   line-height: 1.7;
   overflow: auto;
   max-height: 360px;
   white-space: pre-wrap;
-  color: var(--text-secondary);
+  color: var(--text-mono);
 }
 
 /* ── Empty State ────────────────────────────────────────────────── */
@@ -432,6 +558,7 @@ a:hover { color: var(--primary-hover); }
   justify-content: center;
   padding: var(--space-12) var(--space-4);
   text-align: center;
+  color: var(--text-dim);
 }
 
 .empty-state-icon {
@@ -460,6 +587,7 @@ a:hover { color: var(--primary-hover); }
 }
 
 .stat-value {
+  font-family: var(--font-display), system-ui, sans-serif;
   font-size: var(--text-2xl);
   font-weight: 700;
   letter-spacing: -0.03em;
@@ -524,9 +652,11 @@ a:hover { color: var(--primary-hover); }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--primary);
-  color: #fff;
+  background: var(--bg-steel);
+  color: var(--primary);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
+  box-shadow: 0 0 12px var(--primary-glow);
   flex-shrink: 0;
 }
 
@@ -556,7 +686,7 @@ a:hover { color: var(--primary-hover); }
   border: none;
   background: none;
   cursor: pointer;
-  transition: all var(--transition);
+  transition: color var(--transition), background-color var(--transition), box-shadow var(--transition);
   width: 100%;
   text-align: left;
 }
@@ -569,11 +699,13 @@ a:hover { color: var(--primary-hover); }
 .sidebar-link-active {
   color: var(--primary);
   background: var(--primary-muted);
+  box-shadow: inset 2px 0 0 var(--primary);
 }
 
 .sidebar-link-active:hover {
   color: var(--primary-hover);
   background: var(--primary-muted);
+  box-shadow: inset 2px 0 0 var(--primary);
 }
 
 .sidebar-logout {
@@ -659,6 +791,20 @@ a:hover { color: var(--primary-hover); }
   display: flex;
   justify-content: center;
   margin-bottom: var(--space-6);
+}
+
+/* Brand mark container — matches .sidebar-logo treatment, scaled up for the login hero */
+.login-logo-mark {
+  width: 72px;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-steel);
+  color: var(--primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 0 24px var(--primary-glow);
 }
 
 .login-title {
@@ -767,9 +913,9 @@ a:hover { color: var(--primary-hover); }
 .skeleton {
   background: linear-gradient(
     90deg,
-    var(--surface) 25%,
-    var(--surface-hover) 50%,
-    var(--surface) 75%
+    var(--bg-steel) 25%,
+    var(--surface-alt) 50%,
+    var(--bg-steel) 75%
   );
   background-size: 200% 100%;
   animation: skeleton-shimmer 1.5s ease-in-out infinite;
@@ -779,6 +925,81 @@ a:hover { color: var(--primary-hover); }
 @keyframes skeleton-shimmer {
   0% { background-position: 200% 0; }
   100% { background-position: -200% 0; }
+}
+
+/* Reduced motion: the global rule neutralizes the shimmer; flatten to a
+   clean static surface (this background override is the only extra needed). */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    background: var(--bg-steel);
+  }
+}
+
+/* ── Modal / Dialog ─────────────────────────────────────────────── */
+
+/* CSS surface classes for any future CSS-class-driven modal/dialog.
+   Current ConfirmDialog / PromptDialog / ScheduleDialog are fully
+   inline-styled and already consume tokens; shadow-modal is the
+   permitted overlay elevation token (see T-003). */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 14, 20, 0.72); /* --bg-void @ ~72% */
+  backdrop-filter: blur(4px);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 999;
+}
+
+.dialog-panel {
+  background: var(--bg-iron);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-6);
+  box-shadow: var(--shadow-modal);
+}
+
+/* (reduced motion is handled globally by the `*` rule near the top.) */
+
+/* ── Alert Blocks ───────────────────────────────────────────────── */
+
+/* Left-accent-bar treatment: border-width 1px on three sides, 3px on left */
+
+.alert {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  border-style: solid;
+  border-width: 1px 1px 1px 3px;
+  border-color: var(--border);
+  background: var(--bg-iron);
+}
+
+.alert-warning {
+  background: var(--warning-bg);
+  color: var(--warning-fg);
+  border-color: var(--warning);
+}
+
+.alert-danger {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.alert-info {
+  background: var(--info-muted);
+  color: var(--info);
+  border-color: var(--info);
+}
+
+.alert-success {
+  background: var(--success-bg);
+  color: var(--success);
+  border-color: var(--success);
 }
 
 /* ── Animations ─────────────────────────────────────────────────── */
