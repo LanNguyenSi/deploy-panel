@@ -63,26 +63,21 @@ export default function Sidebar() {
           <div className="sidebar-brand-row">
             <Link href="/" className="sidebar-brand">
               {/*
-                Mission Control brand mark — three ascending signal bars,
-                bottom-aligned, fill="currentColor" (inherits --primary from
-                .sidebar-logo). Literal cyan is avoided; the container class
-                sets color: var(--primary). aria-hidden because the adjacent
-                text provides the accessible label.
+                Brand mark — package/box glyph (the original deploy-panel mark),
+                stroke=currentColor so it picks up the white glyph colour from
+                .sidebar-logo (white on a cyan tile). Same mark as the favicon.
+                aria-hidden because the adjacent text provides the accessible label.
               */}
               <div className="sidebar-logo">
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
                   viewBox="0 0 24 24"
-                  width="16"
-                  height="16"
+                  width="18"
+                  height="18"
                   aria-hidden="true"
                 >
-                  {/* Short bar — left */}
-                  <rect x="3.5" y="15" width="4" height="6" rx="1" fill="currentColor" />
-                  {/* Medium bar — centre */}
-                  <rect x="10" y="11" width="4" height="10" rx="1" fill="currentColor" />
-                  {/* Tall bar — right */}
-                  <rect x="16.5" y="6" width="4" height="15" rx="1" fill="currentColor" />
+                  <path d="M6 9.5l6-3 6 3v5l-6 3-6-3z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                  <path d="M12 14.5v-5M6 9.5l6 2.5 6-2.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
                 </svg>
               </div>
               <span className="sidebar-brand-text">Deploy Panel</span>

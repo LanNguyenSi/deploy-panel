@@ -652,11 +652,9 @@ a:hover { color: var(--primary-hover); }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-steel);
-  color: var(--primary);
-  border: 1px solid var(--border);
+  background: var(--primary);
+  color: #fff;
   border-radius: var(--radius);
-  box-shadow: 0 0 12px var(--primary-glow);
   flex-shrink: 0;
 }
 
@@ -798,11 +796,9 @@ a:hover { color: var(--primary-hover); }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-steel);
-  color: var(--primary);
-  border: 1px solid var(--border);
+  background: var(--primary);
+  color: #fff;
   border-radius: var(--radius-xl);
-  box-shadow: 0 0 24px var(--primary-glow);
 }
 
 .login-title {

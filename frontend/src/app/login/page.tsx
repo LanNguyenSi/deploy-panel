@@ -83,10 +83,10 @@ function LoginForm() {
         <div className="login-logo">
           <div className="login-logo-mark">
             {/*
-              Mission Control brand mark — three ascending signal bars.
-              Same shape as .sidebar-logo; scaled up to 40px for the login hero.
-              fill="currentColor" inherits color: var(--primary) from
-              .login-logo-mark. aria-hidden: "Deploy Panel" heading is the label.
+              Brand mark — package/box glyph (the original deploy-panel mark),
+              same shape as .sidebar-logo and the favicon, scaled up for the login
+              hero. stroke=currentColor (white on the cyan tile from .login-logo-mark).
+              aria-hidden: "Deploy Panel" heading is the label.
             */}
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -95,12 +95,8 @@ function LoginForm() {
               height="40"
               aria-hidden="true"
             >
-              {/* Short bar — left */}
-              <rect x="3.5" y="15" width="4" height="6" rx="1" fill="currentColor" />
-              {/* Medium bar — centre */}
-              <rect x="10" y="11" width="4" height="10" rx="1" fill="currentColor" />
-              {/* Tall bar — right */}
-              <rect x="16.5" y="6" width="4" height="15" rx="1" fill="currentColor" />
+              <path d="M6 9.5l6-3 6 3v5l-6 3-6-3z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+              <path d="M12 14.5v-5M6 9.5l6 2.5 6-2.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
             </svg>
           </div>
         </div>
