@@ -24,8 +24,8 @@
   --text:              #E5EAF2;
   --text-secondary:    #94A3B8;
   --text-muted:        #94A3B8; /* alias for text-secondary */
-  --text-dim:          #5B6678;
-  --muted:             #5B6678;
+  --text-dim:          #7E899A; /* AA (>=4.5:1) for normal text on void/iron/steel */
+  --muted:             #7E899A; /* alias for --text-dim */
   --text-mono:         #CBD5E1; /* color of monospace content */
 
   /* ── Primary — signal cyan ────────────────────────────────────── */
@@ -57,11 +57,12 @@
   --info-muted:        rgba(56, 189, 248, 0.12);
 
   /* ── Fonts ────────────────────────────────────────────────────── */
-  /* next/font injects --font-display / --font-sans / --font-mono via a   */
-  /* higher-specificity class on <html>; these serve as SSR / no-JS fallbacks */
-  --font-display: 'Sora', system-ui, sans-serif;
-  --font-sans:    'Inter', system-ui, sans-serif;
-  --font-mono:    'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  /* --font-display / --font-sans / --font-mono are defined by next/font on   */
+  /* the <html> element (see layout.tsx) and cascade in from there. We do NOT */
+  /* redeclare them in :root on purpose: a :root declaration TIES next/font's */
+  /* generated class on specificity and would win by source order, shadowing  */
+  /* next/font's metric-matched fallback faces (defeating its CLS reduction). */
+  /* Consumers append `, system-ui, sans-serif` for a generic last resort.    */
 
   /* ── Typography scale ─────────────────────────────────────────── */
   --text-xs:   0.75rem;
@@ -154,9 +155,13 @@ a:hover { color: var(--primary-hover); }
 /* ── Reduced motion ─────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {
-  * {
-    animation: none !important;
-    transition: none !important;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
