@@ -652,9 +652,11 @@ a:hover { color: var(--primary-hover); }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--primary);
-  color: #fff;
+  background: var(--bg-steel);
+  color: var(--primary);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
+  box-shadow: 0 0 12px var(--primary-glow);
   flex-shrink: 0;
 }
 
@@ -684,7 +686,7 @@ a:hover { color: var(--primary-hover); }
   border: none;
   background: none;
   cursor: pointer;
-  transition: all var(--transition);
+  transition: color var(--transition), background-color var(--transition), box-shadow var(--transition);
   width: 100%;
   text-align: left;
 }
@@ -697,11 +699,13 @@ a:hover { color: var(--primary-hover); }
 .sidebar-link-active {
   color: var(--primary);
   background: var(--primary-muted);
+  box-shadow: inset 2px 0 0 var(--primary);
 }
 
 .sidebar-link-active:hover {
   color: var(--primary-hover);
   background: var(--primary-muted);
+  box-shadow: inset 2px 0 0 var(--primary);
 }
 
 .sidebar-logout {

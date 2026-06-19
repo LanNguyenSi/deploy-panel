@@ -62,10 +62,27 @@ export default function Sidebar() {
         <div className="sidebar-top">
           <div className="sidebar-brand-row">
             <Link href="/" className="sidebar-brand">
+              {/*
+                Mission Control brand mark — three ascending signal bars,
+                bottom-aligned, fill="currentColor" (inherits --primary from
+                .sidebar-logo). Literal cyan is avoided; the container class
+                sets color: var(--primary). aria-hidden because the adjacent
+                text provides the accessible label.
+              */}
               <div className="sidebar-logo">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18">
-                  <path d="M6 9.5l6-3 6 3v5l-6 3-6-3z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
-                  <path d="M12 14.5v-5M6 9.5l6 2.5 6-2.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  width="16"
+                  height="16"
+                  aria-hidden="true"
+                >
+                  {/* Short bar — left */}
+                  <rect x="3.5" y="15" width="4" height="6" rx="1" fill="currentColor" />
+                  {/* Medium bar — centre */}
+                  <rect x="10" y="11" width="4" height="10" rx="1" fill="currentColor" />
+                  {/* Tall bar — right */}
+                  <rect x="16.5" y="6" width="4" height="15" rx="1" fill="currentColor" />
                 </svg>
               </div>
               <span className="sidebar-brand-text">Deploy Panel</span>
@@ -78,42 +95,48 @@ export default function Sidebar() {
           </div>
 
           <nav className="sidebar-nav">
+            {/* Dashboard — 4-quadrant grid */}
             <Link href="/" className={navClass("/")}>
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <rect x="1" y="1" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.2" />
-                <rect x="9" y="1" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.2" />
-                <rect x="1" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.2" />
-                <rect x="9" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.2" />
+                <rect x="1" y="1" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
+                <rect x="9" y="1" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
+                <rect x="1" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
+                <rect x="9" y="9" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.5" />
               </svg>
               Dashboard
             </Link>
+            {/* Servers — two rack slabs with status dot */}
             <Link href="/servers" className={navClass("/servers")}>
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <rect x="2" y="2" width="12" height="4" rx="1" stroke="currentColor" strokeWidth="1.2" />
-                <rect x="2" y="10" width="12" height="4" rx="1" stroke="currentColor" strokeWidth="1.2" />
+                <rect x="2" y="2" width="12" height="4" rx="1" stroke="currentColor" strokeWidth="1.5" />
+                <rect x="2" y="10" width="12" height="4" rx="1" stroke="currentColor" strokeWidth="1.5" />
                 <circle cx="5" cy="4" r="0.75" fill="currentColor" />
                 <circle cx="5" cy="12" r="0.75" fill="currentColor" />
               </svg>
               Servers
             </Link>
+            {/* Deploys — upward arrow (push/deploy to server) with base bar */}
             <Link href="/deploys" className={navClass("/deploys")}>
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M8 2v8M5 7l3 3 3-3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M3 11v2h10v-2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M8 13V5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                <path d="M5 8l3-3 3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M3 13h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
               </svg>
               Deploys
             </Link>
+            {/* Scheduled — calendar */}
             <Link href="/scheduled" className={navClass("/scheduled")}>
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <rect x="2" y="3" width="12" height="11" rx="1" stroke="currentColor" strokeWidth="1.2" />
-                <path d="M2 6h12M6 2v2M10 2v2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                <rect x="2" y="3" width="12" height="11" rx="1" stroke="currentColor" strokeWidth="1.5" />
+                <path d="M2 6h12M6 2v2M10 2v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
               </svg>
               Scheduled
             </Link>
+            {/* Audit Log — document with text lines */}
             <Link href="/audit" className={navClass("/audit")}>
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M4 2h8a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" strokeWidth="1.2" />
-                <path d="M6 5h4M6 8h4M6 11h2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                <path d="M4 2h8a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" strokeWidth="1.5" />
+                <path d="M6 5h4M6 8h4M6 11h2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
               </svg>
               Audit Log
             </Link>
@@ -121,16 +144,18 @@ export default function Sidebar() {
         </div>
 
         <div className="sidebar-bottom">
+          {/* Settings — gear */}
           <Link href="/settings" className={navClass("/settings")}>
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="8" r="2.5" stroke="currentColor" strokeWidth="1.2" />
-              <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+              <circle cx="8" cy="8" r="2.5" stroke="currentColor" strokeWidth="1.5" />
+              <path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.05 3.05l1.41 1.41M11.54 11.54l1.41 1.41M3.05 12.95l1.41-1.41M11.54 4.46l1.41-1.41" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
             </svg>
             Settings
           </Link>
+          {/* Logout — arrow exiting a box */}
           <button onClick={handleLogout} className="sidebar-link sidebar-logout">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <path d="M6 14H3a1 1 0 01-1-1V3a1 1 0 011-1h3M11 11l3-3-3-3M14 8H6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M6 14H3a1 1 0 01-1-1V3a1 1 0 011-1h3M11 11l3-3-3-3M14 8H6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
             Logout
           </button>
