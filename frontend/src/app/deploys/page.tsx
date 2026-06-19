@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useState } from "react";
 import { getDeploys, getDeployDetail, type DeployWithRelations, type DeployDetail } from "@/lib/api";
+import { deployStatusBadge } from "@/lib/status";
 
 export default function DeploysPage() {
   const [deploys, setDeploys] = useState<DeployWithRelations[]>([]);
@@ -343,15 +344,7 @@ function DeployDetailPanel({ detail, loading }: { detail: DeployDetail | null; l
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const map: Record<string, { className: string; label: string }> = {
-    success: { className: "badge-success", label: "Success" },
-    failed: { className: "badge-danger", label: "Failed" },
-    rolled_back: { className: "badge-warning", label: "Rolled back" },
-    running: { className: "badge-info", label: "Running" },
-    pending: { className: "badge-neutral", label: "Pending" },
-    interrupted: { className: "badge-warning", label: "Interrupted" },
-  };
-  const s = map[status] ?? { className: "badge-neutral", label: status };
+  const s = deployStatusBadge(status);
   return <span className={`badge ${s.className}`}>{s.label}</span>;
 }
 

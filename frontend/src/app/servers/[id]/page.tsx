@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { getServer, getApps, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, setAppLiveUrl, bulkDeploy, type AppWithCount, type RelayMode } from "@/lib/api";
+import { deployStatusBadge } from "@/lib/status";
 import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { usePrompt } from "@/components/PromptDialog";
@@ -504,7 +505,7 @@ export default function ServerDetailPage() {
                     <div className="log-panel" style={{ fontFamily: "inherit", whiteSpace: "normal" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-3)" }}>
                         <span style={{ fontWeight: 600 }}>Status:</span>
-                        <span className={`badge badge-${deployLog.status === "running" ? "info" : deployLog.status === "success" ? "success" : "danger"}`}>
+                        <span className={`badge ${deployStatusBadge(deployLog.status).className}`}>
                           {deployLog.status}
                         </span>
                       </div>
