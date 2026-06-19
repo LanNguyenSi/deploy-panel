@@ -52,9 +52,14 @@
   --danger:            #F87171;
   --danger-bg:         rgba(248, 113, 113, 0.12);
   --danger-muted:      rgba(248, 113, 113, 0.12);
+  --danger-hover:      rgba(248, 113, 113, 0.22); /* stronger tint for hover feedback */
 
   --info:              #38BDF8;
   --info-muted:        rgba(56, 189, 248, 0.12);
+
+  /* Neutral slate tint — categorical (non-semantic) badges/tags */
+  --neutral-muted:      rgba(100, 116, 139, 0.12);
+  --neutral-muted-weak: rgba(100, 116, 139, 0.08);
 
   /* ── Fonts ────────────────────────────────────────────────────── */
   /* --font-display / --font-sans / --font-mono are defined by next/font on   */
@@ -308,7 +313,6 @@ a:hover { color: var(--primary-hover); }
 .btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
-  pointer-events: none;
   transform: none;
 }
 
@@ -343,7 +347,7 @@ a:hover { color: var(--primary-hover); }
 }
 
 .btn-danger:hover {
-  background: var(--danger-muted);
+  background: var(--danger-hover);
   border-color: var(--danger);
   color: var(--danger);
 }
@@ -394,7 +398,7 @@ a:hover { color: var(--primary-hover); }
   color: var(--danger);
 }
 
-/* server:no-relay / deploy:rolled_back / deploy:interrupted / audit:rollback */
+/* e.g. deploy:rolled_back / audit:rollback (some pages route no-relay/interrupted here, others to neutral/danger) */
 .badge-warning {
   background: var(--warning-muted);
   color: var(--warning-fg);
@@ -406,10 +410,10 @@ a:hover { color: var(--primary-hover); }
   color: var(--info);
 }
 
-/* deploy:pending / login / logout / unknown states */
+/* e.g. deploy:pending, login/logout, unknown states (exact mapping varies per page) */
 .badge-neutral {
-  background: rgba(100, 116, 139, 0.12);
-  color: var(--text-dim);
+  background: var(--neutral-muted);
+  color: var(--text-secondary);
 }
 
 /* ── Status Dot ─────────────────────────────────────────────────── */
@@ -471,12 +475,12 @@ a:hover { color: var(--primary-hover); }
 }
 
 .tag-development {
-  background: rgba(100, 116, 139, 0.12);
+  background: var(--neutral-muted);
   color: var(--text-secondary);
 }
 
 .tag-ignored {
-  background: rgba(100, 116, 139, 0.08);
+  background: var(--neutral-muted-weak);
   color: var(--text-dim);
 }
 
@@ -515,6 +519,13 @@ a:hover { color: var(--primary-hover); }
 
 .table tbody tr:hover {
   background: var(--bg-steel);
+}
+
+/* Expanded/active row (e.g. deploys detail toggle). Declared after zebra+hover
+   so it wins the same-specificity tie and persists while the row is open. */
+.table tbody tr.row-expanded,
+.table tbody tr.row-expanded:hover {
+  background: var(--primary-muted);
 }
 
 .table tbody tr:last-child td {
