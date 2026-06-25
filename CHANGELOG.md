@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-06-25
+
+**Headline: the Mission Control design-system overhaul.** The frontend moves onto a new Mission Control design system, with a de-slopped sidebar, plus a hono CORS CVE patch. The app is deployed from `main`, so this tag is deploy provenance.
+
+### Changed
+
+- **Mission Control design-system overhaul** (PR #99): the frontend was lifted onto a new "Mission Control" design system.
+- **De-slopped sidebar brand mark and active-link accent** (PR #100): the sidebar brand mark and the active-link accent were toned down to remove templated-looking flourishes.
+
+### Security
+
+- **Bump `hono` to 4.12.26** (PR #101): a lockfile-only bump (4.12.23 to 4.12.26) clearing a high-severity CORS advisory (wildcard origin with credentials) plus four moderate advisories, in the backend (root lockfile) and `mcp` dependency trees.
+
+### Docs
+
+- **README and docs reconciled with the code** (PR #98).
+
 ## [0.3.1] - 2026-06-16
 
 **Headline: SSH credential hardening, two relay preflight fixes, and two esbuild CVE patches.**
