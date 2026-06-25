@@ -6,6 +6,8 @@ Web control panel for VPS deployments, paired with [agent-relay](https://github.
 
 deploy-panel is a Next.js + Hono app that drives a fleet of VPS servers running [agent-relay](https://github.com/LanNguyenSi/agent-relay). It tracks servers, apps, and deploy history in PostgreSQL via Prisma, and proxies deploy / rollback / logs / preflight requests to each VPS's relay over HTTP. Built so a small team (or solo operator) can ship to a handful of boxes without juggling SSH tabs.
 
+![deploy-panel Servers view: a VPS's registered apps, each with a health badge and Deploy, Rollback, Logs, Preflight, Schedule, and Env actions.](docs/img/servers.png)
+
 ## Try it in 60 seconds
 
 ```bash
