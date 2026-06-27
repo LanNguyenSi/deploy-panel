@@ -20,6 +20,26 @@ jobs:
       - run: npx prisma generate --schema=backend/prisma/schema.prisma
       - run: npm run typecheck --workspace=backend
 
+  backend-test:
+    # Runs the backend vitest suite (SSRF guard, app-name validation,
+    # ownership/auth middleware, host-key pinning, post-deploy gate, …).
+    # These 18 files are the repo's real behavioral safety net; before
+    # this job they existed but never ran in CI, so a PR could break
+    # SSRF or auth logic and still merge green.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # The suite imports the generated Prisma client; generate it first
+      # (mirrors backend-typecheck) so the run does not fail on a missing
+      # @prisma/client.
+      - run: npx prisma generate --schema=backend/prisma/schema.prisma
+      - run: npm run test --workspace=backend
+
   frontend-typecheck:
     runs-on: ubuntu-latest
     steps:
@@ -61,7 +81,7 @@ jobs:
     #
     # Gated on the cheap static jobs so a typo doesn't burn ~4min of
     # docker build + compose bring-up before surfacing.
-    needs: [backend-typecheck, frontend-typecheck, frontend-build, docker]
+    needs: [backend-typecheck, backend-test, frontend-typecheck, frontend-build, docker]
     runs-on: ubuntu-latest
     env:
       # A throwaway token for the CI stack only. Never used outside
