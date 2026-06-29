@@ -11,7 +11,7 @@ export function startScheduler() {
   setTimeout(checkScheduled, 5_000);
 }
 
-async function checkScheduled() {
+export async function checkScheduled() {
   const now = new Date();
 
   const due = await prisma.scheduledDeploy.findMany({
