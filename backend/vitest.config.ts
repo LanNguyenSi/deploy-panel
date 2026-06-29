@@ -12,9 +12,10 @@ export default defineConfig({
       exclude: ["src/**/*.d.ts", "src/server.ts", "src/config/**"],
       reporter: ["text-summary"],
       // Whole-src ratchet locked just below the 2026-06-29 measured baseline
-      // (lines 60.1 / stmts 58.3 / funcs 56.7 / branches 54.6). all:true means a
-      // NEW untested file lowers coverage below the floor, not just erosion of
-      // already-tested files. Raise these as coverage improves.
+      // (lines 60.1 / stmts 58.3 / funcs 56.7 / branches 54.6). Because every
+      // include-matched file is reported (vitest 4 default), a NEW untested file
+      // lowers coverage below the floor, not just erosion of already-tested
+      // files. Raise these as coverage improves.
       thresholds: {
         lines: 55,
         statements: 53,

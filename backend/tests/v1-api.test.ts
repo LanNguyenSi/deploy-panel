@@ -291,6 +291,23 @@ describe("v1 POST /deploy — core flow and ownership", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it("path-traversal app name: 400, no deploy/relay side effects (APP_NAME_PATTERN guard)", async () => {
+    // appName is interpolated into the relay path `/api/apps/${appName}/deploy`,
+    // so the regex guard is security-relevant. Rejection must happen BEFORE any
+    // ownership lookup or relay call.
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: "../../etc/passwd" }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("bad_request");
+    expect(mDeploy.create).not.toHaveBeenCalled();
+    expect(streamDeploy).not.toHaveBeenCalled();
+  });
 });
 
 // ── GET /deploy/:id ───────────────────────────────────────────────────────────
