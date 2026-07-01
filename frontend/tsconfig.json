@@ -17,5 +17,16 @@
     "paths": { "@/*": ["./src/*"] }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
-  "exclude": ["node_modules"]
+  // Test + vitest infra are excluded so `next build` (production, incl. the
+  // Docker frontend image which builds without the vitest/testing-library dev
+  // deps resolvable) does not compile files importing them. Vitest runs these
+  // via its own vite/esbuild pipeline, independent of this tsconfig.
+  "exclude": [
+    "node_modules",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "vitest.config.ts",
+    "vitest.setup.ts",
+    "src/vitest-jest-dom.d.ts"
+  ]
 }
