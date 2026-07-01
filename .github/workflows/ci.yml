@@ -71,6 +71,24 @@ jobs:
       - run: npm ci
       - run: npm run typecheck --workspace=frontend
 
+  frontend-test:
+    # Runs the frontend vitest suite (jsdom). Covers src/lib/status.ts and
+    # src/lib/api.ts's request-construction (a swapped serverId/name would
+    # deploy, roll back, tag, or delete the WRONG app) plus ConfirmDialog,
+    # the confirm gate every destructive action (deploy/rollback/hide/
+    # delete) funnels through — a broken gate would let a cancelled action
+    # run anyway. Frontend is a root workspace, so root `npm ci` installs
+    # it; no separate lockfile/cache-path needed (unlike the mcp package).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test --workspace=frontend
+
   frontend-build:
     runs-on: ubuntu-latest
     steps:
