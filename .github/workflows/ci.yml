@@ -40,6 +40,26 @@ jobs:
       - run: npx prisma generate --schema=backend/prisma/schema.prisma
       - run: npm run test --workspace=backend
 
+  mcp-test:
+    # The mcp/ package (@deploy-panel/mcp) is a standalone ESM package with
+    # its own package.json/lockfile, not a root npm workspace, so it needs
+    # its own checkout + install rather than `--workspace=mcp`. Covers the
+    # 6 MCP tool handlers' zod arg schemas, exact request construction
+    # (server/app -> URL/body mapping — a swap here would deploy or roll
+    # back the WRONG app), and error wrapping.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mcp/package-lock.json
+      - run: npm ci
+        working-directory: mcp
+      - run: npm test
+        working-directory: mcp
+
   frontend-typecheck:
     runs-on: ubuntu-latest
     steps:
