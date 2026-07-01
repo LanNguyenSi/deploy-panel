@@ -20,13 +20,15 @@ export default defineConfig({
       // process.exit on missing env vars; server.ts is the stdio transport
       // wiring), so the global floor is calibrated to the whole-src measured
       // baseline (lines 80 / statements 80.82 / functions 90.9 / branches
-      // 80) rather than to tools.ts/client.ts alone. Raise these as coverage
-      // improves; a regression here should fail CI, not erode silently.
+      // 80) rather than to tools.ts/client.ts alone, set ~1 point below so a
+      // new untested file trips the gate while leaving a small buffer against
+      // noise. Raise these as coverage improves; a regression here should
+      // fail CI, not erode silently.
       thresholds: {
-        lines: 75,
-        statements: 75,
-        functions: 85,
-        branches: 75,
+        lines: 79,
+        statements: 79,
+        functions: 89,
+        branches: 79,
         "src/tools.ts": {
           lines: 95,
           statements: 95,
