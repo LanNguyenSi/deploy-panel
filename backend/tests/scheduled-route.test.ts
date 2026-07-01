@@ -310,3 +310,41 @@ describe("scheduled DELETE /:id — cancel", () => {
     expect(body.message).toBe("Scheduled deploy not found or already triggered");
   });
 });
+
+describe("scheduled — residual edge coverage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("POST / with a malformed JSON body falls back to {} and returns 400 (create NOT called)", async () => {
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{ not valid json",
+    });
+
+    expect(res.status).toBe(400);
+    expect(mScheduled.create).not.toHaveBeenCalled();
+  });
+
+  it("GET /?status=all drops the status filter (admin: no server filter either)", async () => {
+    mScheduled.findMany.mockResolvedValue([]);
+
+    // admin isolates the status ternary: status=all -> where has no `status`,
+    // and isAdmin skips the server-ownership filter -> where is {}.
+    await appFor({ userId: "admin-1", isAdmin: true }).request("/?status=all");
+
+    const where = mScheduled.findMany.mock.calls[0][0].where;
+    expect(where).not.toHaveProperty("status");
+    expect(where).not.toHaveProperty("server");
+  });
+
+  it("GET / with a custom status filters by that exact status", async () => {
+    mScheduled.findMany.mockResolvedValue([]);
+
+    await appFor({ userId: "admin-1", isAdmin: true }).request("/?status=cancelled");
+
+    const where = mScheduled.findMany.mock.calls[0][0].where;
+    expect(where.status).toBe("cancelled");
+  });
+});

@@ -208,3 +208,40 @@ describe("api-keys DELETE /:id — revoke", () => {
     expect(body.message).toBe("API key not found");
   });
 });
+
+describe("api-keys — residual edge coverage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("POST / with a malformed JSON body falls back to {} and returns 400 (create NOT called)", async () => {
+    // Exercises the `c.req.json().catch(() => ({}))` fallback: an unparseable
+    // body becomes {}, which then fails the name guard -> 400.
+    const res = await appFor().request("/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{ not valid json",
+    });
+
+    expect(res.status).toBe(400);
+    expect(mApiKey.create).not.toHaveBeenCalled();
+  });
+
+  it("GET / passes the findMany rows through into the { keys } body", async () => {
+    const row = {
+      id: "key-1",
+      name: "ci",
+      keyPrefix: "dp_abcdefgh",
+      lastUsedAt: null,
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+    };
+    mApiKey.findMany.mockResolvedValue([row]);
+
+    const res = await appFor().request("/");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { keys: Array<{ id: string; name: string; keyPrefix: string }> };
+    expect(body.keys).toHaveLength(1);
+    expect(body.keys[0]).toMatchObject({ id: "key-1", name: "ci", keyPrefix: "dp_abcdefgh" });
+  });
+});
