@@ -12,23 +12,21 @@ export default defineConfig({
       // loadConfig + startServer + process.exit on fatal error), and dist.
       exclude: ["**/*.test.ts", "src/index.ts", "**/dist/**"],
       reporter: ["text", "text-summary"],
-      // Per-file floors set a few points below the 2026-07-01 measured
-      // baseline (tools.ts and client.ts are both 100/100/100/100) for the
-      // two files that carry the real safety logic — request construction —
-      // a swapped server/app arg would deploy or roll back the WRONG app.
-      // config.ts and server.ts have no tests yet (config.ts calls
-      // process.exit on missing env vars; server.ts is the stdio transport
-      // wiring), so the global floor is calibrated to the whole-src measured
-      // baseline (lines 80 / statements 80.82 / functions 90.9 / branches
-      // 80) rather than to tools.ts/client.ts alone, set ~1 point below so a
-      // new untested file trips the gate while leaving a small buffer against
-      // noise. Raise these as coverage improves; a regression here should
-      // fail CI, not erode silently.
+      // Per-file floors set a few points below the 2026-07-04 measured
+      // baseline (every src file is 100/100/100/100) for the files that
+      // carry real logic: tools.ts/client.ts (request construction — a
+      // swapped server/app arg would deploy or roll back the WRONG app),
+      // config.ts (env loading + the process.exit(1) guard on a missing
+      // var), and server.ts (McpServer/DeployPanelClient/registerTools/
+      // stdio-transport wiring). With config.ts and server.ts now covered,
+      // the global floor is raised to the same ~95 level rather than the
+      // old whole-src baseline. Raise these as coverage improves; a
+      // regression here should fail CI, not erode silently.
       thresholds: {
-        lines: 79,
-        statements: 79,
-        functions: 89,
-        branches: 79,
+        lines: 95,
+        statements: 95,
+        functions: 95,
+        branches: 95,
         "src/tools.ts": {
           lines: 95,
           statements: 95,
@@ -36,6 +34,18 @@ export default defineConfig({
           branches: 95,
         },
         "src/client.ts": {
+          lines: 95,
+          statements: 95,
+          functions: 95,
+          branches: 95,
+        },
+        "src/config.ts": {
+          lines: 95,
+          statements: 95,
+          functions: 95,
+          branches: 95,
+        },
+        "src/server.ts": {
           lines: 95,
           statements: 95,
           functions: 95,
