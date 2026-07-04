@@ -8,11 +8,10 @@ import * as api from "./api";
 // destructive/mutating function — a swapped serverId/name, or a wrong
 // method/path, would deploy, roll back, tag, or delete the WRONG app.
 //
-// Deliberately OUT of scope: the SSE async generators (installRelayStream,
-// reinstallRelayStream, updateRelayImageStream, and the sseStream() helper
-// they share) and probeVps(). Those need a ReadableStream-based fetch
-// mock / streaming test harness, which is a separate slice. They remain
-// uncovered here — see vitest.config.ts's api.ts threshold comment.
+// The SSE async generators (installRelayStream, reinstallRelayStream,
+// updateRelayImageStream, and the sseStream() helper they share) and
+// probeVps() are covered separately in ./api.sse.test.ts, which mocks a
+// ReadableStream-based fetch response instead of a plain jsonResponse().
 const BASE = "http://localhost:3001";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -215,6 +214,89 @@ describe("destructive/mutating functions: exact fetch-call construction", () => 
       credentials: "include",
       method: "PUT",
       body: JSON.stringify({ entries }),
+    });
+  });
+
+  it("testServer POSTs /api/servers/:id/test with no body", async () => {
+    await api.testServer("srv-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(`${BASE}/api/servers/srv-1/test`, {
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      method: "POST",
+    });
+  });
+
+  it("syncServer POSTs /api/servers/:serverId/sync with no body", async () => {
+    await api.syncServer("srv-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(`${BASE}/api/servers/srv-1/sync`, {
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      method: "POST",
+    });
+  });
+
+  it("scheduleDeploy POSTs /api/scheduled with {server, app, scheduledFor, force}", async () => {
+    await api.scheduleDeploy("srv-1", "my-app", "2026-07-05T00:00:00Z", true);
+
+    expect(fetchMock).toHaveBeenCalledWith(`${BASE}/api/scheduled`, {
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      method: "POST",
+      body: JSON.stringify({
+        server: "srv-1",
+        app: "my-app",
+        scheduledFor: "2026-07-05T00:00:00Z",
+        force: true,
+      }),
+    });
+  });
+
+  it("scheduleDeploy defaults force to false", async () => {
+    await api.scheduleDeploy("srv-1", "my-app", "2026-07-05T00:00:00Z");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE}/api/scheduled`,
+      expect.objectContaining({
+        body: JSON.stringify({
+          server: "srv-1",
+          app: "my-app",
+          scheduledFor: "2026-07-05T00:00:00Z",
+          force: false,
+        }),
+      }),
+    );
+  });
+
+  it("cancelScheduledDeploy DELETEs /api/scheduled/:id", async () => {
+    await api.cancelScheduledDeploy("sched-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(`${BASE}/api/scheduled/sched-1`, {
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      method: "DELETE",
+    });
+  });
+
+  it("createApiKey POSTs /api/api-keys with {name}", async () => {
+    await api.createApiKey("ci-token");
+
+    expect(fetchMock).toHaveBeenCalledWith(`${BASE}/api/api-keys`, {
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      method: "POST",
+      body: JSON.stringify({ name: "ci-token" }),
+    });
+  });
+
+  it("revokeApiKey DELETEs /api/api-keys/:id", async () => {
+    await api.revokeApiKey("key-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(`${BASE}/api/api-keys/key-1`, {
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      method: "DELETE",
     });
   });
 });
