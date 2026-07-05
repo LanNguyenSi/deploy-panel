@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { randomBytes } from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { hashApiKey } from "../middleware/auth.js";
 import { audit } from "../lib/audit.js";
@@ -57,7 +58,14 @@ apiKeysRouter.delete("/:id", async (c) => {
     const key = await prisma.apiKey.delete({ where: { id } });
     audit("api_key.revoke", key.name, `prefix: ${key.keyPrefix}`, "panel");
     return c.json({ deleted: true });
-  } catch {
-    return c.json({ error: "not_found", message: "API key not found" }, 404);
+  } catch (err) {
+    // P2025 = Prisma's "record to delete does not exist" — a genuine
+    // not-found. Any other rejection (dropped connection, constraint
+    // violation, etc.) is a real DB/infra failure and must not be masked
+    // as a 404; rethrow so app.onError reports it as a 500.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
+      return c.json({ error: "not_found", message: "API key not found" }, 404);
+    }
+    throw err;
   }
 });

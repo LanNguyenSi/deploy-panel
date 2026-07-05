@@ -29,6 +29,7 @@ vi.mock("../src/config/index.js", () => ({
   },
 }));
 
+import { Prisma } from "@prisma/client";
 import { prisma } from "../src/lib/prisma.js";
 import { audit } from "../src/lib/audit.js";
 import { hashApiKey } from "../src/middleware/auth.js";
@@ -177,8 +178,13 @@ describe("api-keys DELETE /:id — revoke", () => {
     expect(audit).toHaveBeenCalledWith("api_key.revoke", "github-actions-prod", "prefix: dp_abcdefgh", "panel");
   });
 
-  it("prisma rejects with 'record not found' (P2025-style): returns 404", async () => {
-    mApiKey.delete.mockRejectedValue(new Error("Record to delete does not exist."));
+  it("prisma rejects with P2025 (record not found): returns 404", async () => {
+    mApiKey.delete.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("Record to delete does not exist.", {
+        code: "P2025",
+        clientVersion: "5.22.0",
+      }),
+    );
 
     const res = await appFor().request("/does-not-exist", { method: "DELETE" });
 
@@ -188,24 +194,35 @@ describe("api-keys DELETE /:id — revoke", () => {
     expect(audit).not.toHaveBeenCalled();
   });
 
-  it("FOOTGUN (pinned, not fixed): a real DB error (non-Prisma-not-found) is ALSO masked as 404", async () => {
-    // The DELETE handler's catch block is unconditional — it catches every
-    // rejection from prisma.apiKey.delete, including infra failures like a
-    // dropped connection, and reports them identically to "key not found".
-    // A caller (or monitoring) cannot distinguish "this key never existed"
-    // from "the database is down" — both come back as a plain 404. This
-    // test pins today's behavior; it does not assert the behavior is
-    // correct. If the route is ever changed to rethrow non-not-found
-    // errors, this test should be updated (and probably deleted) rather
-    // than "fixed" to keep passing.
+  it("a real DB/infra error (non-P2025) is NOT masked as 404 — surfaces as 500", async () => {
+    // Previously the DELETE handler's catch block was unconditional: it
+    // caught every rejection from prisma.apiKey.delete, including infra
+    // failures like a dropped connection, and reported them identically to
+    // "key not found" (404). That hid real failures behind a benign
+    // not-found. Only a genuine P2025 (record-to-delete-does-not-exist)
+    // should map to 404; anything else must be rethrown and surface as a
+    // 500, not a 404.
     mApiKey.delete.mockRejectedValue(new Error("connect ECONNREFUSED 127.0.0.1:5432"));
 
     const res = await appFor().request("/key-1", { method: "DELETE" });
 
-    expect(res.status).toBe(404);
-    const body = (await res.json()) as { error: string; message: string };
-    expect(body.error).toBe("not_found");
-    expect(body.message).toBe("API key not found");
+    expect(res.status).toBe(500);
+    expect(res.status).not.toBe(404);
+    expect(audit).not.toHaveBeenCalled();
+  });
+
+  it("a Prisma error with a different code (e.g. constraint violation) is NOT masked as 404 — surfaces as 500", async () => {
+    mApiKey.delete.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("Foreign key constraint failed.", {
+        code: "P2003",
+        clientVersion: "5.22.0",
+      }),
+    );
+
+    const res = await appFor().request("/key-1", { method: "DELETE" });
+
+    expect(res.status).toBe(500);
+    expect(audit).not.toHaveBeenCalled();
   });
 });
 
