@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
@@ -71,8 +72,15 @@ appsRouter.patch("/:name/tag", async (c) => {
       data: { tag: tag || null },
     });
     return c.json({ app });
-  } catch {
-    return c.json({ error: "not_found" }, 404);
+  } catch (err) {
+    // P2025 = Prisma's "record to update does not exist" — a genuine
+    // not-found. Any other rejection (dropped connection, constraint
+    // violation, etc.) is a real DB/infra failure and must not be masked
+    // as a 404; rethrow so app.onError reports it as a 500.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
+      return c.json({ error: "not_found" }, 404);
+    }
+    throw err;
   }
 });
 
@@ -131,8 +139,15 @@ appsRouter.patch("/:name/live-url", async (c) => {
       getActorUserId(c),
     );
     return c.json({ app });
-  } catch {
-    return c.json({ error: "not_found" }, 404);
+  } catch (err) {
+    // P2025 = Prisma's "record to update does not exist" — a genuine
+    // not-found. Any other rejection (dropped connection, constraint
+    // violation, etc.) is a real DB/infra failure and must not be masked
+    // as a 404; rethrow so app.onError reports it as a 500.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
+      return c.json({ error: "not_found" }, 404);
+    }
+    throw err;
   }
 });
 
@@ -147,8 +162,15 @@ appsRouter.delete("/:name", async (c) => {
       data: { tag: "ignored" },
     });
     return c.json({ hidden: true });
-  } catch {
-    return c.json({ error: "not_found" }, 404);
+  } catch (err) {
+    // P2025 = Prisma's "record to update does not exist" — a genuine
+    // not-found. Any other rejection (dropped connection, constraint
+    // violation, etc.) is a real DB/infra failure and must not be masked
+    // as a 404; rethrow so app.onError reports it as a 500.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
+      return c.json({ error: "not_found" }, 404);
+    }
+    throw err;
   }
 });
 

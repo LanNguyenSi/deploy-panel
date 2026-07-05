@@ -20,6 +20,7 @@ vi.mock("../src/lib/audit.js", () => ({
   getActorUserId: vi.fn().mockReturnValue(null),
 }));
 
+import { Prisma } from "@prisma/client";
 import { prisma } from "../src/lib/prisma.js";
 import { audit } from "../src/lib/audit.js";
 import { scheduledRouter } from "../src/routes/scheduled.js";
@@ -294,20 +295,48 @@ describe("scheduled DELETE /:id — cancel", () => {
     expect(mScheduled.update).not.toHaveBeenCalled();
   });
 
-  it("update races (row changed between findUnique and update, e.g. already triggered by the scheduler): 404", async () => {
+  it("update races (row changed between findUnique and update, e.g. already triggered by the scheduler): P2025 -> 404", async () => {
     mScheduled.findUnique.mockResolvedValue({
       id: "sched-1",
       status: "pending",
       appName: "my-app",
       server: { userId: "user-a" },
     });
-    mScheduled.update.mockRejectedValue(new Error("Record to update not found."));
+    // A genuine race — the `where: { id, status: "pending" }` update matches no
+    // row because the scheduler already flipped status — surfaces from Prisma as
+    // P2025 ("record to update not found"), which stays a benign 404.
+    mScheduled.update.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("Record to update not found.", {
+        code: "P2025",
+        clientVersion: "5.22.0",
+      }),
+    );
 
     const res = await appFor({ userId: "user-a", isAdmin: false }).request("/sched-1", { method: "DELETE" });
 
     expect(res.status).toBe(404);
     const body = (await res.json()) as { message: string };
     expect(body.message).toBe("Scheduled deploy not found or already triggered");
+  });
+
+  it("a real DB/infra error (non-P2025) on cancel is NOT masked as 404 — surfaces as 500", async () => {
+    // The catch used to be unconditional, so a dropped connection during the
+    // cancel update was reported identically to "already triggered" (404),
+    // hiding a real failure. Only a genuine P2025 maps to 404; anything else
+    // must rethrow and surface as a 500.
+    mScheduled.findUnique.mockResolvedValue({
+      id: "sched-1",
+      status: "pending",
+      appName: "my-app",
+      server: { userId: "user-a" },
+    });
+    mScheduled.update.mockRejectedValue(new Error("connect ECONNREFUSED 127.0.0.1:5432"));
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/sched-1", { method: "DELETE" });
+
+    expect(res.status).toBe(500);
+    expect(res.status).not.toBe(404);
+    expect(audit).not.toHaveBeenCalled();
   });
 });
 

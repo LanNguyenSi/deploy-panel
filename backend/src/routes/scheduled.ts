@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { audit, getActor, getActorUserId } from "../lib/audit.js";
 import { getActorContext } from "../lib/ownership.js";
@@ -85,7 +86,15 @@ scheduledRouter.delete("/:id", async (c) => {
     });
     audit("schedule.cancel", `${entry.appName}`, undefined, getActor(c), getActorUserId(c));
     return c.json({ cancelled: true });
-  } catch {
-    return c.json({ error: "not_found", message: "Scheduled deploy not found or already triggered" }, 404);
+  } catch (err) {
+    // P2025 = Prisma's "record to update does not exist" — a genuine
+    // not-found (e.g. the row was cancelled/triggered between the guard
+    // above and this update). Any other rejection (dropped connection,
+    // constraint violation, etc.) is a real DB/infra failure and must not
+    // be masked as a 404; rethrow so app.onError reports it as a 500.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") {
+      return c.json({ error: "not_found", message: "Scheduled deploy not found or already triggered" }, 404);
+    }
+    throw err;
   }
 });
