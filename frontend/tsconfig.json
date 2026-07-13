@@ -26,7 +26,6 @@
     "**/*.test.ts",
     "**/*.test.tsx",
     "vitest.config.ts",
-    "vitest.setup.ts",
-    "src/vitest-jest-dom.d.ts"
+    "vitest.setup.ts"
   ]
 }
