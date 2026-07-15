@@ -31,10 +31,14 @@ All app endpoints are nested under a server: `/api/servers/:serverId/apps`.
 | Method | Path                                            | Description                                    |
 |--------|-------------------------------------------------|------------------------------------------------|
 | GET    | `/api/servers/:serverId/apps`                   | List apps for a server                          |
-| POST   | `/api/servers/:serverId/apps/:name/deploy`      | Trigger deploy (proxied to agent-relay)         |
-| POST   | `/api/servers/:serverId/apps/:name/rollback`    | Trigger rollback (proxied to agent-relay)       |
+| POST   | `/api/servers/:serverId/apps/:name/deploy`      | Trigger deploy (proxied to agent-relay). Provisions panel-managed secrets into the deploy dir's `.env` first and hard-fails before reaching the relay if a declared-required env key still resolves empty — see docs/configuration.md#app-secrets |
+| POST   | `/api/servers/:serverId/apps/:name/rollback`    | Trigger rollback (proxied to agent-relay). **Does not** provision secrets or run the required-env gate — see the "Rollback is exempt" note in docs/configuration.md#app-secrets |
 | GET    | `/api/servers/:serverId/apps/:name/logs`        | Fetch app logs (proxied to agent-relay)         |
-| GET    | `/api/servers/:serverId/apps/:name/preflight`   | Run preflight checks (proxied to agent-relay)   |
+| GET    | `/api/servers/:serverId/apps/:name/preflight`   | Run preflight checks (proxied to agent-relay, plus a panel-side required-env-keys check — see below) |
+| GET    | `/api/servers/:serverId/apps/:name/secrets`     | List panel-managed secret keys for the app (masked — key name + set/unset only, never the value) |
+| PUT    | `/api/servers/:serverId/apps/:name/secrets/:key`| Set (create or update) one secret; body `{ value }`. Write-only — the value is never echoed back |
+| DELETE | `/api/servers/:serverId/apps/:name/secrets/:key`| Delete one secret |
+| PUT    | `/api/servers/:serverId/apps/:name/required-env-keys` | Declare which env keys the app requires; body `{ keys: string[] }` (replace-all). Drives the preflight/deploy hard-fail gate — see docs/configuration.md#app-secrets |
 
 ## Deploys
 

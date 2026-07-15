@@ -23,6 +23,7 @@ deploy-panel is configured entirely via environment variables. The backend and f
 | `GITHUB_CLIENT_ID`      | No       | (empty)                          | GitHub OAuth App client ID. When unset (or `GITHUB_CLIENT_SECRET` unset), `/api/auth/github/*` returns 503 and the frontend hides the button |
 | `GITHUB_CLIENT_SECRET`  | No       | (empty)                          | GitHub OAuth App client secret. Pair with `GITHUB_CLIENT_ID` to enable the standalone GitHub login flow |
 | `ALLOWED_GITHUB_LOGINS` | No       | (empty)                          | Comma-separated GitHub logins allowed via the identity-broker endpoint. Empty means "any verified GitHub user" (back-compat) |
+| `APP_SECRETS_KEY`       | No*      | (dev-only insecure fallback)     | Encryption key for per-app secrets stored in the panel's own DB (see "App secrets" below). Running the backend directly on the host (`make dev`) falls back to a fixed, insecure key with a console warning when unset; the backend throws on first use if unset with `NODE_ENV=production`. `docker-compose.yml` has no fallback default for this var at all (unlike `SESSION_SECRET`), so an unset key fails the WHOLE backend's startup validation under `docker compose up`, not just secret operations — see "App secrets" below. Independent of `SESSION_SECRET` on purpose — rotating the session secret must not brick stored app secrets. |
 | `NEXT_PUBLIC_API_URL`   | No       | `http://localhost:3001`          | API URL the frontend calls           |
 | `POSTGRES_USER`         | No       | `deploy_panel`                   | PostgreSQL user (Docker)             |
 | `POSTGRES_PASSWORD`     | No       | `deploy_panel`                   | PostgreSQL password (Docker)         |
@@ -62,6 +63,10 @@ The `docker-compose.yml` runs PostgreSQL, the backend, and the frontend as conta
 cp .env.example .env
 # at minimum, set:
 #   SESSION_SECRET to a real 32+ char value
+#   APP_SECRETS_KEY to a generated value (openssl rand -hex 32) — REQUIRED
+#     for docker compose specifically: unlike SESSION_SECRET, this var has
+#     no fallback default in docker-compose.yml, so the backend refuses to
+#     start at all without it (see "App secrets" below)
 #   NEXT_PUBLIC_API_URL to the public URL where the backend will be reachable
 #   PANEL_TOKEN if you want CI/CD endpoints
 
@@ -76,9 +81,19 @@ Container behaviour:
 
 The backend waits for the db health check before starting, and the frontend waits for the backend health check. Put a real reverse proxy (Caddy, nginx, Cloudflare Tunnel) in front of the frontend container for TLS.
 
+## App secrets
+
+Per-app secrets (e.g. an app's `METRICS_API_TOKEN`) are stored encrypted in the panel's own database, not in the app's untracked `.env` on the VPS — that file is wiped by `git clean -fdx` / re-clone, which is exactly the failure mode this replaces (see the 2026-06-07 triologue-health-dashboard incident: a required token was never provisioned outside a hand-written `.env`, so a clean re-deploy silently crashlooped).
+
+- `PUT /api/servers/:serverId/apps/:name/secrets/:key` with `{ "value": "..." }` sets (or updates) one secret. Write-only: no route ever returns a value once set, only the key name and whether it's set (`GET .../secrets`).
+- `PUT /api/servers/:serverId/apps/:name/required-env-keys` with `{ "keys": [...] }` declares which env keys the app requires to run.
+- Every **deploy** (panel button, bulk-deploy, `/api/v1/deploy`, and scheduled deploys — all of them funnel through the same `streamDeploy()`) re-applies the app's stored secrets into the relay's `.env` before compose runs (idempotent — a no-op write if nothing changed), then hard-fails the deploy (and `GET .../preflight`) if a declared-required key still resolves empty/unset.
+- **Rollback is exempt.** `POST /api/servers/:serverId/apps/:name/rollback` and `POST /api/v1/rollback` do NOT provision secrets or run the required-env gate — a rollback restarts a previously-deployed commit's containers in place, reusing whatever `.env` is already on disk, rather than pulling a new git ref and re-running compose from a possibly-cleaned working tree. If a rollback target predates when a required key was declared, provisioning it is out of scope for this mechanism; re-run a forward deploy to provision and gate.
+
 ## Production checklist
 
 - `SESSION_SECRET` set to a strong random value (not the placeholder).
+- `APP_SECRETS_KEY` set to a strong random value if you use per-app secrets (see above) — without it the backend refuses to store or read them.
 - `NEXT_PUBLIC_API_URL` points at the public backend URL, not `localhost`.
 - `CORS_ORIGINS` lists exactly the origins you want to allow (comma-separated, no trailing slashes).
 - `PANEL_TOKEN` set if any CI/CD pipeline calls `/api/v1`.

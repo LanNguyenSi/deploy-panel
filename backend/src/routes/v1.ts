@@ -9,6 +9,7 @@ import {
   getActorContext,
   serverOwnershipWhere,
 } from "../lib/ownership.js";
+import { evaluateRequiredEnv } from "../lib/required-env-gate.js";
 
 type Env = {
   Variables: { authType: string; apiKeyName?: string; userId?: string; isAdmin?: boolean };
@@ -322,10 +323,34 @@ v1Router.post("/preflight", async (c) => {
   if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
 
   try {
-    const result = await relayRequest({
+    const result = await relayRequest<{ passed?: boolean; checks?: Array<{ name: string; passed: boolean; message: string }> }>({
       serverId: srv.id,
       path: `/api/apps/${appName}/preflight`,
     });
+
+    // Merge in the panel-side required-env hard-fail check (same gate the
+    // deploy flow enforces before compose runs) — see apps.ts's GET
+    // .../preflight for the twin implementation and required-env-gate.ts.
+    const appRecord = await prisma.app.findUnique({
+      where: { serverId_name: { serverId: srv.id, name: appName } },
+      select: { id: true, requiredEnvKeys: true },
+    });
+    if (appRecord && appRecord.requiredEnvKeys.length > 0) {
+      const envCheck = await evaluateRequiredEnv({
+        serverId: srv.id,
+        appId: appRecord.id,
+        appName,
+        requiredKeys: appRecord.requiredEnvKeys,
+      });
+      if (envCheck.check) {
+        return c.json({
+          ...result,
+          passed: (result.passed ?? true) && envCheck.check.passed,
+          checks: [...(result.checks ?? []), envCheck.check],
+        });
+      }
+    }
+
     return c.json(result);
   } catch (err) {
     if (err instanceof RelayError) return c.json({ error: err.message }, err.status as any);

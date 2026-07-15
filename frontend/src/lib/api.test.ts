@@ -217,6 +217,65 @@ describe("destructive/mutating functions: exact fetch-call construction", () => 
     });
   });
 
+  it("setAppSecret PUTs /api/servers/:serverId/apps/:name/secrets/:key with {value}, URL-encoding the key", async () => {
+    await api.setAppSecret("srv-1", "my-app", "METRICS_API_TOKEN", "sk-real-value");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE}/api/servers/srv-1/apps/my-app/secrets/METRICS_API_TOKEN`,
+      {
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        method: "PUT",
+        body: JSON.stringify({ value: "sk-real-value" }),
+      },
+    );
+  });
+
+  it("deleteAppSecret DELETEs /api/servers/:serverId/apps/:name/secrets/:key", async () => {
+    await api.deleteAppSecret("srv-1", "my-app", "METRICS_API_TOKEN");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE}/api/servers/srv-1/apps/my-app/secrets/METRICS_API_TOKEN`,
+      {
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        method: "DELETE",
+      },
+    );
+  });
+
+  it("setRequiredEnvKeys PUTs /api/servers/:serverId/apps/:name/required-env-keys with {keys}", async () => {
+    await api.setRequiredEnvKeys("srv-1", "my-app", ["METRICS_API_TOKEN", "DB_PASSWORD"]);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE}/api/servers/srv-1/apps/my-app/required-env-keys`,
+      {
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        method: "PUT",
+        body: JSON.stringify({ keys: ["METRICS_API_TOKEN", "DB_PASSWORD"] }),
+      },
+    );
+  });
+
+  it("getAppSecrets GETs /api/servers/:serverId/apps/:name/secrets and never needs a value in the response to work", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        secrets: [{ key: "METRICS_API_TOKEN", set: true, updatedAt: "2026-06-01T00:00:00.000Z" }],
+        requiredEnvKeys: ["METRICS_API_TOKEN"],
+      }),
+    );
+
+    const result = await api.getAppSecrets("srv-1", "my-app");
+
+    expect(fetchMock).toHaveBeenCalledWith(`${BASE}/api/servers/srv-1/apps/my-app/secrets`, {
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+    });
+    expect(result.secrets).toEqual([{ key: "METRICS_API_TOKEN", set: true, updatedAt: "2026-06-01T00:00:00.000Z" }]);
+    expect(result.requiredEnvKeys).toEqual(["METRICS_API_TOKEN"]);
+  });
+
   it("testServer POSTs /api/servers/:id/test with no body", async () => {
     await api.testServer("srv-1");
 

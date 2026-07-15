@@ -31,6 +31,10 @@ services:
       PORT: 3001
       SESSION_SECRET: ${SESSION_SECRET}
       PANEL_TOKEN: ${PANEL_TOKEN}
+      # Encrypts per-app secrets at rest (see docs/configuration.md#app-secrets).
+      # Required before any AppSecret is stored/read in production — the
+      # backend throws rather than silently falling back to a weak dev key.
+      APP_SECRETS_KEY: ${APP_SECRETS_KEY}
       CORS_ORIGINS: https://deploy-panel.opentriologue.ai
       FRONTEND_URL: https://deploy-panel.opentriologue.ai
       NODE_ENV: production

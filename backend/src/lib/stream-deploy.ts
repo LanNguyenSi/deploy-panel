@@ -1,6 +1,7 @@
 import { prisma } from "./prisma.js";
 import { recoverBrokenDeploy } from "./deploy-recovery.js";
 import { verifyDeployHealth } from "./post-deploy-gate.js";
+import { provisionAndCheckAppSecrets } from "./provision-secrets.js";
 
 type Step = { name: string; status: string; durationMs?: number; [k: string]: unknown };
 
@@ -91,9 +92,46 @@ export async function streamDeploy(opts: {
   body: { branch?: string; force?: boolean };
 }) {
   const { serverId, deployId, appId, appName, relayUrl, relayToken, body } = opts;
-  const steps: Array<{ name: string; status: string; durationMs: number }> = [];
+  const steps: Array<{ name: string; status: string; durationMs: number; output?: string }> = [];
 
   try {
+    // Provision panel-managed secrets into the relay's .env BEFORE compose
+    // runs, and check whether every app-declared required env key resolves.
+    // See lib/provision-secrets.ts — this is what makes a stored secret
+    // survive `git clean -fdx` on the VPS instead of depending on a
+    // hand-written, untracked .env. A relay round-trip failure here (relay
+    // unreachable, etc.) falls through to the existing catch block below,
+    // which already routes through recoverBrokenDeploy.
+    const appMeta = await prisma.app.findUnique({
+      where: { id: appId },
+      select: { requiredEnvKeys: true },
+    });
+    const requiredKeys = appMeta?.requiredEnvKeys ?? [];
+
+    const provision = await provisionAndCheckAppSecrets({ serverId, appId, appName, requiredKeys });
+    if (provision.provisionedKeys.length > 0) {
+      steps.push({
+        name: "provision-secrets",
+        status: "success",
+        durationMs: 0,
+        output: provision.wrote
+          ? `Provisioned ${provision.provisionedKeys.length} panel-managed secret(s): ${provision.provisionedKeys.join(", ")}`
+          : `${provision.provisionedKeys.length} panel-managed secret(s) already up to date`,
+      });
+    }
+
+    if (provision.missing.length > 0) {
+      const message = `Missing required env key(s): ${provision.missing.join(", ")}`;
+      steps.push({ name: "env-preflight", status: "failure", durationMs: 0, output: message });
+      console.log(`[stream-deploy] ${appName}: blocked before deploy — ${message}`);
+      await prisma.deploy.update({
+        where: { id: deployId },
+        data: { status: "failed", log: JSON.stringify(steps) },
+      });
+      await prisma.app.update({ where: { id: appId }, data: { status: "unhealthy" } });
+      return;
+    }
+
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (relayToken) headers["Authorization"] = `Bearer ${relayToken}`;
 
@@ -137,11 +175,15 @@ export async function streamDeploy(opts: {
         appId,
         serverId,
         appName,
+        // Prepend whatever ran before this fetch (e.g. the provision-secrets
+        // step) so the JSON-fallback path doesn't silently drop it — the SSE
+        // path already accumulates into `steps` via handleEvent, so this
+        // concat is a no-op there and only matters for the JSON fallback.
         relaySuccess: success,
         commitBefore: data?.result?.commitBefore ?? data?.deploy?.commitBefore ?? null,
         commitAfter: data?.result?.commitAfter ?? data?.deploy?.commitAfter ?? null,
         duration,
-        steps: jsonSteps,
+        steps: [...steps, ...jsonSteps],
       });
       return;
     }
