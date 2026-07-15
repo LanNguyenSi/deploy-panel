@@ -136,6 +136,7 @@ jobs:
           POSTGRES_PASSWORD=ci_postgres_password
           POSTGRES_DB=deploy_panel
           SESSION_SECRET=ci-session-secret-long-enough-to-pass-min-16
+          APP_SECRETS_KEY=ci-app-secrets-key-long-enough-to-pass-min-16
           NODE_ENV=production
           EOF
 

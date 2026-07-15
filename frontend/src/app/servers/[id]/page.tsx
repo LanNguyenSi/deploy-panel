@@ -12,10 +12,11 @@ import { useScheduleDialog } from "@/components/ScheduleDialog";
 import { requestPermission, notifyDeployResult } from "@/lib/notifications";
 import { isPinned, togglePin } from "@/lib/pinned";
 import EnvVarsPanel from "@/components/EnvVarsPanel";
+import AppSecretsPanel from "@/components/AppSecretsPanel";
 import { ServerReinstallDialog } from "@/components/ServerReinstallDialog";
 import { ServerUpdateImageDialog } from "@/components/ServerUpdateImageDialog";
 
-type Panel = { type: "logs" | "deploy" | "preflight" | "env"; app: string };
+type Panel = { type: "logs" | "deploy" | "preflight" | "env" | "secrets"; app: string };
 
 export default function ServerDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -439,6 +440,12 @@ export default function ServerDetailPage() {
                   >
                     Env
                   </button>
+                  <button
+                    onClick={() => setPanel(panel?.app === app.name && panel.type === "secrets" ? null : { type: "secrets", app: app.name })}
+                    className="btn btn-secondary btn-sm"
+                  >
+                    Secrets
+                  </button>
                 </div>
 
                 <div className="action-group-secondary">
@@ -480,6 +487,7 @@ export default function ServerDetailPage() {
                       {panel.type === "deploy" && "Deploy Progress"}
                       {panel.type === "preflight" && "Preflight Checks"}
                       {panel.type === "env" && "Environment Variables"}
+                      {panel.type === "secrets" && "Secrets"}
                     </span>
                     <button onClick={closePanel} className="btn btn-secondary btn-sm">Close</button>
                   </div>
@@ -487,6 +495,15 @@ export default function ServerDetailPage() {
                   {/* Env vars */}
                   {panel.type === "env" && (
                     <EnvVarsPanel
+                      serverId={id}
+                      appName={app.name}
+                      onError={(msg) => toast(msg, "error")}
+                    />
+                  )}
+
+                  {/* Secrets */}
+                  {panel.type === "secrets" && (
+                    <AppSecretsPanel
                       serverId={id}
                       appName={app.name}
                       onError={(msg) => toast(msg, "error")}

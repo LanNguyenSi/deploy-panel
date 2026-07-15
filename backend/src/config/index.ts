@@ -22,6 +22,14 @@ const configSchema = z.object({
   // Absolute URL at which the OAuth callback will receive GitHub's
   // redirect. Required when OAuth is configured.
   BACKEND_URL: z.string().url().default("http://localhost:3001"),
+  // Key material for encrypting per-app secrets at rest (see
+  // lib/secret-crypto.ts). Optional in development (falls back to an
+  // insecure fixed key with a console warning) so `make dev` keeps working
+  // out of the box; required in production — storing/decrypting an
+  // AppSecret without it throws rather than silently using a weak default.
+  // Deliberately independent from SESSION_SECRET so routine session-secret
+  // rotation doesn't brick every stored app secret.
+  APP_SECRETS_KEY: z.string().min(16).optional(),
 });
 
 const result = configSchema.safeParse(process.env);

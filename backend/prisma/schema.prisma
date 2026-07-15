@@ -83,12 +83,45 @@ model App {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
+  // Env keys the app declares as REQUIRED to run (e.g. METRICS_API_TOKEN).
+  // Preflight and the deploy flow both hard-fail when one of these resolves
+  // empty/unset in the compose env — see lib/required-env-gate.ts and
+  // lib/provision-secrets.ts. Empty array = nothing declared, gate is a no-op
+  // (back-compat default for every existing app).
+  requiredEnvKeys String[] @default([])
+
   server       Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
   deploys      Deploy[]
   envChanges   EnvVarChange[]
+  secrets      AppSecret[]
 
   @@unique([serverId, name])
   @@map("apps")
+}
+
+// ── App secrets ──────────────────────────────────────────────────────────────
+// Per-app key/value entries OWNED by the panel's own DB (unlike EnvVarChange
+// above, which only logs that the VPS-filesystem-resident .env changed). This
+// is the durable store for values the deploy flow provisions into the deploy
+// dir's .env before compose runs, so a secret survives `git clean -fdx` /
+// re-clone of the app's working tree on the VPS — it is re-written from here
+// on every deploy instead of living only in an untracked file.
+//
+// Values are encrypted at rest (see lib/secret-crypto.ts) and are write-only:
+// no API route ever returns valueCiphertext or a decrypted value; only the
+// key name + whether it's set is exposed (lib/app-secrets.ts).
+model AppSecret {
+  id              String   @id @default(uuid())
+  appId           String
+  key             String
+  valueCiphertext String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  app App @relation(fields: [appId], references: [id], onDelete: Cascade)
+
+  @@unique([appId, key])
+  @@map("app_secrets")
 }
 
 // ── Env-var change log ──────────────────────────────────────────────────────

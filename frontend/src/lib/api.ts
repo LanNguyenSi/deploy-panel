@@ -483,6 +483,60 @@ export async function getAppEnvHistory(
   return request(`/api/servers/${serverId}/apps/${name}/env/history`);
 }
 
+// ── App secrets ───────────────────────────────────────────────────────────
+//
+// Unlike the plain env-vars proxy above (source of truth = the VPS
+// filesystem), these are owned by the panel's own DB and re-applied into
+// the deploy dir's .env by the deploy flow on every deploy, so they survive
+// `git clean -fdx` / re-clone on the VPS. Write-only: a value is never
+// returned once set — only the key name and whether it's set.
+
+export interface MaskedSecret {
+  key: string;
+  set: true;
+  updatedAt: string;
+}
+
+export async function getAppSecrets(
+  serverId: string,
+  name: string,
+): Promise<{ secrets: MaskedSecret[]; requiredEnvKeys: string[] }> {
+  return request(`/api/servers/${serverId}/apps/${name}/secrets`);
+}
+
+export async function setAppSecret(
+  serverId: string,
+  name: string,
+  key: string,
+  value: string,
+): Promise<{ key: string; set: true }> {
+  return request(`/api/servers/${serverId}/apps/${name}/secrets/${encodeURIComponent(key)}`, {
+    method: "PUT",
+    body: JSON.stringify({ value }),
+  });
+}
+
+export async function deleteAppSecret(
+  serverId: string,
+  name: string,
+  key: string,
+): Promise<{ deleted: boolean }> {
+  return request(`/api/servers/${serverId}/apps/${name}/secrets/${encodeURIComponent(key)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function setRequiredEnvKeys(
+  serverId: string,
+  name: string,
+  keys: string[],
+): Promise<{ requiredEnvKeys: string[] }> {
+  return request(`/api/servers/${serverId}/apps/${name}/required-env-keys`, {
+    method: "PUT",
+    body: JSON.stringify({ keys }),
+  });
+}
+
 // ── Scheduled Deploys ─────────────────────────────────────────────────────
 
 export interface ScheduledDeployInfo {

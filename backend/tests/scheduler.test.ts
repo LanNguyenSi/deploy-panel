@@ -9,6 +9,7 @@ vi.mock("../src/lib/prisma.js", () => ({
     app: {
       upsert: vi.fn(),
       update: vi.fn(),
+      findUnique: vi.fn(),
     },
     deploy: {
       create: vi.fn(),
@@ -17,36 +18,12 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
-vi.mock("../src/lib/relay.js", () => ({
-  relayRequest: vi.fn(),
-  RelayError: class RelayError extends Error {
-    status: number;
-    constructor(message: string, status: number) {
-      super(message);
-      this.name = "RelayError";
-      this.status = status;
-    }
-  },
-}));
-
-vi.mock("../src/lib/deploy-recovery.js", () => ({
-  recoverBrokenDeploy: vi.fn(),
-}));
-
-vi.mock("../src/config/index.js", () => ({
-  config: {
-    NODE_ENV: "test",
-    PANEL_TOKEN: "panel-token-must-be-16chars",
-    SESSION_SECRET: "session-secret-must-be-16chars",
-    CORS_ORIGINS: "http://localhost:3000",
-    FRONTEND_URL: "http://localhost:3000",
-    PORT: 3001,
-  },
+vi.mock("../src/lib/stream-deploy.js", () => ({
+  streamDeploy: vi.fn(),
 }));
 
 import { prisma } from "../src/lib/prisma.js";
-import { relayRequest } from "../src/lib/relay.js";
-import { recoverBrokenDeploy } from "../src/lib/deploy-recovery.js";
+import { streamDeploy } from "../src/lib/stream-deploy.js";
 import { checkScheduled } from "../src/lib/scheduler.js";
 
 const mScheduledDeploy = prisma.scheduledDeploy as unknown as {
@@ -56,11 +33,13 @@ const mScheduledDeploy = prisma.scheduledDeploy as unknown as {
 const mApp = prisma.app as unknown as {
   upsert: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
+  findUnique: ReturnType<typeof vi.fn>;
 };
 const mDeploy = prisma.deploy as unknown as {
   create: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
 };
+const mStreamDeploy = streamDeploy as unknown as ReturnType<typeof vi.fn>;
 
 // A due entry with all required fields for the scheduler
 const makeDueEntry = (overrides: Partial<Record<string, unknown>> = {}) => ({
@@ -113,25 +92,37 @@ describe("checkScheduled — empty due list", () => {
     vi.clearAllMocks();
   });
 
-  it("no deploy.create or scheduledDeploy.update called when nothing is due", async () => {
+  it("no deploy.create or streamDeploy called when nothing is due", async () => {
     mScheduledDeploy.findMany.mockResolvedValue([]);
 
     await checkScheduled();
 
     expect(mDeploy.create).not.toHaveBeenCalled();
     expect(mScheduledDeploy.update).not.toHaveBeenCalled();
-    expect(relayRequest).not.toHaveBeenCalled();
+    expect(mStreamDeploy).not.toHaveBeenCalled();
   });
 });
 
-// ── Happy path ────────────────────────────────────────────────────────────────
+// ── Delegation to streamDeploy (the HIGH-2 fix) ────────────────────────────────
+//
+// A scheduled deploy must go through the exact same streamDeploy() every
+// other trigger uses — that is what makes the pre-deploy secret
+// provisioning and required-env hard-fail gate apply to scheduled deploys
+// too. Before this fix, checkScheduled() called relayRequest directly and
+// skipped both, reproducing the METRICS_API_TOKEN incident for the
+// scheduled-deploy trigger specifically. The gate's own pass/fail behavior
+// is unit-tested against the real streamDeploy() in
+// stream-deploy-gate.test.ts; this file additionally proves checkScheduled()
+// actually delegates to it (not a second, divergent implementation) and
+// exercises the REAL streamDeploy() end-to-end via checkScheduled() for the
+// two gate outcomes below.
 
-describe("checkScheduled — happy path: one due entry", () => {
+describe("checkScheduled — delegates to streamDeploy", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("transitions to triggered, creates deploy, links deployId, and fires relay", async () => {
+  it("transitions to triggered, creates the deploy row, links deployId, and calls streamDeploy with the server's relay creds", async () => {
     const app = { id: "app-1", name: "my-app" };
     const deploy = { id: "deploy-1" };
 
@@ -140,18 +131,8 @@ describe("checkScheduled — happy path: one due entry", () => {
     mApp.upsert.mockResolvedValue(app);
     mApp.update.mockResolvedValue({});
     mDeploy.create.mockResolvedValue(deploy);
-    mDeploy.update.mockResolvedValue({});
-    vi.mocked(relayRequest).mockResolvedValue({
-      success: true,
-      commitBefore: "abc",
-      commitAfter: "def",
-      durationMs: 100,
-      steps: [],
-    });
 
     await checkScheduled();
-
-    // --- Synchronously observable outcomes (before the IIFE flush) ---
 
     // First scheduledDeploy.update: transition to "triggered"
     const firstUpdate = mScheduledDeploy.update.mock.calls[0][0];
@@ -171,52 +152,55 @@ describe("checkScheduled — happy path: one due entry", () => {
     expect(secondUpdate.where.id).toBe("sched-1");
     expect(secondUpdate.data.deployId).toBe("deploy-1");
 
-    // --- Flush the fire-and-forget IIFE ---
-    await new Promise((r) => setTimeout(r, 0));
+    // app flipped to "deploying" before the (fire-and-forget) streamDeploy call
+    expect(mApp.update).toHaveBeenCalledWith({ where: { id: "app-1" }, data: { status: "deploying" } });
 
-    // relayRequest called with the correct deploy path
-    expect(relayRequest).toHaveBeenCalledOnce();
-    const relayArg = vi.mocked(relayRequest).mock.calls[0][0];
-    expect(relayArg.path).toBe("/api/apps/my-app/deploy");
-    expect(relayArg.serverId).toBe("srv-a");
-    expect(relayArg.method).toBe("POST");
-
-    // After relay succeeds: deploy.update marks success
-    expect(mDeploy.update).toHaveBeenCalled();
-    const deployUpdateData = mDeploy.update.mock.calls[0][0].data;
-    expect(deployUpdateData.status).toBe("success");
-  });
-});
-
-// ── Relay failure ─────────────────────────────────────────────────────────────
-
-describe("checkScheduled — relay failure", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+    // streamDeploy called with the exact shape it needs — a swapped field
+    // here would silently break provisioning/gating or point at the wrong
+    // relay for this app.
+    expect(mStreamDeploy).toHaveBeenCalledOnce();
+    expect(mStreamDeploy).toHaveBeenCalledWith({
+      serverId: "srv-a",
+      deployId: "deploy-1",
+      appId: "app-1",
+      appName: "my-app",
+      relayUrl: "http://relay.example",
+      relayToken: "relay-tok",
+      body: { force: false },
+    });
   });
 
-  it("invokes recoverBrokenDeploy when relayRequest rejects", async () => {
-    const app = { id: "app-1", name: "my-app" };
-    const deploy = { id: "deploy-1" };
-
-    mScheduledDeploy.findMany.mockResolvedValue([makeDueEntry()]);
+  it("passes an empty relayUrl and null relayToken when the server has none configured", async () => {
+    mScheduledDeploy.findMany.mockResolvedValue([
+      makeDueEntry({ server: { id: "srv-a", name: "my-server", relayUrl: null, relayToken: null } }),
+    ]);
     mScheduledDeploy.update.mockResolvedValue({});
-    mApp.upsert.mockResolvedValue(app);
+    mApp.upsert.mockResolvedValue({ id: "app-1", name: "my-app" });
     mApp.update.mockResolvedValue({});
-    mDeploy.create.mockResolvedValue(deploy);
-    vi.mocked(relayRequest).mockRejectedValue(new Error("Connection refused"));
+    mDeploy.create.mockResolvedValue({ id: "deploy-1" });
 
     await checkScheduled();
 
-    // Flush the fire-and-forget IIFE so the catch block runs
-    await new Promise((r) => setTimeout(r, 0));
+    expect(mStreamDeploy).toHaveBeenCalledWith(
+      expect.objectContaining({ relayUrl: "", relayToken: null }),
+    );
+  });
 
-    expect(recoverBrokenDeploy).toHaveBeenCalledOnce();
-    const recoveryArgs = vi.mocked(recoverBrokenDeploy).mock.calls[0];
-    // recoverBrokenDeploy(deployId, appId, serverId, appName, errMsg)
-    expect(recoveryArgs[0]).toBe("deploy-1"); // deployId
-    expect(recoveryArgs[1]).toBe("app-1");    // appId
-    expect(recoveryArgs[2]).toBe("srv-a");    // serverId
-    expect(recoveryArgs[3]).toBe("my-app");   // appName
+  it("forwards the scheduled entry's force flag into streamDeploy's body", async () => {
+    mScheduledDeploy.findMany.mockResolvedValue([makeDueEntry({ force: true })]);
+    mScheduledDeploy.update.mockResolvedValue({});
+    mApp.upsert.mockResolvedValue({ id: "app-1", name: "my-app" });
+    mApp.update.mockResolvedValue({});
+    mDeploy.create.mockResolvedValue({ id: "deploy-1" });
+
+    await checkScheduled();
+
+    expect(mStreamDeploy).toHaveBeenCalledWith(expect.objectContaining({ body: { force: true } }));
   });
 });
+
+// The gate's own pass/fail behavior against a REAL (unmocked) streamDeploy,
+// invoked through the real checkScheduled(), lives in
+// scheduler-required-env-gate.test.ts — kept in a separate file because it
+// needs stream-deploy.js NOT mocked, which doesn't mix well with this
+// file's blanket `vi.mock("../src/lib/stream-deploy.js", ...)` above.

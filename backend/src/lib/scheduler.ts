@@ -1,6 +1,5 @@
 import { prisma } from "./prisma.js";
-import { relayRequest } from "./relay.js";
-import { recoverBrokenDeploy } from "./deploy-recovery.js";
+import { streamDeploy } from "./stream-deploy.js";
 
 const CHECK_INTERVAL = 60_000; // 1 minute
 
@@ -56,39 +55,24 @@ export async function checkScheduled() {
 
     await prisma.app.update({ where: { id: app.id }, data: { status: "deploying" } });
 
-    // Fire and forget
-    const deployId = deploy.id;
-    (async () => {
-      try {
-        const response = await relayRequest<any>({
-          serverId: entry.serverId,
-          path: `/api/apps/${entry.appName}/deploy`,
-          method: "POST",
-          body: { force: entry.force },
-        });
-
-        const result: any = response.result ?? response;
-        const success = result.success ?? false;
-
-        await prisma.deploy.update({
-          where: { id: deployId },
-          data: {
-            status: success ? "success" : "failed",
-            commitBefore: result.commitBefore,
-            commitAfter: result.commitAfter,
-            duration: result.durationMs,
-            log: JSON.stringify(result.steps ?? []),
-          },
-        });
-
-        await prisma.app.update({
-          where: { id: app.id },
-          data: { status: success ? "healthy" : "unhealthy", lastDeployAt: new Date() },
-        });
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        recoverBrokenDeploy(deployId, app.id, entry.serverId, entry.appName, errMsg);
-      }
-    })();
+    // Fire and forget — route through the SAME streamDeploy() every other
+    // deploy trigger uses (panel button, bulk-deploy, v1 API), instead of a
+    // second, divergent relayRequest call. Calling the relay directly here
+    // used to skip BOTH the pre-deploy secret provisioning and the
+    // required-env hard-fail gate (lib/provision-secrets.ts), reproducing
+    // the exact METRICS_API_TOKEN incident for scheduled deploys: a
+    // scheduled deploy would happily hit the relay even with a required key
+    // missing. streamDeploy also already handles the SSE/JSON-fallback
+    // relay response shapes and connection-lost recovery, so this removes a
+    // second implementation of that instead of just adding the gate to it.
+    streamDeploy({
+      serverId: entry.serverId,
+      deployId: deploy.id,
+      appId: app.id,
+      appName: entry.appName,
+      relayUrl: entry.server.relayUrl ?? "",
+      relayToken: entry.server.relayToken ?? null,
+      body: { force: entry.force },
+    });
   }
 }

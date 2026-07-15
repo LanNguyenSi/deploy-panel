@@ -32,6 +32,16 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-deploy_panel}:${POSTGRES_PASSWORD:-deploy_panel}@db:5432/${POSTGRES_DB:-deploy_panel}
       PORT: 3001
       SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production-min-16-chars}
+      # Deliberately NO fallback default (unlike SESSION_SECRET above): a
+      # committed placeholder here would mean every fresh clone that never
+      # sets APP_SECRETS_KEY encrypts app secrets at rest with a key anyone
+      # can read in this repo's history. With no default, an unset host var
+      # substitutes to "" (Compose has no way to omit a listed `environment:`
+      # key), which fails zod's min(16) check at backend startup and refuses
+      # to boot — fail closed. Generate one with `openssl rand -hex 32` and
+      # set it in .env before running `docker compose up` (see .env.example
+      # / docs/configuration.md#app-secrets).
+      APP_SECRETS_KEY: ${APP_SECRETS_KEY}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
       NODE_ENV: ${NODE_ENV:-production}

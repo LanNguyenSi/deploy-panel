@@ -7,6 +7,8 @@ import { audit, getActor, getActorUserId } from "../lib/audit.js";
 import { recoverBrokenDeploy } from "../lib/deploy-recovery.js";
 import { findOwnedServer, getActorContext } from "../lib/ownership.js";
 import { isPrivateOrLoopbackHost } from "../services/probe-guard.js";
+import { listMaskedAppSecrets, setAppSecret, deleteAppSecret } from "../lib/app-secrets.js";
+import { evaluateRequiredEnv } from "../lib/required-env-gate.js";
 
 export const appsRouter = new Hono();
 
@@ -302,16 +304,45 @@ appsRouter.get("/:name/logs", async (c) => {
 });
 
 // GET /api/servers/:serverId/apps/:name/preflight — run preflight checks
+//
+// Merges in a panel-side "required-env" check on top of whatever the relay
+// reports: an app that declares requiredEnvKeys (see PUT .../required-env-keys)
+// hard-fails preflight (passed: false, not just an informational note) when
+// one of those keys would still resolve empty/unset — accounting for both
+// the relay's current .env AND any panel-managed secret that deploy-time
+// provisioning would apply (lib/required-env-gate.ts). No requiredEnvKeys
+// declared = this check is skipped entirely (back-compat no-op).
 appsRouter.get("/:name/preflight", async (c) => {
   const serverId = getServerId(c);
   const name = c.req.param("name");
   if (!APP_NAME_PATTERN.test(name)) return c.json({ error: "invalid_app_name" }, 400);
 
   try {
-    const result = await relayRequest({
+    const result = await relayRequest<{ passed?: boolean; checks?: Array<{ name: string; passed: boolean; message: string }> }>({
       serverId,
       path: `/api/apps/${name}/preflight`,
     });
+
+    const app = await prisma.app.findUnique({
+      where: { serverId_name: { serverId, name } },
+      select: { id: true, requiredEnvKeys: true },
+    });
+    if (app && app.requiredEnvKeys.length > 0) {
+      const envCheck = await evaluateRequiredEnv({
+        serverId,
+        appId: app.id,
+        appName: name,
+        requiredKeys: app.requiredEnvKeys,
+      });
+      if (envCheck.check) {
+        return c.json({
+          ...result,
+          passed: (result.passed ?? true) && envCheck.check.passed,
+          checks: [...(result.checks ?? []), envCheck.check],
+        });
+      }
+    }
+
     return c.json(result);
   } catch (err) {
     if (err instanceof RelayError) return c.json({ error: err.message }, err.status as any);
@@ -595,6 +626,127 @@ appsRouter.get("/:name/env/history", async (c) => {
     take: 100,
   });
   return c.json({ changes });
+});
+
+// ── App secrets ──────────────────────────────────────────────────────────────
+//
+// Unlike the env-vars proxy above (source of truth = the VPS filesystem,
+// wiped by `git clean -fdx`), secrets here are owned by the panel's own DB
+// and re-applied into the relay's .env by the deploy flow on every deploy
+// (see lib/provision-secrets.ts). Write-only: GET never returns a value,
+// only the key name + whether it's set — see lib/app-secrets.ts.
+
+const SECRET_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SECRET_MAX_KEY = 128;
+const SECRET_MAX_VALUE = 32_768;
+// Defense-in-depth against .env corruption: a secret value is written
+// verbatim into a `KEY=value` line by the relay (see lib/provision-secrets.ts).
+// A NUL byte, newline, or CR in the value would either truncate the write or
+// let it smuggle in a second "line" (a second KEY=value pair, or corrupt the
+// line after it) once merged into the .env file. Reject the whole C0
+// control range (\x00-\x1F) plus DEL (\x7F); ordinary secrets never
+// legitimately contain any of these.
+const CONTROL_CHAR_PATTERN = /[\x00-\x1F\x7F]/;
+
+// GET /api/servers/:serverId/apps/:name/secrets
+appsRouter.get("/:name/secrets", async (c) => {
+  const serverId = getServerId(c);
+  const name = c.req.param("name");
+  if (!APP_NAME_PATTERN.test(name)) return c.json({ error: "invalid_app_name" }, 400);
+
+  const app = await prisma.app.findUnique({ where: { serverId_name: { serverId, name } } });
+  if (!app) return c.json({ secrets: [], requiredEnvKeys: [] });
+
+  const secrets = await listMaskedAppSecrets(app.id);
+  return c.json({ secrets, requiredEnvKeys: app.requiredEnvKeys });
+});
+
+// PUT /api/servers/:serverId/apps/:name/secrets/:key — set (create or update) one secret.
+// Body: { value: string }. Response never echoes the value back.
+appsRouter.put("/:name/secrets/:key", async (c) => {
+  const serverId = getServerId(c);
+  const name = c.req.param("name");
+  const key = c.req.param("key");
+  if (!APP_NAME_PATTERN.test(name)) return c.json({ error: "invalid_app_name" }, 400);
+  if (!SECRET_KEY_PATTERN.test(key) || key.length > SECRET_MAX_KEY) {
+    return c.json({ error: "bad_request", message: `Key must match ^[A-Za-z_][A-Za-z0-9_]*$ and be <= ${SECRET_MAX_KEY} chars` }, 400);
+  }
+
+  const body = await c.req.json().catch(() => null);
+  const value = body && typeof body.value === "string" ? body.value : null;
+  if (!value) {
+    return c.json({ error: "bad_request", message: "value is required and must be a non-empty string" }, 400);
+  }
+  if (value.length > SECRET_MAX_VALUE) {
+    return c.json({ error: "bad_request", message: `value exceeds ${SECRET_MAX_VALUE} chars` }, 400);
+  }
+  if (CONTROL_CHAR_PATTERN.test(value)) {
+    return c.json({ error: "bad_request", message: "value must not contain control characters (newline, NUL, etc.)" }, 400);
+  }
+
+  const app = await findOrCreateApp(serverId, name);
+  await setAppSecret(app.id, key, value);
+  // Audit the key name only — never the value.
+  await audit("app.secret.set", `${name} on server ${serverId}`, `key: ${key}`, getActor(c), getActorUserId(c));
+
+  return c.json({ key, set: true });
+});
+
+// DELETE /api/servers/:serverId/apps/:name/secrets/:key
+appsRouter.delete("/:name/secrets/:key", async (c) => {
+  const serverId = getServerId(c);
+  const name = c.req.param("name");
+  const key = c.req.param("key");
+  if (!APP_NAME_PATTERN.test(name)) return c.json({ error: "invalid_app_name" }, 400);
+
+  const app = await prisma.app.findUnique({ where: { serverId_name: { serverId, name } } });
+  if (!app) return c.json({ error: "not_found" }, 404);
+
+  const removed = await deleteAppSecret(app.id, key);
+  if (removed) {
+    await audit("app.secret.delete", `${name} on server ${serverId}`, `key: ${key}`, getActor(c), getActorUserId(c));
+  }
+  return c.json({ deleted: removed });
+});
+
+// PUT /api/servers/:serverId/apps/:name/required-env-keys
+//
+// Declares which env keys this app requires to run. Body: { keys: string[] }
+// (complete desired set, same replace-all convention as PUT .../env). Drives
+// the hard-fail gate in GET .../preflight and in the deploy flow itself
+// (lib/required-env-gate.ts, lib/provision-secrets.ts).
+appsRouter.put("/:name/required-env-keys", async (c) => {
+  const serverId = getServerId(c);
+  const name = c.req.param("name");
+  if (!APP_NAME_PATTERN.test(name)) return c.json({ error: "invalid_app_name" }, 400);
+
+  const body = await c.req.json().catch(() => null);
+  if (!body || !Array.isArray(body.keys)) {
+    return c.json({ error: "bad_request", message: "Body must be { keys: string[] }" }, 400);
+  }
+
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  for (const k of body.keys) {
+    if (typeof k !== "string" || !SECRET_KEY_PATTERN.test(k) || k.length > SECRET_MAX_KEY) {
+      return c.json({ error: "bad_request", message: `Invalid key: ${String(k)}` }, 400);
+    }
+    if (seen.has(k)) continue;
+    seen.add(k);
+    keys.push(k);
+  }
+
+  const app = await findOrCreateApp(serverId, name);
+  const updated = await prisma.app.update({ where: { id: app.id }, data: { requiredEnvKeys: keys } });
+  await audit(
+    "app.required_env_keys.updated",
+    `${name} on server ${serverId}`,
+    keys.length > 0 ? keys.join(", ") : "(none)",
+    getActor(c),
+    getActorUserId(c),
+  );
+
+  return c.json({ requiredEnvKeys: updated.requiredEnvKeys });
 });
 
 async function findOrCreateApp(serverId: string, name: string) {
