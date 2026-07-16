@@ -16,7 +16,7 @@ sources:
 The authoritative references are [../configuration.md](../configuration.md)
 ("App secrets" section) for the feature's behavior (write-only storage,
 required-env hard-fail gate, the rollback exemption) and
-[../api.md](../api.md) for the routes. Both are current against master and
+[../api.md](../api.md) for the routes. Both are current against main and
 deliberately not restated here.
 
 What neither doc states, because it's an implementation detail rather than

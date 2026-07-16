@@ -1,7 +1,7 @@
 ---
 type: module
 title: VPS onboarding and relay provisioning — TOFU-then-pin, SSRF-guarded, concurrency-locked
-description: probeVps captures a SHA-256 host-key fingerprint on first contact and install/re-install pin against it (mismatch = host_key_rejected); non-admin probe/install requests get an SSRF guard plus a 5-req/60s rate limit while admins may target arbitrary hosts; persisted install metadata on Server drives re-install/update-image so they don't clobber hand-customized setups, guarded by per-server/per-actor concurrency locks.
+description: probeVps captures a SHA-256 host-key fingerprint on first contact and install/re-install pin against it (mismatch = host_key_rejected); non-admin probe requests get a 5-req/60s rate limit and both probe and install apply an SSRF guard, while admins may target arbitrary hosts; persisted install metadata on Server drives re-install/update-image so they don't clobber hand-customized setups, guarded by per-server/per-actor concurrency locks.
 tags: [ssh, onboarding, relay, security, module]
 timestamp: 2026-07-16T05:46:15Z
 sources:
@@ -37,7 +37,7 @@ Both `POST /api/servers/probe-vps` and `POST /api/servers/install-relay` apply t
 
 ## Per-server / per-actor concurrency locks
 
-`active-installs.ts`'s `activeInstalls` Set (a single in-memory registry, same single-instance caveat as the rate limiter) is keyed by operation-and-target strings: `reinstall:<serverId>`, `update-image:<serverId>`, plus per-actor keys. `isServerMutating` (active-installs.ts:24-29) checks only the per-server keys — re-install and update-image both mutate the same relay container, so an in-flight one of either blocks the other on the SAME server (routes/servers.ts:715-733, the "Two locks" comment), while re-installs of two DIFFERENT servers proceed in parallel. The per-actor key additionally rate-limits one actor to one in-flight install/re-install at a time regardless of target server (routes/servers.ts:514-521).
+`active-installs.ts`'s `activeInstalls` Set (a single in-memory registry, same single-instance caveat as the rate limiter) is keyed by operation-and-target strings: `reinstall:<serverId>`, `update-image:<serverId>`, plus per-actor keys. `isServerMutating` (active-installs.ts:24-29) checks only the per-server keys — re-install and update-image both mutate the same relay container, so an in-flight one of either blocks the other on the SAME server (routes/servers.ts:715-733, the "Two locks" comment), while re-installs of two DIFFERENT servers proceed in parallel. The per-actor keys additionally limit one actor to one in-flight first-install (bare actor key, routes/servers.ts:514-521) and, separately, one in-flight re-install (`reinstall-actor:<actor>` key, routes/servers.ts:726,733-740) regardless of target server — install and re-install do not share a lock.
 
 ## What breaks it
 

@@ -14,9 +14,9 @@ sources:
   - docs/configuration.md
 ---
 
-## The invariant
+## One middleware, one actor context
 
-One middleware, `requireAuth` (`backend/src/middleware/auth.ts:33-104`), resolves every one of the THREE credential shapes deploy-panel accepts into exactly two Hono context values, `isAdmin` and `userId`, and every ownership-aware route reads only those two values (`getActorContext`, `backend/src/lib/ownership.ts:29-36`) — never the raw credential. The three shapes:
+One middleware, `requireAuth` (`backend/src/middleware/auth.ts:33-104`), resolves every one of the THREE credential shapes deploy-panel accepts into the ownership actor context `isAdmin` and `userId` (it also sets `authType` and `apiKeyName`; the `requirePanelAuth` gate below reads `authType`), and every ownership-aware route reads only `isAdmin` and `userId` (`getActorContext`, `backend/src/lib/ownership.ts:29-36`) — never the raw credential. The three shapes:
 
 1. **`dp_`-prefixed API key** (Bearer). Hashed and looked up in `ApiKey` (auth.ts:51-68). If the row has a `userId` FK, the actor is non-admin and scoped to that user (`isAdmin: false`, `userId` set). If `userId` is null — a legacy admin-created key — the actor is admin (`isAdmin: true`, no `userId`).
 2. **`PANEL_TOKEN` bearer** (auth.ts:71-76) or the legacy `panel_session` cookie carrying the raw token (auth.ts:79-88). Both set `isAdmin: true` with no `userId`.

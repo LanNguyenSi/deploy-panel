@@ -1,7 +1,7 @@
 ---
 type: invariant
 title: Deploy-outcome trust chain — the relay's "success" is never taken at face value
-description: finalizeDeploy is the single choke point for all three relay outcome shapes (SSE done, JSON fallback, stream-ended-without-done); every relay-reported success runs verifyDeployHealth and can be downgraded to failed, while connection-lost and startup recovery use the gate's stricter fail-closed mode — the mechanism behind the self-deploy-502-but-succeeds quirk.
+description: finalizeDeploy is the single choke point for all three relay outcome shapes (SSE done, JSON fallback, stream-ended-without-done); every relay-reported success runs verifyDeployHealth and can be downgraded to failed, while connection-lost recovery uses the gate's stricter fail-closed mode and startup recovery applies the same fail-closed posture via a relay preflight — the mechanism behind the self-deploy-502-but-succeeds quirk.
 tags: [deploy, health-gate, recovery, invariant]
 timestamp: 2026-07-16T05:46:15Z
 sources:
@@ -12,7 +12,7 @@ sources:
   - backend/src/lib/scheduler.ts
 ---
 
-## The invariant
+## Relay success is a claim, not a verdict
 
 No deploy is written to the database as `status: "success"` on the relay's word alone. `finalizeDeploy` (`backend/src/lib/stream-deploy.ts:32-79`) is the single choke point every relay-reported outcome funnels through, and it re-verifies before trusting a reported success.
 
@@ -29,7 +29,7 @@ Whenever any of these three report `relaySuccess: true`, `finalizeDeploy` runs `
 `verifyDeployHealth` takes a `requireHealthyEvidence` flag (post-deploy-gate.ts:100-113) that inverts its default posture:
 
 - **Default / optimistic (`false`)**, used by `finalizeDeploy` on the relay-success path: the absence of a bad signal is enough — an unreachable relay or an empty `docker compose ps` does not, by itself, fail the gate, because a real success signal already exists.
-- **Strict / fail-closed (`true`)**, used by the two recovery paths below: there is NO success signal to trust, so only a POSITIVE confirmation (≥1 running service, none unhealthy, and the route if set) counts; an unreachable relay or nothing running keeps the deploy `failed`.
+- **Strict / fail-closed (`true`)**, used by connection-lost recovery below (startup recovery shares the posture via a lighter relay preflight, not this gate): there is NO success signal to trust, so only a POSITIVE confirmation (≥1 running service, none unhealthy, and the route if set) counts; an unreachable relay or nothing running keeps the deploy `failed`.
 
 **Connection-lost recovery** (`backend/src/lib/deploy-recovery.ts`, `recoverBrokenDeploy`) is invoked from `streamDeploy`'s catch block (stream-deploy.ts:231-235) whenever the relay fetch/stream throws. It runs `verifyDeployHealth` with `requireHealthyEvidence: true` over a longer window than the post-success gate (5 polls × 12s vs. the gate's 4 × 5s default, deploy-recovery.ts:4-9) — containers are typically mid-recreate when a stream drops, so it deliberately waits longer before deciding.
 
@@ -47,5 +47,5 @@ Deploying deploy-panel's own backend kills the backend process mid-HTTP-response
 
 - Writing `deploy.status = "success"` anywhere outside `finalizeDeploy` on a relay-reported success — that bypasses `verifyDeployHealth` entirely and reopens the exact crashloop-as-healthy hole the gate exists to close.
 - Adding a fourth relay-response shape (e.g. a new streaming protocol) that doesn't funnel through `finalizeDeploy` — it would silently skip the health gate for that shape alone.
-- Flipping `requireHealthyEvidence` between the two recovery paths and the post-success path, or defaulting it to `true` for the post-success path — the optimistic default there is what keeps a transient relay blip after a genuinely successful deploy from turning it red.
+- Flipping `requireHealthyEvidence` between the connection-lost recovery path and the post-success path, or defaulting it to `true` for the post-success path — the optimistic default there is what keeps a transient relay blip after a genuinely successful deploy from turning it red.
 - Calling the relay directly for any new deploy trigger (a second scheduler-style call site) instead of `streamDeploy` — that was the exact scheduler bug scheduler.ts:58-67 documents, and it silently drops secret provisioning + the required-env gate, not just the health gate.

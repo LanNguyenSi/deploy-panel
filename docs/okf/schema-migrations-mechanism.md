@@ -17,7 +17,7 @@ The authoritative reference is
 [`backend/prisma/migrations/README.md`](../../backend/prisma/migrations/README.md):
 `migration.sql` files under this directory are schema-history documentation
 only. Nothing in this repo's actual deploy or dev path reads or applies
-them — it is current against master and deliberately not restated here.
+them — it is current against main and deliberately not restated here.
 
 The two call sites that actually mutate a live database schema, both running
 `prisma db push` against `prisma/schema.prisma` directly:
