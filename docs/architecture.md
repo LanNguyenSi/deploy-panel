@@ -38,7 +38,7 @@ Each `Server` row stores a `relayUrl` (e.g. `http://vps-ip:3002`) and an optiona
 2. Forwards the request to the agent-relay HTTP API (e.g. `POST /api/apps/:name/deploy`, `POST /api/apps/:name/rollback`, `GET /api/apps/:name/logs`, `GET /api/apps/:name/preflight`).
 3. Records the result in the `deploys` table and updates the app status.
 
-Relay calls use per-operation timeouts: 5 seconds for connectivity and system-info checks, 5 minutes for standard relay operations (rollback, logs, preflight), and 10 minutes for streaming deploys. If the relay is unreachable or returns an error, the deploy is marked as failed and the failure is visible in deploy history.
+Relay calls use per-operation timeouts: 5 seconds for connectivity and system-info checks, 5 minutes for standard relay operations (rollback, logs, preflight), and 10 minutes for streaming deploys. If the relay is unreachable or returns an error, the deploy is marked as failed unless the post-deploy health gate positively confirms the app is healthy (connection-loss recovery) — see `docs/okf/deploy-outcome-trust-chain.md` for the full mechanism — and the outcome is visible in deploy history either way.
 
 ## Data model
 
