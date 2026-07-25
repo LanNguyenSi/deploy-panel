@@ -2,6 +2,21 @@ import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
+// Node >=22.4 (unflagged on Node 26) ships a native global `localStorage`
+// accessor that is non-functional without `--localstorage-file`. vitest's
+// jsdom environment only replaces a host global when it is missing or on the
+// DOM-class allowlist, and `localStorage` is neither (vitest-dev/vitest#8757),
+// so `window.localStorage.*` throws "Cannot read properties of undefined" in
+// jsdom tests. Disabling the experimental implementation hands the global back
+// to jsdom. The capability guard is load-bearing: Node 20 aborts with
+// `bad option` on an unknown flag, and a future flag rename degrades to a
+// no-op instead of breaking the suite.
+const execArgv = process.allowedNodeEnvironmentFlags.has(
+  "--no-experimental-webstorage",
+)
+  ? ["--no-experimental-webstorage"]
+  : [];
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -13,6 +28,7 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
+    execArgv,
     setupFiles: ["./vitest.setup.ts"],
     coverage: {
       provider: "v8",
