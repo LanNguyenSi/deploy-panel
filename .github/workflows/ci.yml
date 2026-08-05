@@ -79,12 +79,20 @@ jobs:
     # delete) funnels through — a broken gate would let a cancelled action
     # run anyway. Frontend is a root workspace, so root `npm ci` installs
     # it; no separate lockfile/cache-path needed (unlike the mcp package).
+    #
+    # Node 22 is the CI pin and reference; Node 26 exists so the webstorage
+    # execArgv guard in frontend/vitest.config.ts stays falsifiable
+    # (localStorage is a broken global there, so deleting the guard turns
+    # only that leg red).
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [22, 26]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
       - run: npm run test --workspace=frontend
