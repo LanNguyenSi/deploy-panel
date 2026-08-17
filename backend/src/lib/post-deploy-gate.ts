@@ -33,6 +33,15 @@ import { isPrivateOrLoopbackHost } from "../services/probe-guard.js";
  * right after `up` gets time to settle — a genuinely crashlooping service
  * stays bad for the whole window and fails the gate; a healthy deploy
  * passes on the first poll, so the happy path keeps its current latency.
+ *
+ * A service with `health = "starting"` (Docker's healthcheck warmup state,
+ * which can last 90s+ on default timing) is neither offender nor evidence:
+ * it is NOT flagged by `assessContainers` (a starting container isn't bad),
+ * but it also does NOT count as clean in the optimistic branch below — the
+ * gate keeps polling while anything is still "starting", within a bounded
+ * extension of the base window (`pendingExtraAttempts`), rather than either
+ * passing instantly (the pre-fix bug: a container that starts and then goes
+ * unhealthy was invisible) or waiting unboundedly.
  */
 
 /** One service row parsed from `docker compose ps --format json`. */
@@ -92,6 +101,23 @@ export interface VerifyDeployHealthOptions {
   attempts?: number;
   /** Delay between polls in ms. Default 5000 (≈15s window over 4 attempts). */
   intervalMs?: number;
+  /**
+   * Extra polls granted, ONCE, when the base `attempts` window ends with
+   * every problem container merely `health = "starting"` (no offender ever
+   * observed) — i.e. there is nothing bad, just nothing confirmed yet.
+   * Default 9, i.e. up to ~45s more at the default 5s interval (~60s
+   * combined window), which covers Docker's default healthcheck warmup
+   * (observed: first consumer healthcheck resolves ~5s, refusal ~21s, hung
+   * ~41s — all past the base ~15s window).
+   *
+   * Only applies in optimistic mode (`requireHealthyEvidence` false/unset).
+   * If the extension ALSO elapses with everything still "starting" and no
+   * offender ever seen, the optimistic guarantee still holds: the gate
+   * returns healthy, but with a `notes` entry naming the still-starting
+   * service(s) so a permanently-warming container is never silently
+   * swallowed — see `verifyDeployHealth`.
+   */
+  pendingExtraAttempts?: number;
   /** Per-probe HTTP timeout in ms. Default 10000. */
   routeTimeoutMs?: number;
   /** DNS resolver for the SSRF guard. Injectable for tests; defaults to real DNS. */
@@ -199,6 +225,17 @@ export function assessContainers(entries: ComposePsEntry[]): ContainerOffender[]
     }
   }
   return offenders;
+}
+
+/**
+ * Services whose Docker healthcheck has not resolved yet
+ * (`health === "starting"`). These are NOT offenders (a container that just
+ * started legitimately reports this for a while) but they are also not
+ * positive evidence of health — the caller treats them as "not yet decided"
+ * rather than either "bad" or "clean".
+ */
+export function pendingContainers(entries: ComposePsEntry[]): ComposePsEntry[] {
+  return entries.filter((e) => e.health === "starting");
 }
 
 /**
@@ -335,6 +372,7 @@ export async function probeRoute(
  */
 export async function verifyDeployHealth(opts: VerifyDeployHealthOptions): Promise<DeployHealthVerdict> {
   const attempts = Math.max(1, opts.attempts ?? 4);
+  const pendingExtraAttempts = Math.max(0, opts.pendingExtraAttempts ?? 9);
   const intervalMs = opts.intervalMs ?? 5_000;
   const relayReq = opts.relayRequestImpl ?? relayRequest;
   const sleep = opts.sleepImpl ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
@@ -343,14 +381,22 @@ export async function verifyDeployHealth(opts: VerifyDeployHealthOptions): Promi
 
   let lastReason: string | undefined;
   let lastNotes: string[] = [];
+  // Bounded, one-shot extension of the poll window (optimistic mode only —
+  // see `pendingExtraAttempts` doc comment). `extended` guards against
+  // granting it more than once.
+  let effectiveAttempts = attempts;
+  let extended = false;
+  let lastPendingOnly = false;
+  let lastPendingServices: ComposePsEntry[] = [];
 
-  for (let attempt = 0; attempt < attempts; attempt++) {
+  for (let attempt = 0; attempt < effectiveAttempts; attempt++) {
     if (attempt > 0) await sleep(intervalMs);
 
     const reasons: string[] = [];
     const notes: string[] = [];
-    let containerConfirmed = false; // positive read: >=1 service, none unhealthy
+    let containerConfirmed = false; // positive read: >=1 service, none unhealthy, none starting
     let containerInspected = false;
+    let pendingServices: ComposePsEntry[] = [];
 
     // 1. Container run-state, via the relay's `docker compose ps`.
     try {
@@ -364,8 +410,9 @@ export async function verifyDeployHealth(opts: VerifyDeployHealthOptions): Promi
       containerInspected = true;
       const entries = parseComposePs(detail.app?.containers ?? null);
       const offenders = assessContainers(entries);
+      pendingServices = pendingContainers(entries);
       for (const o of offenders) reasons.push(o.reason);
-      if (entries.length > 0 && offenders.length === 0) containerConfirmed = true;
+      if (entries.length > 0 && offenders.length === 0 && pendingServices.length === 0) containerConfirmed = true;
     } catch {
       // Relay unreachable for this poll — can't read container state. In
       // optimistic mode we don't fail on this alone (see doc comment); in
@@ -398,22 +445,50 @@ export async function verifyDeployHealth(opts: VerifyDeployHealthOptions): Promi
     }
 
     lastNotes = notes;
+    // Pending-only: nothing bad observed, but ≥1 service is still
+    // "starting" — not evidence either way. Only meaningful in optimistic
+    // mode; strict mode's `containerConfirmed` already folds this in above.
+    const pendingOnly = !requireEvidence && reasons.length === 0 && pendingServices.length > 0;
+    lastPendingOnly = pendingOnly;
+    lastPendingServices = pendingServices;
 
     if (requireEvidence) {
       // Fail closed: only a positive confirmation (≥1 running service, none
-      // unhealthy, route OK) ends the loop early.
+      // unhealthy, none still starting, route OK) ends the loop early.
       if (containerConfirmed && routeOk) return verdict(true, undefined, notes);
       lastReason =
         reasons.length > 0
           ? reasons.join("; ")
-          : containerInspected
-            ? `no running containers found for "${opts.appName}"`
-            : `could not reach the relay to confirm "${opts.appName}" is running`;
+          : pendingServices.length > 0
+            ? `service(s) "${pendingServices.map((e) => e.service).join(", ")}" still reports health=starting for "${opts.appName}"`
+            : containerInspected
+              ? `no running containers found for "${opts.appName}"`
+              : `could not reach the relay to confirm "${opts.appName}" is running`;
     } else {
-      // Optimistic: the absence of bad signals is enough.
-      if (reasons.length === 0) return verdict(true, undefined, notes);
+      // Optimistic: the absence of bad signals is enough — but a container
+      // still "starting" is neither bad nor confirmed, so it does NOT
+      // short-circuit the loop; keep polling (within the bounded extension).
+      if (reasons.length === 0 && pendingServices.length === 0) return verdict(true, undefined, notes);
       lastReason = reasons.join("; ");
+
+      // Bounded, one-shot extension: only granted when the window is about
+      // to close with nothing but "starting" left (no offender ever seen on
+      // this poll).
+      if (!extended && attempt === effectiveAttempts - 1 && pendingOnly) {
+        effectiveAttempts += pendingExtraAttempts;
+        extended = true;
+      }
     }
+  }
+
+  if (!requireEvidence && lastPendingOnly) {
+    // Budget exhausted while everything outstanding was merely "starting"
+    // and nothing bad was ever observed: the optimistic guarantee (never
+    // fail a healthy deploy on absence of bad news) still applies. Pass, but
+    // make the still-unresolved container(s) visible via a note.
+    const names = lastPendingServices.map((e) => e.service).join(", ");
+    const note = `health of "${names}" still "starting" after ${effectiveAttempts} polls; passing optimistically`;
+    return verdict(true, undefined, [...lastNotes, note]);
   }
 
   return verdict(false, lastReason, lastNotes);

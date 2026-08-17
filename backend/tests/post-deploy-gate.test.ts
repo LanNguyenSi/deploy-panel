@@ -24,6 +24,29 @@ const RESTARTING_FRONTEND = {
   ExitCode: 1,
   Status: "Restarting (1) 3 seconds ago",
 };
+// A container whose Docker healthcheck has not resolved yet. Docker's
+// default healthcheck timing can sit here for 90s+; a genuinely broken
+// container can also report `unhealthy` well after this — the gate must not
+// treat "starting" as clean evidence, but also must not fail a container
+// that is simply still warming up.
+const STARTING_WORKER = {
+  Service: "worker",
+  Name: "thd-worker-1",
+  State: "running",
+  Health: "starting",
+  ExitCode: 0,
+  Status: "Up 3 seconds (health: starting)",
+};
+const UNHEALTHY_WORKER = {
+  ...STARTING_WORKER,
+  Health: "unhealthy",
+  Status: "Up 20 seconds (unhealthy)",
+};
+const HEALTHY_WORKER = {
+  ...STARTING_WORKER,
+  Health: "healthy",
+  Status: "Up 25 seconds (healthy)",
+};
 
 const jsonl = (...rows: object[]) => rows.map((r) => JSON.stringify(r)).join("\n");
 const arr = (...rows: object[]) => JSON.stringify(rows);
@@ -389,6 +412,148 @@ describe("verifyDeployHealth", () => {
       });
       expect(verdict.healthy).toBe(false);
       expect(verdict.reason).toContain("returned HTTP 404");
+    });
+  });
+
+  // ── "starting" (unresolved healthcheck) is not evidence ──────────────────
+  describe("pending 'starting' containers", () => {
+    // AC1 — RED FIRST: this must fail against unmodified `main` (current code
+    // treats "starting" as clean, so it passes healthy on the very first
+    // poll). Recorded failing, then the fix below makes it pass.
+    it("(AC1) fails when a container stuck 'starting' through the base window goes unhealthy on an extension poll", async () => {
+      const relay = vi
+        .fn()
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } })
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } })
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } })
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } })
+        .mockResolvedValue({ app: { containers: jsonl(RUNNING_BACKEND, UNHEALTHY_WORKER) } });
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        sleepImpl: noSleep,
+        relayRequestImpl: relay,
+      });
+      expect(verdict.healthy).toBe(false);
+      expect(verdict.reason).toContain("health=unhealthy");
+    });
+
+    // AC2: resolves promptly — no waiting out the rest of the window once
+    // the container settles.
+    it("(AC2) resolves healthy as soon as a starting container settles, with no extra delay", async () => {
+      const relay = vi
+        .fn()
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } })
+        .mockResolvedValue({ app: { containers: jsonl(RUNNING_BACKEND, HEALTHY_WORKER) } });
+      const sleep = vi.fn(noSleep);
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        sleepImpl: sleep,
+        relayRequestImpl: relay,
+      });
+      expect(verdict.healthy).toBe(true);
+      expect(sleep).toHaveBeenCalledTimes(1); // one retry was needed, no more
+    });
+
+    // AC3: the fast path (no container "starting" at all) is untouched.
+    it("(AC3) a genuinely healthy first poll short-circuits with zero sleeps (no container pending)", async () => {
+      const sleep = vi.fn(noSleep);
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        sleepImpl: sleep,
+        relayRequestImpl: relayReturning(jsonl(RUNNING_BACKEND)), // Health: "healthy"
+      });
+      expect(verdict.healthy).toBe(true);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it("(AC3) also short-circuits for a service with no healthcheck declared (Health: \"\")", async () => {
+      const noHealthcheck = { ...RUNNING_BACKEND, Health: "" };
+      const sleep = vi.fn(noSleep);
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        sleepImpl: sleep,
+        relayRequestImpl: relayReturning(jsonl(noHealthcheck)),
+      });
+      expect(verdict.healthy).toBe(true);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    // AC4: the extension is bounded — a container that never resolves still
+    // passes (optimistic guarantee), but only after the documented budget,
+    // and the verdict says so.
+    it("(AC4) a permanently-'starting' container passes optimistically after the bounded extension, with a note naming it", async () => {
+      const relay = vi.fn().mockResolvedValue({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } });
+      const sleep = vi.fn(noSleep);
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        sleepImpl: sleep,
+        relayRequestImpl: relay,
+      });
+      expect(verdict.healthy).toBe(true);
+      expect(relay).toHaveBeenCalledTimes(4 + 9); // default attempts + default pendingExtraAttempts
+      expect(verdict.notes?.join(" ")).toContain("worker");
+      expect(verdict.notes?.join(" ")).toContain("starting");
+    });
+
+    it("respects a custom pendingExtraAttempts bound", async () => {
+      const relay = vi.fn().mockResolvedValue({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } });
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        attempts: 2,
+        pendingExtraAttempts: 3,
+        sleepImpl: noSleep,
+        relayRequestImpl: relay,
+      });
+      expect(verdict.healthy).toBe(true);
+      expect(relay).toHaveBeenCalledTimes(2 + 3);
+    });
+
+    // Recovery semantics preserved: an offender seen mid-window doesn't cut
+    // the loop short if it later resolves.
+    it("recovers to healthy after a mid-window unhealthy blip inside the (possibly extended) window", async () => {
+      const relay = vi
+        .fn()
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } })
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } })
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } })
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } })
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, UNHEALTHY_WORKER) } })
+        .mockResolvedValue({ app: { containers: jsonl(RUNNING_BACKEND, HEALTHY_WORKER) } });
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        sleepImpl: noSleep,
+        relayRequestImpl: relay,
+      });
+      expect(verdict.healthy).toBe(true);
+    });
+
+    describe("requireHealthyEvidence (strict mode)", () => {
+      it("does NOT treat a 'starting' container as positive confirmation; an all-starting window fails closed", async () => {
+        const verdict = await verifyDeployHealth({
+          serverId: "srv-a",
+          appName: "thd",
+          liveUrl: null,
+          attempts: 2,
+          sleepImpl: noSleep,
+          requireHealthyEvidence: true,
+          relayRequestImpl: relayReturning(jsonl(RUNNING_BACKEND, STARTING_WORKER)),
+        });
+        expect(verdict.healthy).toBe(false);
+      });
     });
   });
 
