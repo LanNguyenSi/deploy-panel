@@ -31,8 +31,12 @@ import { isPrivateOrLoopbackHost } from "../services/probe-guard.js";
  *
  * It polls for a short grace window so a service that is briefly cycling
  * right after `up` gets time to settle — a genuinely crashlooping service
- * stays bad for the whole window and fails the gate; a healthy deploy
- * passes on the first poll, so the happy path keeps its current latency.
+ * stays bad for the whole window and fails the gate. A deploy with no
+ * Docker healthchecks (or with all of them already resolved) passes on the
+ * first clean poll, keeping its pre-change latency; a deploy whose
+ * healthcheck is still "starting" now waits for it to resolve (bounded, see
+ * `pendingExtraAttempts`), so finalize latency grows by the healthcheck's
+ * own resolution time for every app that declares one.
  *
  * A service with `health = "starting"` (Docker's healthcheck warmup state,
  * which can last 90s+ on default timing) is neither offender nor evidence:
@@ -90,6 +94,14 @@ export interface DeployHealthVerdict {
    * ignored nor counted as the deploy being down.
    */
   notes?: string[];
+  /**
+   * Set (true) only on the optimistic pass-with-note path: the window
+   * exhausted while container health was still unresolved ("starting", or
+   * unreadable while starting), so `healthy: true` here means "no bad
+   * signal", NOT "positively confirmed". Callers rendering operator-facing
+   * text should qualify their wording when this is set (see finalizeDeploy).
+   */
+  unconfirmed?: boolean;
 }
 
 export interface VerifyDeployHealthOptions {
@@ -247,10 +259,13 @@ export function assessContainers(entries: ComposePsEntry[]): ContainerOffender[]
  * rather than either "bad" or "clean".
  */
 export function pendingContainers(entries: ComposePsEntry[]): ComposePsEntry[] {
-  // A stopped container's stale health value is not evidence of anything
-  // pending: a one-shot init/migrate container that exits (code 0) during
-  // its start period must not hold the poll window open.
-  return entries.filter((e) => e.health === "starting" && e.state !== "exited" && e.state !== "dead");
+  // Allow-list on run state: only a RUNNING container's "starting" health is
+  // genuinely pending. A stopped container's stale health value is not
+  // evidence of anything (a one-shot init/migrate container legitimately
+  // exits during its start period), and a paused/created container's
+  // healthcheck is suspended or not yet begun — it could sit at "starting"
+  // forever and must not hold the poll window open either.
+  return entries.filter((e) => e.health === "starting" && e.state === "running");
 }
 
 /**
@@ -378,6 +393,12 @@ export async function probeRoute(
  * `liveUrl` is set) up to `attempts` times, sleeping `intervalMs` between
  * polls. Returns healthy as soon as a poll is clean; returns unhealthy with
  * the last observed reason if the window elapses while something is still bad.
+ * A poll is NOT clean while a healthcheck is still `"starting"`: the window
+ * then extends (bounded, `pendingExtraAttempts`) and can end in a
+ * pass-with-note carrying `unconfirmed: true` — and once something has been
+ * seen "starting", an unreadable poll carries that watch forward instead of
+ * counting as clean, so a relay blip in that state costs polling time
+ * (up to the ~60s combined window) rather than an instant pass.
  *
  * A relay round-trip that throws (the relay can be momentarily unreachable
  * while containers cycle) is treated as "could not inspect" for that poll —
@@ -405,8 +426,10 @@ export async function verifyDeployHealth(opts: VerifyDeployHealthOptions): Promi
   let lastPendingCarry = false;
   let lastPendingServices: ComposePsEntry[] = [];
   // Cross-window memory (optimistic mode): whether any poll saw a service
-  // "starting", and the most recent offender/route reason — both feed the
-  // exhaustion note so nothing observed in the window is silently dropped.
+  // "starting", and the most recent offender/route reason. The reason feeds
+  // BOTH healthy exits (the early return and the pass-with-note exhaustion),
+  // so an offender observed anywhere in the window always leaves a trace in
+  // the verdict notes even when the deploy ultimately passes.
   let sawPendingEver = false;
   let sawReasonEver: string | undefined;
 
@@ -507,7 +530,11 @@ export async function verifyDeployHealth(opts: VerifyDeployHealthOptions): Promi
       // poll while one was starting is not clean either), so those do NOT
       // short-circuit the loop; keep polling (within the bounded extension).
       if (reasons.length === 0 && pendingServices.length === 0 && !pendingCarry) {
-        return verdict(true, undefined, notes);
+        return verdict(
+          true,
+          undefined,
+          sawReasonEver ? [...notes, `earlier in this window: ${sawReasonEver}`] : notes,
+        );
       }
       lastReason = reasons.join("; ");
 
@@ -533,16 +560,22 @@ export async function verifyDeployHealth(opts: VerifyDeployHealthOptions): Promi
       ? `could not re-read container state while "${names}" was still "starting"; passing optimistically after ${effectiveAttempts} polls`
       : `health of "${names}" still "starting" after ${effectiveAttempts} polls; passing optimistically`;
     const note = sawReasonEver ? `${base} (earlier in this window: ${sawReasonEver})` : base;
-    return verdict(true, undefined, [...lastNotes, note]);
+    return verdict(true, undefined, [...lastNotes, note], true);
   }
 
   return verdict(false, lastReason, lastNotes);
 }
 
-function verdict(healthy: boolean, reason: string | undefined, notes: string[]): DeployHealthVerdict {
+function verdict(
+  healthy: boolean,
+  reason: string | undefined,
+  notes: string[],
+  unconfirmed = false,
+): DeployHealthVerdict {
   return {
     healthy,
     ...(reason ? { reason } : {}),
     ...(notes.length ? { notes } : {}),
+    ...(unconfirmed ? { unconfirmed: true } : {}),
   };
 }

@@ -88,6 +88,23 @@ describe("finalizeDeploy", () => {
     expect(lastCall(mAppUpdate).data.status).toBe("healthy"); // a note does not fail the deploy
   });
 
+  it("qualifies the step wording for an unconfirmed optimistic pass instead of claiming a healthy run state", async () => {
+    mGate.mockResolvedValue({
+      healthy: true,
+      unconfirmed: true,
+      notes: ['health of "worker" still "starting" after 13 polls; passing optimistically'],
+    });
+
+    await finalizeDeploy({ ...base, relaySuccess: true });
+
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps.at(-1).status).toBe("success"); // still a pass -- wording changes, outcome does not
+    expect(steps.at(-1).output).toContain("Passed optimistically without positive health confirmation");
+    expect(steps.at(-1).output).not.toContain("Containers in a healthy run state");
+    expect(steps.at(-1).output).toContain('still "starting"');
+    expect(lastCall(mAppUpdate).data.status).toBe("healthy");
+  });
+
   it("forwards commitBefore/commitAfter/duration to the deploy row", async () => {
     mGate.mockResolvedValue({ healthy: true });
 

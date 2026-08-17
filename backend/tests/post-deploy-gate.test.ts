@@ -121,12 +121,14 @@ describe("pendingContainers", () => {
   it("includes only RUNNING containers whose health is 'starting'", () => {
     const exitedStarting = { ...STARTING_WORKER, State: "exited", Status: "Exited (0) 2 seconds ago" };
     const deadStarting = { ...STARTING_WORKER, State: "dead" };
+    // A paused container's healthcheck is suspended (could sit at "starting"
+    // forever); a created one has not begun. Neither may hold a window open.
+    const pausedStarting = { ...STARTING_WORKER, State: "paused" };
+    const createdStarting = { ...STARTING_WORKER, State: "created" };
     const entries = parseComposePs(
-      jsonl(RUNNING_BACKEND, STARTING_WORKER, exitedStarting, deadStarting, HEALTHY_WORKER),
+      jsonl(RUNNING_BACKEND, STARTING_WORKER, exitedStarting, deadStarting, pausedStarting, createdStarting, HEALTHY_WORKER),
     );
     const pending = pendingContainers(entries);
-    // The stopped containers' stale "starting" must not hold a window open
-    // (one-shot migrate containers legitimately exit during start_period).
     expect(pending).toHaveLength(1);
     expect(pending[0]?.state).toBe("running");
     expect(pending[0]?.service).toBe("worker");
@@ -616,6 +618,136 @@ describe("verifyDeployHealth", () => {
       expect(joined).toContain("starting");
       expect(joined).toContain("earlier in this window");
       expect(joined).toContain("health=unhealthy");
+    });
+
+    // Kills the carry-note mutants: exhausting the window on a CARRY final
+    // poll must produce the carry-specific text with the service name
+    // retained from the earlier readable poll, and mark the verdict
+    // unconfirmed.
+    it("exhausting on a carry poll emits the carry note with the retained service name and unconfirmed=true", async () => {
+      const relay = vi
+        .fn()
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } })
+        .mockRejectedValue(new Error("relay dark"));
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        attempts: 2,
+        pendingExtraAttempts: 2,
+        sleepImpl: noSleep,
+        relayRequestImpl: relay,
+      });
+      expect(verdict.healthy).toBe(true);
+      expect(verdict.unconfirmed).toBe(true);
+      expect(relay).toHaveBeenCalledTimes(4);
+      expect(verdict.notes).toEqual([
+        'could not re-read container state while "worker" was still "starting"; passing optimistically after 4 polls',
+      ]);
+    });
+
+    it("the carry note names the MOST RECENT pending service, not the first", async () => {
+      const startingCache = { ...STARTING_WORKER, Service: "cache", Name: "thd-cache-1" };
+      const relay = vi
+        .fn()
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } })
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, HEALTHY_WORKER, startingCache) } })
+        .mockRejectedValue(new Error("relay dark"));
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        attempts: 2,
+        pendingExtraAttempts: 2,
+        sleepImpl: noSleep,
+        relayRequestImpl: relay,
+      });
+      expect(verdict.healthy).toBe(true);
+      const joined = verdict.notes?.join(" ") ?? "";
+      expect(joined).toContain('"cache"');
+      expect(joined).not.toContain('"worker"');
+    });
+
+    // An offender that recovers still leaves a trace on the healthy early
+    // return -- and the same holds when the poll after the offender is
+    // unreadable with no pending ever seen (the decided behavior: the
+    // relay-blip tolerance keeps the pass, the note keeps the evidence).
+    it("a recovered offender rides into the early-return notes", async () => {
+      const relay = vi
+        .fn()
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, UNHEALTHY_WORKER) } })
+        .mockResolvedValue({ app: { containers: jsonl(RUNNING_BACKEND, HEALTHY_WORKER) } });
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        sleepImpl: noSleep,
+        relayRequestImpl: relay,
+      });
+      expect(verdict.healthy).toBe(true);
+      expect(verdict.notes?.join(" ")).toContain("earlier in this window");
+      expect(verdict.notes?.join(" ")).toContain("health=unhealthy");
+    });
+
+    it("offender followed by an unreadable poll (no pending ever) passes with the offender noted", async () => {
+      const relay = vi
+        .fn()
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, UNHEALTHY_WORKER) } })
+        .mockRejectedValue(new Error("relay blip"));
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        sleepImpl: noSleep,
+        relayRequestImpl: relay,
+      });
+      expect(verdict.healthy).toBe(true);
+      expect(verdict.notes?.join(" ")).toContain("earlier in this window");
+      expect(verdict.notes?.join(" ")).toContain("health=unhealthy");
+    });
+
+    it("a route failure during a carry poll wins over the carry: unhealthy, no extension", async () => {
+      const relay = vi
+        .fn()
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } })
+        .mockRejectedValue(new Error("relay dark"));
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValueOnce(okResponse(200))
+        .mockResolvedValue(okResponse(502));
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: "https://thd.example.com/",
+        attempts: 2,
+        pendingExtraAttempts: 5,
+        sleepImpl: noSleep,
+        relayRequestImpl: relay,
+        fetchImpl,
+        lookupImpl: publicLookup,
+      });
+      expect(verdict.healthy).toBe(false);
+      expect(verdict.reason).toContain("HTTP 502");
+      expect(relay).toHaveBeenCalledTimes(2);
+    });
+
+    it("strict mode ignores the carry machinery: exactly `attempts` polls, fail closed", async () => {
+      const relay = vi
+        .fn()
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } })
+        .mockRejectedValue(new Error("relay dark"));
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        attempts: 2,
+        pendingExtraAttempts: 5,
+        requireHealthyEvidence: true,
+        sleepImpl: noSleep,
+        relayRequestImpl: relay,
+      });
+      expect(verdict.healthy).toBe(false);
+      expect(relay).toHaveBeenCalledTimes(2);
     });
 
     it("pendingExtraAttempts: 0 disables the extension but keeps the note", async () => {
