@@ -45,7 +45,12 @@ export async function finalizeDeploy(opts: FinalizeDeployOpts): Promise<void> {
         name: "post-deploy health gate",
         status: "success",
         durationMs: 0,
-        output: `Containers in a healthy run state and public route reachable${noteSuffix}`,
+        // An `unconfirmed` pass means the window exhausted with health still
+        // unresolved — the unconditional "healthy run state" sentence would
+        // contradict the note it carries, so qualify the wording.
+        output: verdict.unconfirmed
+          ? `Passed optimistically without positive health confirmation${noteSuffix}`
+          : `Containers in a healthy run state and public route reachable${noteSuffix}`,
       });
     } else {
       success = false;

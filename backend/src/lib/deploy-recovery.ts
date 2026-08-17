@@ -13,9 +13,23 @@ const RECOVERY_INTERVAL_MS = 12_000;
  * containers restart). There is no success signal to trust here, so we run
  * the post-deploy health gate in its fail-closed mode: the deploy is marked
  * success/healthy only if we positively confirm the app is up (≥1 running
- * service, none restarting/crashed/unhealthy, and the public route — if
- * set — answers). A crashlooping container, or a relay we never manage to
- * reach within the window, yields failed/unhealthy.
+ * service, none restarting/crashed/unhealthy, none still "starting", and
+ * the public route — if set — answers). A crashlooping container, or a
+ * relay we never manage to reach within the window, yields failed/unhealthy.
+ *
+ * Note on "starting" (since the pending-health change): a healthcheck that
+ * has not RESOLVED within this window is not a positive confirmation, so a
+ * healthy-but-slow app (long start_period, or Docker's default 30s
+ * healthcheck interval) can consume the window and be recorded failed here.
+ * The verdict reason then names the still-starting service(s) — an operator
+ * seeing that phrasing should suspect a slow healthcheck before a broken
+ * app. Margin warning: deploy-panel's OWN images declare
+ * `HEALTHCHECK --interval=30s` with no start_period (backend/Dockerfile,
+ * frontend/Dockerfile; the prod compose overrides only db), so their health
+ * stays "starting" for ~30s after each recreate — this window's last poll
+ * at ~48s clears that only if the container clock starts roughly with the
+ * window. agent-tasks' frontend (5s interval, 10s start_period) resolves
+ * comfortably; other remote apps are unverified.
  *
  * This is the recovery-path complement to the gate streamDeploy runs on the
  * relay-reported-success paths: before, recovery accepted the relay's
