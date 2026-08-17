@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   parseComposePs,
   assessContainers,
+  pendingContainers,
   probeRoute,
   verifyDeployHealth,
 } from "../src/lib/post-deploy-gate.js";
@@ -113,6 +114,22 @@ describe("assessContainers", () => {
     const sick = { Service: "api", Name: "thd-api-1", State: "running", Health: "unhealthy", ExitCode: 0, Status: "Up 1 minute (unhealthy)" };
     const offenders = assessContainers(parseComposePs(jsonl(sick)));
     expect(offenders[0].reason).toContain("health=unhealthy");
+  });
+});
+
+describe("pendingContainers", () => {
+  it("includes only RUNNING containers whose health is 'starting'", () => {
+    const exitedStarting = { ...STARTING_WORKER, State: "exited", Status: "Exited (0) 2 seconds ago" };
+    const deadStarting = { ...STARTING_WORKER, State: "dead" };
+    const entries = parseComposePs(
+      jsonl(RUNNING_BACKEND, STARTING_WORKER, exitedStarting, deadStarting, HEALTHY_WORKER),
+    );
+    const pending = pendingContainers(entries);
+    // The stopped containers' stale "starting" must not hold a window open
+    // (one-shot migrate containers legitimately exit during start_period).
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.state).toBe("running");
+    expect(pending[0]?.service).toBe("worker");
   });
 });
 
@@ -520,6 +537,103 @@ describe("verifyDeployHealth", () => {
       expect(relay).toHaveBeenCalledTimes(2 + 3);
     });
 
+    // A poll that cannot read container state (relay throw, empty ps) must
+    // not end the pending watch: "could not look" is not "looked and found
+    // clean". This was the reviewer's measured miss on the first version:
+    // [starting, throw, unhealthy, ...] returned healthy at poll 2.
+    it("keeps watching through a relay blip while a service was 'starting', and catches the later unhealthy", async () => {
+      const relay = vi
+        .fn()
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } })
+        .mockRejectedValueOnce(new Error("relay momentarily unreachable"))
+        .mockResolvedValue({ app: { containers: jsonl(RUNNING_BACKEND, UNHEALTHY_WORKER) } });
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        sleepImpl: noSleep,
+        relayRequestImpl: relay,
+      });
+      expect(verdict.healthy).toBe(false);
+      expect(verdict.reason).toContain("health=unhealthy");
+    });
+
+    it("carries the pending watch through an empty ps read and still resolves healthy without a note", async () => {
+      const relay = vi
+        .fn()
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } })
+        .mockResolvedValueOnce({ app: { containers: arr() } })
+        .mockResolvedValue({ app: { containers: jsonl(RUNNING_BACKEND, HEALTHY_WORKER) } });
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        sleepImpl: noSleep,
+        relayRequestImpl: relay,
+      });
+      expect(verdict.healthy).toBe(true);
+      expect(relay).toHaveBeenCalledTimes(3);
+      expect(verdict.notes).toBeUndefined();
+    });
+
+    // The documented relay-blip tolerance is UNCHANGED when no service was
+    // ever seen "starting": absence of bad news stays trustworthy.
+    it("still passes instantly on a relay blip when no pending service was ever observed", async () => {
+      const relay = vi.fn().mockRejectedValue(new Error("relay unreachable"));
+      const sleep = vi.fn(noSleep);
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        sleepImpl: sleep,
+        relayRequestImpl: relay,
+      });
+      expect(verdict.healthy).toBe(true);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    // An offender observed earlier in the window is not silently dropped
+    // when the window later exhausts pending-only: it rides in the note.
+    it("names an earlier offender in the exhaustion note when the final polls are pending-only", async () => {
+      const relay = vi
+        .fn()
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } })
+        .mockResolvedValueOnce({ app: { containers: jsonl(RUNNING_BACKEND, UNHEALTHY_WORKER) } })
+        .mockResolvedValue({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } });
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        attempts: 3,
+        pendingExtraAttempts: 3,
+        sleepImpl: noSleep,
+        relayRequestImpl: relay,
+      });
+      expect(verdict.healthy).toBe(true);
+      expect(relay).toHaveBeenCalledTimes(3 + 3);
+      const joined = verdict.notes?.join(" ") ?? "";
+      expect(joined).toContain('"worker"');
+      expect(joined).toContain("starting");
+      expect(joined).toContain("earlier in this window");
+      expect(joined).toContain("health=unhealthy");
+    });
+
+    it("pendingExtraAttempts: 0 disables the extension but keeps the note", async () => {
+      const relay = vi.fn().mockResolvedValue({ app: { containers: jsonl(RUNNING_BACKEND, STARTING_WORKER) } });
+      const verdict = await verifyDeployHealth({
+        serverId: "srv-a",
+        appName: "thd",
+        liveUrl: null,
+        attempts: 2,
+        pendingExtraAttempts: 0,
+        sleepImpl: noSleep,
+        relayRequestImpl: relay,
+      });
+      expect(verdict.healthy).toBe(true);
+      expect(relay).toHaveBeenCalledTimes(2);
+      expect(verdict.notes?.join(" ")).toContain("starting");
+    });
+
     // Recovery semantics preserved: an offender seen mid-window doesn't cut
     // the loop short if it later resolves.
     it("recovers to healthy after a mid-window unhealthy blip inside the (possibly extended) window", async () => {
@@ -553,6 +667,11 @@ describe("verifyDeployHealth", () => {
           relayRequestImpl: relayReturning(jsonl(RUNNING_BACKEND, STARTING_WORKER)),
         });
         expect(verdict.healthy).toBe(false);
+        // The reason must name the distinct still-starting cause (mutation
+        // probe: falling through to the generic "no running containers
+        // found" text must turn this red).
+        expect(verdict.reason).toContain("health=starting");
+        expect(verdict.reason).toContain('"worker"');
       });
     });
   });
