@@ -9,6 +9,11 @@
 // failure message otherwise. Kept as a pure function (same pattern as
 // `deployStatusBadge` in status.ts) so the branch that used to always show
 // "Rollback triggered" can be unit-tested directly.
+//
+// The blocked message names the failing check(s) only — full preflight
+// messages run 600-900+ chars measured, which doesn't fit a 4s-auto-dismiss
+// toast. The caller (page.tsx handleRollback) opens the existing preflight
+// panel with the full `deploy.preflight` for the details.
 
 export interface RollbackPreflightCheck {
   name: string;
@@ -32,11 +37,11 @@ export function describeRollbackResult(deploy: RollbackDeployResult): RollbackOu
     return { ok: true, message: "Rollback triggered" };
   }
 
-  const failedChecks = deploy.preflight?.checks.filter((check) => !check.passed) ?? [];
+  const failedChecks = deploy.preflight?.checks?.filter((check) => !check.passed) ?? [];
   if (deploy.blocked) {
     if (failedChecks.length > 0) {
-      const detail = failedChecks.map((check) => `${check.name}: ${check.message}`).join("; ");
-      return { ok: false, message: `Rollback blocked by preflight (${detail})` };
+      const names = failedChecks.map((check) => check.name).join(", ");
+      return { ok: false, message: `Rollback blocked by preflight: ${names}` };
     }
     return { ok: false, message: "Rollback blocked by preflight" };
   }

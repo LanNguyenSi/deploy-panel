@@ -71,6 +71,10 @@ export default defineConfig({
       // out of scope for this slice, which targeted destructive/mutating
       // functions and the SSE/probe surface specifically.
       //
+      // src/lib/rollback.ts measured 100/100/100/100 (2026-08-20, review-fix
+      // round on task b5029d90) after adding the blocked-with-missing/empty-
+      // checks and all-checks-passing edge-case tests in rollback.test.ts.
+      //
       // Measured 2026-07-04 (npm run test --workspace=frontend):
       //   global (whole include scope): lines 82.73 / stmts 78.65 / funcs 76.19 / branches 73.91
       //   src/lib/status.ts:            lines 100   / stmts 100   / funcs 100   / branches 100
@@ -123,6 +127,12 @@ export default defineConfig({
           statements: 90,
           functions: 85,
           branches: 80,
+        },
+        "src/lib/rollback.ts": {
+          lines: 100,
+          statements: 100,
+          functions: 100,
+          branches: 100,
         },
       },
     },

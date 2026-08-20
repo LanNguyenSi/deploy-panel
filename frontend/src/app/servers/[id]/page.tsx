@@ -178,6 +178,14 @@ export default function ServerDetailPage() {
       const { deploy } = await rollbackApp(id, name);
       const outcome = describeRollbackResult(deploy);
       toast(outcome.message, outcome.ok ? "success" : "error");
+      if (deploy.blocked && deploy.preflight) {
+        // The toast only names the failing check(s) (see rollback.ts) —
+        // reuse the same preflight panel the Preflight button opens to show
+        // the full per-check messages instead of fetching them again.
+        setPanel({ type: "preflight", app: name });
+        setLogs(null);
+        setPreflight(deploy.preflight);
+      }
       await load();
     } catch (err: any) {
       toast(`Rollback failed: ${err.message}`, "error");

@@ -46,15 +46,17 @@ vi.mock("../src/lib/audit.js", () => ({
 vi.mock("../src/lib/deploy-recovery.js", () => ({ recoverBrokenDeploy: vi.fn() }));
 vi.mock("../src/lib/stream-deploy.js", () => ({ streamDeploy: vi.fn() }));
 
-import { relayRequest } from "../src/lib/relay.js";
+import { relayRequest, RelayError } from "../src/lib/relay.js";
 import { prisma } from "../src/lib/prisma.js";
 import { appsRouter } from "../src/routes/apps.js";
+import { recoverBrokenDeploy } from "../src/lib/deploy-recovery.js";
 import { Hono } from "hono";
 
 const mRelay = relayRequest as unknown as ReturnType<typeof vi.fn>;
 const mAppUpsert = prisma.app.upsert as unknown as ReturnType<typeof vi.fn>;
 const mDeployCreate = prisma.deploy.create as unknown as ReturnType<typeof vi.fn>;
 const mDeployUpdate = prisma.deploy.update as unknown as ReturnType<typeof vi.fn>;
+const mRecoverBrokenDeploy = recoverBrokenDeploy as unknown as ReturnType<typeof vi.fn>;
 
 function app() {
   const a = new Hono();
@@ -108,7 +110,7 @@ describe("POST /:name/rollback — agent-relay result shape", () => {
     expect(body.deploy.preflight).toEqual(PREFLIGHT_BLOCKED);
   });
 
-  it("relay-reported failure (not blocked): flat top-level shape is read, row is failed", async () => {
+  it("relay-reported failure (not blocked): flat top-level shape is read, row is failed (defensive: not currently emitted by agent-relay — non-preflight failures are HTTP 400 { error }, see the RelayError describe block below)", async () => {
     mRelay.mockResolvedValueOnce({
       deploy: { id: "relay-deploy-1" },
       success: false,
@@ -155,5 +157,61 @@ describe("POST /:name/rollback — agent-relay result shape", () => {
 
     const body = await res.json();
     expect(body.deploy.success).toBe(true);
+  });
+});
+
+// The real reachable failure path: agent-relay answers a non-preflight
+// rollback failure with HTTP 4xx `{ error }` (e.g. "no previous deploy to
+// roll back to"), which relayRequest() turns into a thrown RelayError — it
+// never reaches the try block's flat-shape branch above. Before this fix,
+// every RelayError (regardless of status) was routed to recoverBrokenDeploy,
+// whose post-deploy health probe can't distinguish "rollback never ran, app
+// still healthy from the prior deploy" from "rollback succeeded" — a real,
+// already-answered failure could end up recorded as a green success row.
+describe("POST /:name/rollback — RelayError from the relay call itself", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mAppUpsert.mockResolvedValue({ id: "app-a", name: "my-app" });
+    mDeployCreate.mockResolvedValue({ id: "deploy-1", status: "running" });
+    mDeployUpdate.mockResolvedValue({});
+  });
+
+  it("4xx RelayError: deploy row is marked failed directly, the caller gets the relay's message, and recoverBrokenDeploy is NOT invoked", async () => {
+    mRelay.mockRejectedValueOnce(new RelayError('Relay error (400): {"error":"no previous deploy to roll back to"}', 400));
+
+    const res = await app().request("/servers/srv-a/apps/my-app/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("relay_error");
+    expect(body.message).toContain("no previous deploy to roll back to");
+
+    expect(mDeployUpdate).toHaveBeenCalledTimes(1);
+    const updateData = mDeployUpdate.mock.calls[0][0].data;
+    expect(updateData.status).toBe("failed");
+
+    expect(mRecoverBrokenDeploy).not.toHaveBeenCalled();
+  });
+
+  it("5xx RelayError: still routed through recoverBrokenDeploy, not marked failed directly by the route", async () => {
+    mRelay.mockRejectedValueOnce(new RelayError("Relay error (500): boom", 500));
+
+    const res = await app().request("/servers/srv-a/apps/my-app/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toBe("relay_error");
+    expect(body.message).toContain("boom");
+
+    expect(mRecoverBrokenDeploy).toHaveBeenCalledTimes(1);
+    expect(mDeployUpdate).not.toHaveBeenCalled();
   });
 });

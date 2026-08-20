@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Providers } from "@/components/Providers";
@@ -89,7 +89,7 @@ afterEach(() => {
 });
 
 describe("ServerDetailPage — Rollback result surfacing", () => {
-  it("blocked:true shows an error toast naming the failing preflight check", async () => {
+  it("blocked:true shows a short error toast naming only the failing check, not the full preflight message", async () => {
     const user = await renderPage();
     mRollbackApp.mockResolvedValueOnce({
       deploy: {
@@ -109,10 +109,63 @@ describe("ServerDetailPage — Rollback result surfacing", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("compose_bind_mount_sources_exist");
-    expect(alert).toHaveTextContent("bind mount source missing: /data/foo");
+    // The full per-check message goes to the preflight panel, not the
+    // 4s-auto-dismiss toast (see the "opens the preflight panel" test below).
+    expect(alert).not.toHaveTextContent("bind mount source missing: /data/foo");
+    // Toast.tsx prefixes an error toast with "✗ " (success gets "✓ ") — this
+    // is the DOM signal that pins the toast's severity, not just its text.
+    // A mutant that keeps the error message but reports it via the success
+    // variant (reviewer mutant M4) flips this prefix without changing the
+    // text assertions above, so this is required to catch it.
+    expect(alert.textContent?.startsWith("✗ ")).toBe(true);
   });
 
-  it("success:false (not blocked) shows an error toast, not a success toast", async () => {
+  it("blocked:true opens the preflight panel with the full per-check details", async () => {
+    const user = await renderPage();
+    mRollbackApp.mockResolvedValueOnce({
+      deploy: {
+        id: "deploy-1",
+        success: false,
+        blocked: true,
+        preflight: {
+          passed: false,
+          checks: [
+            { name: "compose_bind_mount_sources_exist", passed: false, message: "bind mount source missing: /data/foo" },
+          ],
+        },
+      },
+    });
+
+    await clickRollbackAndConfirm(user);
+
+    await screen.findByText("Preflight Checks");
+    expect(screen.getByText("compose_bind_mount_sources_exist")).toBeInTheDocument();
+    expect(screen.getByText("bind mount source missing: /data/foo")).toBeInTheDocument();
+  });
+
+  it("blocked:true still calls load() afterward (list refresh is not skipped)", async () => {
+    const user = await renderPage();
+    mRollbackApp.mockResolvedValueOnce({
+      deploy: {
+        id: "deploy-1",
+        success: false,
+        blocked: true,
+        preflight: {
+          passed: false,
+          checks: [{ name: "compose_bind_mount_sources_exist", passed: false, message: "bind mount source missing: /data/foo" }],
+        },
+      },
+    });
+    mGetApps.mockClear();
+    mGetServer.mockClear();
+
+    await clickRollbackAndConfirm(user);
+
+    await screen.findByRole("alert");
+    await waitFor(() => expect(mGetApps).toHaveBeenCalled());
+  });
+
+  it("success:false (not blocked) shows an error toast, not a success toast (defensive: not currently emitted by agent-relay — non-preflight failures are HTTP 400 { error })", async () => {
     const user = await renderPage();
     mRollbackApp.mockResolvedValueOnce({
       deploy: { id: "deploy-1", success: false },
@@ -122,6 +175,7 @@ describe("ServerDetailPage — Rollback result surfacing", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Rollback failed");
+    expect(alert.textContent?.startsWith("✗ ")).toBe(true);
   });
 
   it("success:true still shows the existing success toast (positive case unchanged)", async () => {
@@ -134,5 +188,6 @@ describe("ServerDetailPage — Rollback result surfacing", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Rollback triggered");
+    expect(alert.textContent?.startsWith("✓ ")).toBe(true);
   });
 });
