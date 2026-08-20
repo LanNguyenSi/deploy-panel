@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-08-20
+
+**Headline: secrets provisioning in the deploy flow, honest rollback and health-gate reporting, and a broad security + test-coverage hardening round.** The app is deployed from `main`; this tag is deploy provenance.
+
+### Added
+
+- **App env/secrets provisioning through the deploy flow, with preflight hard-fail on missing keys** (PR #114).
+- **Curated OKF knowledge bundle plus staleness drift-CI** (PR #115).
+
+### Fixed
+
+- **Blocked and failed relay rollbacks surface as errors instead of unconditional success** (PR #124); RelayError 4xx is no longer greenwashed by the recovery path.
+- **Post-deploy gate treats unresolved "starting" health as not-yet-evidence** instead of a pass (PR #123).
+- Not-found is distinguished from real errors in the apps, scheduled and api-keys routes (PRs #111, #112).
+
+### Security
+
+- Next.js SSRF patch (CVE-2026-64649) and remaining audit highs (PR #116); residual HIGH advisories closed (PR #117); `@hono/node-server` advisory closed in the mcp tree via SDK 1.30.0 (#118) and the backend moved to `@hono/node-server` 2.x (#119); lockfile-only audit fix from the 2026-08-04 CVE sweep (#120); nanoid floored to 3.3.18 (GHSA-2v37-7h3g-55p8, #122).
+
+### Internal
+
+- Test-coverage campaign across backend, frontend and mcp with coverage ratchets and new CI jobs (PRs #104 to #110, #113); frontend tests run on Node 22 and 26 (#121); README hero screenshot (#103).
+
 ## [0.4.0] - 2026-06-25
 
 **Headline: the Mission Control design-system overhaul.** The frontend moves onto a new Mission Control design system, with a de-slopped sidebar, plus a hono CORS CVE patch. The app is deployed from `main`, so this tag is deploy provenance.
