@@ -231,6 +231,18 @@ appsRouter.get("/:name/deploys/:deployId", async (c) => {
   return c.json({ deploy });
 });
 
+// Shape of agent-relay's rollback result (see agent-relay
+// src/services/apps.ts RollbackResult / RollbackBlockedResult and
+// src/api/routes.ts POST /api/apps/:name/rollback). `preflight` is only
+// present when `blocked` is true.
+interface RollbackRelayPayload {
+  success?: boolean;
+  blocked?: boolean;
+  commitBefore?: string;
+  commitAfter?: string;
+  preflight?: { passed: boolean; checks: Array<{ name: string; passed: boolean; message: string; critical?: boolean }> };
+}
+
 // POST /api/servers/:serverId/apps/:name/rollback — trigger rollback
 appsRouter.post("/:name/rollback", async (c) => {
   const serverId = getServerId(c);
@@ -245,24 +257,36 @@ appsRouter.post("/:name/rollback", async (c) => {
   audit("rollback", `${name} on server ${serverId}`, `deployId: ${deploy.id}`, getActor(c), getActorUserId(c));
 
   try {
-    const result = await relayRequest<{ success?: boolean; commitBefore?: string; commitAfter?: string }>({
+    const raw = await relayRequest<RollbackRelayPayload & { result?: RollbackRelayPayload }>({
       serverId,
       path: `/api/apps/${name}/rollback`,
       method: "POST",
       body: { to_commit: body.to_commit },
     });
 
+    // agent-relay nests the payload under a `result` key ONLY when the
+    // rollback was blocked by preflight (mirrors the blocked-deploy
+    // convention on POST /api/apps/:name/deploy: `{ result: { blocked:
+    // true, success: false, preflight, ... } }`). A completed attempt
+    // (success or a non-preflight failure) spreads those same fields at
+    // the top level instead: `{ deploy, success, commitBefore, ... }`.
+    // Reading only the top level (the old behaviour) silently dropped
+    // `success`/`blocked`/`commitBefore`/`commitAfter` on a blocked
+    // rollback, which read as an empty/failed row with no explanation.
+    const payload = raw.result ?? raw;
+    const success = payload.success === true;
+
     await prisma.deploy.update({
       where: { id: deploy.id },
       data: {
-        status: result.success ? "rolled_back" : "failed",
-        commitBefore: result.commitBefore,
-        commitAfter: result.commitAfter,
-        log: JSON.stringify(result),
+        status: success ? "rolled_back" : "failed",
+        commitBefore: payload.commitBefore,
+        commitAfter: payload.commitAfter,
+        log: JSON.stringify(raw),
       },
     });
 
-    return c.json({ deploy: { id: deploy.id, ...result } });
+    return c.json({ deploy: { id: deploy.id, ...payload } });
   } catch (err) {
     // A rollback restarts the same container stack as a deploy, so the
     // relay connection can break the same way — especially when the
