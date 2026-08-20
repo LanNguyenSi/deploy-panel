@@ -231,6 +231,18 @@ appsRouter.get("/:name/deploys/:deployId", async (c) => {
   return c.json({ deploy });
 });
 
+// Shape of agent-relay's rollback result (see agent-relay
+// src/services/apps.ts RollbackResult / RollbackBlockedResult and
+// src/api/routes.ts POST /api/apps/:name/rollback). `preflight` is only
+// present when `blocked` is true.
+interface RollbackRelayPayload {
+  success?: boolean;
+  blocked?: boolean;
+  commitBefore?: string;
+  commitAfter?: string;
+  preflight?: { passed: boolean; checks: Array<{ name: string; passed: boolean; message: string; critical?: boolean }> };
+}
+
 // POST /api/servers/:serverId/apps/:name/rollback — trigger rollback
 appsRouter.post("/:name/rollback", async (c) => {
   const serverId = getServerId(c);
@@ -245,25 +257,60 @@ appsRouter.post("/:name/rollback", async (c) => {
   audit("rollback", `${name} on server ${serverId}`, `deployId: ${deploy.id}`, getActor(c), getActorUserId(c));
 
   try {
-    const result = await relayRequest<{ success?: boolean; commitBefore?: string; commitAfter?: string }>({
+    const raw = await relayRequest<RollbackRelayPayload & { result?: RollbackRelayPayload }>({
       serverId,
       path: `/api/apps/${name}/rollback`,
       method: "POST",
       body: { to_commit: body.to_commit },
     });
 
+    // agent-relay nests the payload under a `result` key ONLY when the
+    // rollback was blocked by preflight (mirrors the blocked-deploy
+    // convention on POST /api/apps/:name/deploy: `{ result: { blocked:
+    // true, success: false, preflight, ... } }`). A completed attempt
+    // (success or a non-preflight failure) spreads those same fields at
+    // the top level instead: `{ deploy, success, commitBefore, ... }`.
+    // Reading only the top level (the old behaviour) silently dropped
+    // `success`/`blocked`/`commitBefore`/`commitAfter` on a blocked
+    // rollback, which read as an empty/failed row with no explanation.
+    //
+    // The `success: false` (non-preflight failure) branch of that flat
+    // shape is defensive: not currently emitted by agent-relay — its real
+    // non-preflight rollback failure path answers HTTP 400 `{ error }`
+    // instead, which lands in the `catch` below via RelayError, not here.
+    // Kept in case a future relay version starts reporting failures this way.
+    const payload = raw.result ?? raw;
+    const success = payload.success === true;
+
     await prisma.deploy.update({
       where: { id: deploy.id },
       data: {
-        status: result.success ? "rolled_back" : "failed",
-        commitBefore: result.commitBefore,
-        commitAfter: result.commitAfter,
-        log: JSON.stringify(result),
+        status: success ? "rolled_back" : "failed",
+        commitBefore: payload.commitBefore,
+        commitAfter: payload.commitAfter,
+        log: JSON.stringify(raw),
       },
     });
 
-    return c.json({ deploy: { id: deploy.id, ...result } });
+    return c.json({ deploy: { id: deploy.id, ...payload } });
   } catch (err) {
+    // A RelayError with a 4xx status means agent-relay (or our own relay
+    // lookup) already gave a definite answer — the request was received
+    // and rejected (e.g. "no previous deploy to roll back to"), not a
+    // connection that dropped mid-flight. Routing this into
+    // recoverBrokenDeploy would run the post-deploy health probe, which
+    // can't tell "rollback never ran, app still healthy from the prior
+    // deploy" apart from "rollback succeeded" — silently turning a real
+    // failure into a green success row. Mark the row failed directly and
+    // hand the relay's own message back to the caller instead.
+    if (err instanceof RelayError && err.status >= 400 && err.status < 500) {
+      await prisma.deploy.update({
+        where: { id: deploy.id },
+        data: { status: "failed", log: err.message },
+      });
+      return c.json({ error: "relay_error", message: err.message }, err.status as any);
+    }
+
     // A rollback restarts the same container stack as a deploy, so the
     // relay connection can break the same way — especially when the
     // deploy-panel rolls back itself. Hand the deploy off to
@@ -277,9 +324,13 @@ appsRouter.post("/:name/rollback", async (c) => {
     // still gets the RelayError response immediately; the deploy row
     // stays `running` until recovery writes the final status, matching
     // the v1 rollback semantics.
+    //
+    // Reached only for transport failures (fetch/abort/timeout — not a
+    // RelayError) or a non-4xx RelayError (e.g. a 5xx from the relay
+    // itself), where a broken/degraded connection is still plausible.
     const errMsg = err instanceof Error ? err.message : String(err);
     recoverBrokenDeploy(deploy.id, app.id, serverId, name, errMsg);
-    if (err instanceof RelayError) return c.json({ error: err.message }, err.status as any);
+    if (err instanceof RelayError) return c.json({ error: "relay_error", message: err.message }, err.status as any);
     throw err;
   }
 });

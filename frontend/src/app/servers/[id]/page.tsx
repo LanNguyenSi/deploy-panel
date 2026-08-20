@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import Link from "next/link";
 import { getServer, getApps, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, setAppLiveUrl, bulkDeploy, type AppWithCount, type RelayMode } from "@/lib/api";
 import { deployStatusBadge } from "@/lib/status";
+import { describeRollbackResult } from "@/lib/rollback";
 import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { usePrompt } from "@/components/PromptDialog";
@@ -171,8 +172,20 @@ export default function ServerDetailPage() {
     const ok = await confirm({ title: "Rollback", message: `Rollback "${name}" to previous version?`, confirmLabel: "Rollback", danger: true });
     if (!ok) return;
     try {
-      await rollbackApp(id, name);
-      toast("Rollback triggered", "success");
+      // agent-relay answers a blocked or failed rollback with HTTP 200 (same
+      // convention as a blocked deploy), so a non-throwing response here is
+      // NOT the same as success — inspect the body before toasting.
+      const { deploy } = await rollbackApp(id, name);
+      const outcome = describeRollbackResult(deploy);
+      toast(outcome.message, outcome.ok ? "success" : "error");
+      if (deploy.blocked && deploy.preflight) {
+        // The toast only names the failing check(s) (see rollback.ts) —
+        // reuse the same preflight panel the Preflight button opens to show
+        // the full per-check messages instead of fetching them again.
+        setPanel({ type: "preflight", app: name });
+        setLogs(null);
+        setPreflight(deploy.preflight);
+      }
       await load();
     } catch (err: any) {
       toast(`Rollback failed: ${err.message}`, "error");

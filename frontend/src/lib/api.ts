@@ -414,7 +414,18 @@ export async function getDeployStatus(serverId: string, appName: string, deployI
   return request(`/api/servers/${serverId}/apps/${appName}/deploys/${deployId}`);
 }
 
-export async function rollbackApp(serverId: string, name: string, toCommit?: string): Promise<unknown> {
+export interface RollbackResponse {
+  deploy: {
+    id: string;
+    success?: boolean;
+    blocked?: boolean;
+    commitBefore?: string | null;
+    commitAfter?: string | null;
+    preflight?: { passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> };
+  };
+}
+
+export async function rollbackApp(serverId: string, name: string, toCommit?: string): Promise<RollbackResponse> {
   return request(`/api/servers/${serverId}/apps/${name}/rollback`, { method: "POST", body: JSON.stringify({ to_commit: toCommit }) });
 }
 
