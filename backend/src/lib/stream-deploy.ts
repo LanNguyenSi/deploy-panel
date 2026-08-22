@@ -5,6 +5,16 @@ import { provisionAndCheckAppSecrets } from "./provision-secrets.js";
 
 type Step = { name: string; status: string; durationMs?: number; [k: string]: unknown };
 
+// GET /api/v1/deploy/:id JSON.parses `deploy.log` inside a swallowing
+// try/catch (routes/v1.ts) and so does the panel-UI equivalent
+// (routes/deploys.ts): a bare string log fails that parse and the caller
+// sees `steps: []` with no explanation. Every failure reason this module
+// writes to `log` must therefore be a JSON-encoded single-element step
+// array, never a bare string.
+function failureStepLog(output: string): string {
+  return JSON.stringify([{ name: "deploy", status: "failure", durationMs: 0, output }]);
+}
+
 export interface FinalizeDeployOpts {
   deployId: string;
   appId: string;
@@ -147,6 +157,29 @@ export async function streamDeploy(opts: {
       signal: AbortSignal.timeout(600_000), // 10 min for streaming
     });
 
+    // A 4xx here means the relay received and definitively rejected the
+    // deploy request (e.g. unknown app, bad branch), not a connection
+    // that dropped mid-flight. Routing that into the catch block's
+    // recoverBrokenDeploy would run the post-deploy health probe against
+    // whatever the PREVIOUS successful deploy left running, greenwashing a
+    // real rejection into a "success" row (the bug PR #124 fixed for
+    // rollback; see routes/v1.ts and routes/apps.ts's rollback routes).
+    // Mark the deploy failed directly and return without recovery. 5xx and
+    // a missing body (relay accepted but sent nothing usable) still fall
+    // through to the generic throw below, which the catch block routes
+    // through recoverBrokenDeploy: those cases can't be told apart from a
+    // dropped connection.
+    if (!res.ok && res.status >= 400 && res.status < 500) {
+      const bodyText = await res.text().catch(() => "");
+      const reason = `Relay rejected the deploy: ${res.status} ${bodyText || res.statusText}`;
+      await prisma.deploy.update({
+        where: { id: deployId },
+        data: { status: "failed", log: failureStepLog(reason) },
+      });
+      await prisma.app.update({ where: { id: appId }, data: { status: "unhealthy" } });
+      return;
+    }
+
     if (!res.ok || !res.body) {
       throw new Error(`Relay returned ${res.status}`);
     }
@@ -159,7 +192,7 @@ export async function streamDeploy(opts: {
       try {
         data = await res.json();
       } catch {
-        await prisma.deploy.update({ where: { id: deployId }, data: { status: "failed", log: "Relay returned invalid JSON" } });
+        await prisma.deploy.update({ where: { id: deployId }, data: { status: "failed", log: failureStepLog("Relay returned invalid JSON") } });
         await prisma.app.update({ where: { id: appId }, data: { status: "unhealthy" } });
         return;
       }
@@ -286,7 +319,7 @@ async function handleEvent(
   } else if (event === "error") {
     await prisma.deploy.update({
       where: { id: deployId },
-      data: { status: "failed", log: data.message ?? "unknown error" },
+      data: { status: "failed", log: failureStepLog(data.message ?? "unknown error") },
     }).catch(() => {});
     // Mirror the `blocked` branch: a failed deploy must leave the app card
     // `unhealthy`, not stuck on the transient `deploying` it was set to at

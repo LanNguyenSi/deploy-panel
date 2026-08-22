@@ -322,6 +322,17 @@ describe("v1 GET /deploys — ownership filtering", () => {
     expect(mDeploy.findMany).not.toHaveBeenCalled();
   });
 
+  it("server_id belonging to a different owner: 404, deploy.findMany not called", async () => {
+    mServer.findFirst.mockResolvedValue({ ...ownedServer, userId: "user-b" });
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploys?server_id=my-server");
+
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("not_found");
+    expect(mDeploy.findMany).not.toHaveBeenCalled();
+  });
+
   it("app_id stays a raw Prisma filter (no name resolution attempted)", async () => {
     mDeploy.findMany.mockResolvedValue([]);
     mDeploy.count.mockResolvedValue(0);
