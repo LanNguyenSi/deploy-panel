@@ -135,3 +135,154 @@ describe("streamDeploy — pre-deploy secret provisioning + required-env gate", 
     fetchSpy.mockRestore();
   });
 });
+
+// A relay 4xx response means the relay received and definitively rejected
+// the deploy request, not a connection that dropped mid-flight. Routing
+// that into recoverBrokenDeploy would run the post-deploy health probe
+// against whatever the PREVIOUS successful deploy left running, greenwashing
+// a real rejection into a "success" row (the bug PR #124 fixed for
+// rollback: routes/v1.ts and routes/apps.ts's rollback routes). These tests
+// pin the fix and its boundary (5xx / no-body / network errors still route
+// through the existing recovery path).
+describe("streamDeploy: relay response handling", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mAppFindUnique.mockResolvedValue({ requiredEnvKeys: [] });
+    mProvision.mockResolvedValue({ provisionedKeys: [], wrote: false, missing: [] });
+  });
+
+  it("relay 404 (unknown app): marks the deploy failed without recovery, and the reason round-trips as a visible step", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+      body: null,
+      headers: new Headers(),
+      text: async () => "unknown app",
+    } as unknown as Response);
+
+    await streamDeploy(baseOpts);
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    expect(lastCall(mAppUpdate).data.status).toBe("unhealthy");
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+
+    // GET /api/v1/deploy/:id and the panel-UI equivalent both
+    // JSON.parse(deploy.log) inside a swallowing try/catch: a bare string
+    // log fails that parse and surfaces as `steps: []`, hiding the reason.
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(Array.isArray(steps)).toBe(true);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ name: "deploy", status: "failure", durationMs: 0 });
+    expect(steps[0].output).toContain("404");
+    expect(steps[0].output).toContain("unknown app");
+
+    fetchSpy.mockRestore();
+  });
+
+  it("relay 400 (bad branch): marks the deploy failed without recovery", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      body: null,
+      headers: new Headers(),
+      text: async () => "unknown branch: does-not-exist",
+    } as unknown as Response);
+
+    await streamDeploy(baseOpts);
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps[0].output).toContain("400");
+    expect(steps[0].output).toContain("does-not-exist");
+
+    fetchSpy.mockRestore();
+  });
+
+  it("relay 500: still routes through recoverBrokenDeploy (not the 4xx no-recovery path)", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 500,
+      statusText: "Internal Server Error",
+      body: null,
+      headers: new Headers(),
+      text: async () => "boom",
+    } as unknown as Response);
+
+    await streamDeploy(baseOpts);
+
+    expect(recoverBrokenDeploy).toHaveBeenCalledOnce();
+    expect(recoverBrokenDeploy).toHaveBeenCalledWith("d1", "app-1", "srv-a", "thd", expect.stringContaining("500"));
+
+    fetchSpy.mockRestore();
+  });
+
+  it("network error (fetch rejects): still routes through recoverBrokenDeploy", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("fetch failed"));
+
+    await streamDeploy(baseOpts);
+
+    expect(recoverBrokenDeploy).toHaveBeenCalledOnce();
+    expect(mDeployUpdate).not.toHaveBeenCalled();
+
+    fetchSpy.mockRestore();
+  });
+
+  it("relay JSON fallback with an unparseable body: stores the failure reason as a JSON step array, not a bare string", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: {} as any,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: async () => {
+        throw new Error("invalid json");
+      },
+    } as unknown as Response);
+
+    await streamDeploy(baseOpts);
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    expect(lastCall(mAppUpdate).data.status).toBe("unhealthy");
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ name: "deploy", status: "failure" });
+    expect(steps[0].output).toBe("Relay returned invalid JSON");
+
+    fetchSpy.mockRestore();
+  });
+
+  function sseResponse(body: string, status = 200): Response {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(body));
+        controller.close();
+      },
+    });
+    return {
+      ok: status < 400,
+      status,
+      body: stream,
+      headers: new Headers({ "content-type": "text/event-stream" }),
+      text: async () => body,
+    } as unknown as Response;
+  }
+
+  it("SSE `error` event: stores the relay message as a JSON step array, not a bare string", async () => {
+    const sse = 'event: error\ndata: {"message":"Deploy script exited with code 1"}\n\n';
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponse(sse));
+
+    await streamDeploy(baseOpts);
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    expect(lastCall(mAppUpdate).data.status).toBe("unhealthy");
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ name: "deploy", status: "failure" });
+    expect(steps[0].output).toBe("Deploy script exited with code 1");
+
+    fetchSpy.mockRestore();
+  });
+});

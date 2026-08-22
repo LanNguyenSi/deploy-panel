@@ -188,14 +188,31 @@ v1Router.get("/deploy/:id", async (c) => {
 
 v1Router.get("/deploys", async (c) => {
   const actor = getActorContext(c);
-  const serverId = c.req.query("server_id");
+  const serverIdentifier = c.req.query("server_id");
   const appId = c.req.query("app_id");
   const status = c.req.query("status");
   const limit = Math.min(Number(c.req.query("limit")) || 50, 200);
   const offset = Math.max(Number(c.req.query("offset")) || 0, 0);
 
+  // server_id accepts a name or an id, resolved through
+  // findOwnedServerByIdOrName like the other v1 routes (GET /apps, POST
+  // /deploy, POST /rollback, GET /logs, POST /preflight): a raw Prisma
+  // `{ serverId }` filter only ever matched an id, so passing a server name
+  // here used to silently return an empty deploy list. An unresolvable
+  // server_id now 404s instead of degrading to `{ deploys: [], total: 0 }`,
+  // which reads the same as "this server legitimately has zero deploys".
+  //
+  // app_id stays a raw Prisma filter: unlike Server, App has no name-based
+  // lookup helper, and App.name is unique per server (schema.prisma), not
+  // globally, so an app_id-by-name resolution would be ambiguous without
+  // also requiring server_id. The panel-UI's own GET /api/deploys
+  // (routes/deploys.ts) filters appId the same raw way.
   const where: Record<string, unknown> = {};
-  if (serverId) where.serverId = serverId;
+  if (serverIdentifier) {
+    const srv = await findOwnedServerByIdOrName(actor, serverIdentifier);
+    if (!srv) return c.json({ error: "not_found", message: `Server "${serverIdentifier}" not found` }, 404);
+    where.serverId = srv.id;
+  }
   if (appId) where.appId = appId;
   if (status) where.status = status;
   if (!actor.isAdmin) {
