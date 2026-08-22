@@ -58,16 +58,21 @@ const repoRoot = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
 // spawned child below. PrismaClient (backend/src/lib/prisma.ts) only
 // validates the URL's shape at construction and doesn't connect until a
 // query runs, so this alone doesn't affect whether "listening on port" or
-// the app-secrets line appear (both log before any query). It exists so
-// the child doesn't die on an *unrelated* failure a few seconds later:
+// the app-secrets line appear (both log before any query, at ~0.4s
+// measured locally). It does NOT stop the child from eventually dying:
 // backend/src/lib/scheduler.ts's checkScheduled() fires 5s after boot via
 // an unguarded `setTimeout` (no try/catch, unlike the awaited
-// recoverStuckDeploys() call, which server.ts does wrap) and would reject
-// with "Environment variable not found: DATABASE_URL" if none were set at
-// all, crashing the child on an unhandled rejection. Taking both snapshots
-// immediately after the boot line (well under 5s) already avoids that race
-// on its own; this is defense in depth so the child's stderr stays quiet
-// enough to read on a slow CI runner.
+// recoverStuckDeploys() call, which server.ts does wrap), and with this
+// unroutable host it still crashes the child on an unhandled
+// PrismaClientInitializationError ("Can't reach database server at
+// 127.0.0.1:1"), measured locally at ~5.4s after boot, i.e. an unset
+// DATABASE_URL would only change *which* error kills the child (an
+// immediate "Environment variable not found: DATABASE_URL" instead), not
+// whether it dies. What actually keeps this guard safe is that both
+// snapshots are taken immediately after the boot line, well under 5s
+// before either crash would fire; DUMMY_DATABASE_URL exists only so a
+// slow CI runner's stderr near that boundary reads as a plain connection
+// failure instead of an env-var one, in case the two ever get compared.
 const DUMMY_DATABASE_URL = "postgresql://guard-probe:guard-probe@127.0.0.1:1/guard_probe_db";
 
 function getFreePort(): Promise<number> {
@@ -140,33 +145,77 @@ function killTree(child: ChildProcessWithoutNullStreams | undefined) {
 }
 
 /**
+ * Read a pid's parent pid from /proc/<pid>/stat. The `comm` field (2nd,
+ * parenthesised) can itself contain spaces or a `)`, so this locates the
+ * LAST `)` on the line rather than splitting on whitespace naively: the
+ * fields after it (state, ppid, ...) are then whitespace-delimited and
+ * position-stable.
+ */
+function getParentPid(pid: number): number | null {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "latin1");
+    const afterComm = stat.slice(stat.lastIndexOf(")") + 2);
+    const ppid = Number(afterComm.split(" ")[1]);
+    return Number.isFinite(ppid) ? ppid : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Walk `pid`'s parent chain looking for `ancestorPid`, bounded to
+ * `maxHops` in case a pid ever ends up its own ancestor (shouldn't happen
+ * on Linux, but an unbounded loop on /proc data racing under us is worse
+ * than a false negative here).
+ */
+function isDescendantOf(pid: number, ancestorPid: number, maxHops = 25): boolean {
+  let current = pid;
+  for (let i = 0; i < maxHops; i++) {
+    const parent = getParentPid(current);
+    if (parent === null || parent <= 1) return false;
+    if (parent === ancestorPid) return true;
+    current = parent;
+  }
+  return false;
+}
+
+/**
  * Scan /proc (Linux only) for a process owned by the current user whose
- * environment contains `NAME=value` AND whose cmdline matches
- * `cmdlineMustMatch`. The cmdline filter (and the `excludePid` exclusion)
- * matter: `make dev-backend`'s own process inherits its env from THIS
- * test's `spawn()` call by construction, so it always carries the injected
- * var regardless of whether the make -> npm -> tsx chain actually passes
- * it on to the real backend process — matching on env alone against every
- * process on the box would make the check unable to fail. Requiring the
- * matched pid's cmdline to reference `tsx` or `server.ts` restricts the
- * match to the actual backend (or its `tsx` launcher), which is the only
- * process whose environment this guard cares about.
+ * environment contains `NAME=value`, whose cmdline matches
+ * `cmdlineMustMatch`, AND which is a process-tree descendant of
+ * `ancestorPid`. All three matter: `make dev-backend`'s own process
+ * inherits its env from THIS test's `spawn()` call by construction, so it
+ * always carries the injected var regardless of whether the make -> npm ->
+ * tsx chain actually passes it on to the real backend process: matching
+ * on env alone against every process on the box would make the check
+ * unable to fail. The cmdline filter alone is not enough either: an
+ * intermediate `sh -c "tsx watch ..."` wrapper in that chain has the full
+ * `tsx`/`server.ts` invocation embedded in ITS OWN cmdline too (it's the
+ * argument to `-c`), so cmdline matching can land on the shell wrapper
+ * instead of the actual backend process, since both inherit the same env,
+ * so the assertion would still "pass" without proving the backend process
+ * itself received the var. Requiring `pid` to be a descendant of
+ * `ancestorPid` (via the real process tree, not just env inheritance)
+ * closes that gap; cmdline is kept as an additional, human-readable filter
+ * on top.
  */
 function findProcessWithEnvVar(
   name: string,
   value: string,
-  opts: { excludePid?: number; cmdlineMustMatch: RegExp },
+  opts: { ancestorPid?: number; cmdlineMustMatch: RegExp },
 ): number | null {
   const needle = `${name}=${value}`;
   for (const entry of readdirSync("/proc")) {
     if (!/^\d+$/.test(entry)) continue;
     const pid = Number(entry);
-    if (pid === opts.excludePid) continue;
+    if (pid === opts.ancestorPid) continue;
     try {
       const environ = readFileSync(`/proc/${entry}/environ`, "latin1");
       if (!environ.split("\0").includes(needle)) continue;
       const cmdline = readFileSync(`/proc/${entry}/cmdline`, "latin1").replace(/\0/g, " ").trim();
-      if (opts.cmdlineMustMatch.test(cmdline)) return pid;
+      if (!opts.cmdlineMustMatch.test(cmdline)) continue;
+      if (opts.ancestorPid !== undefined && !isDescendantOf(pid, opts.ancestorPid)) continue;
+      return pid;
     } catch {
       // Process exited between readdir and read, or not readable by us — skip.
     }
@@ -241,12 +290,12 @@ describe("make dev-backend — APP_SECRETS_KEY reaches the backend child process
   describe.skipIf(process.platform !== "linux")("/proc — literal per-variable confirmation (Linux, e.g. CI's ubuntu-latest runners)", () => {
     it("finds APP_SECRETS_KEY in the environ of the actual tsx/server.ts backend process, not an ancestor make/npm/sh process", () => {
       const pid = findProcessWithEnvVar("APP_SECRETS_KEY", probeKey, {
-        excludePid: child?.pid,
+        ancestorPid: child?.pid,
         cmdlineMustMatch: /(tsx|server\.ts)/,
       });
       expect(
         pid,
-        "no backend (tsx/server.ts) descendant of `make dev-backend` had APP_SECRETS_KEY in its environment",
+        "no backend (tsx/server.ts) process-tree descendant of `make dev-backend` had APP_SECRETS_KEY in its environment",
       ).not.toBeNull();
     });
   });

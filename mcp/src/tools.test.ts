@@ -345,15 +345,18 @@ describe("deploy_rollback", () => {
     expect(textOf(result)).toEqual({ message: "Rollback started", deployId: "d9", status: "running" });
   });
 
-  // A preflight-blocked rollback: v1.ts's POST /rollback stores the relay's
-  // raw result object (which for a block includes `blocked`/`preflight`,
-  // not `success`) and marks the deploy "failed" since `success` isn't
-  // true. GET /deploy/:id now normalises that non-array log into a
-  // single-element steps array (see backend/tests/v1-api.test.ts's "steps
-  // normalisation" suite) instead of the raw object living where an
-  // unknown[] is documented. Assert the tool passes that shape through
-  // unmodified so a caller can inspect steps[0].blocked/preflight.
-  it("passes through the blocked-rollback shape (status 'failed', steps[0] holding the relay's blocked/preflight payload)", async () => {
+  // A preflight-blocked rollback: agent-relay nests a blocked result's
+  // payload under a `result` key (`{ result: { success: false, blocked:
+  // true, preflight, commitBefore, commitAfter } }`, see
+  // backend/tests/apps-rollback-route.test.ts and apps.ts's twin rollback
+  // route). v1.ts's POST /rollback stores that raw relay body unmodified in
+  // deploy.log and marks the deploy "failed" since the unwrapped payload's
+  // `success` isn't true. GET /deploy/:id normalises that non-array log
+  // into a single-element steps array (see backend/tests/v1-api.test.ts's
+  // "steps normalisation" suite), so steps[0] holds the raw nested body,
+  // not a flattened one. Assert the tool passes that real shape through
+  // unmodified so a caller can inspect steps[0].result.blocked/preflight.
+  it("passes through the blocked-rollback shape (status 'failed', steps[0] holding the relay's nested result.blocked/preflight payload)", async () => {
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
         jsonResponse({ deploy: { id: "d9", status: "running", server: "s", app: "a", triggeredBy: "agent" } }),
@@ -365,7 +368,17 @@ describe("deploy_rollback", () => {
             status: "failed",
             server: "s",
             app: "a",
-            steps: [{ blocked: true, preflight: { passed: false, checks: [] } }],
+            steps: [
+              {
+                result: {
+                  success: false,
+                  blocked: true,
+                  preflight: { passed: false, checks: [] },
+                  commitBefore: "abc123",
+                  commitAfter: "abc123",
+                },
+              },
+            ],
             createdAt: "2026-07-01T00:00:00Z",
           },
         }),
@@ -373,9 +386,23 @@ describe("deploy_rollback", () => {
 
     const result = await cb({ server: "s", app: "a" });
 
-    const deploy = textOf(result) as { status: string; steps: Array<{ blocked: boolean }> };
+    const deploy = textOf(result) as {
+      status: string;
+      steps: Array<{ result: { blocked: boolean; commitBefore: string; commitAfter: string } }>;
+    };
     expect(deploy.status).toBe("failed");
-    expect(deploy.steps).toEqual([{ blocked: true, preflight: { passed: false, checks: [] } }]);
+    expect(deploy.steps).toEqual([
+      {
+        result: {
+          success: false,
+          blocked: true,
+          preflight: { passed: false, checks: [] },
+          commitBefore: "abc123",
+          commitAfter: "abc123",
+        },
+      },
+    ]);
+    expect(deploy.steps[0].result.blocked).toBe(true);
   });
 
   // Safety-critical: server and app identify WHICH app on WHICH server gets

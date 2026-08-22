@@ -58,21 +58,24 @@ allowed to manage.
 | `deploy_preflight`    | Run preflight checks for an app without deploying.                                   |
 | `deploy_rollback`     | Roll an app back to its previous version (`server`, `app`, optional `wait`); polls until completion unless `wait` is `false`. |
 
-### `deploy_rollback` — blocked-rollback shape
+### `deploy_rollback`: blocked-rollback shape
 
 If the relay's own preflight blocks the rollback, `POST /api/v1/rollback`
 still records a deploy row (status ends up `failed`, since the relay result
-has no `success: true`), not an HTTP error. The returned deploy's `steps` is
-a single-element array holding the relay's raw blocked/preflight payload:
+has no `success: true`), not an HTTP error. agent-relay nests a blocked
+result's payload under a `result` key (a completed attempt spreads
+success/commits at the top level instead), and the panel stores that raw
+relay body as-is, so the returned deploy's `steps` is a single-element array
+holding it unmodified:
 
 ```json
 {
   "id": "d9",
   "status": "failed",
-  "steps": [{ "blocked": true, "preflight": { "passed": false, "checks": [...] } }]
+  "steps": [{ "result": { "success": false, "blocked": true, "preflight": { "passed": false, "checks": [...] }, "commitBefore": "abc123", "commitAfter": "abc123" } }]
 }
 ```
 
 This differs from a normal deploy/rollback's `steps`, which is a list of
-step objects. Check `steps[0]?.blocked` to distinguish a preflight block
-from any other failure.
+step objects. Check `steps[0]?.result?.blocked` to distinguish a preflight
+block from any other failure.

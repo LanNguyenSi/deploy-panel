@@ -269,23 +269,51 @@ v1Router.post("/rollback", async (c) => {
   const deployId = deploy.id;
   (async () => {
     try {
-      const result = await relayRequest<{ success?: boolean; commitBefore?: string; commitAfter?: string }>({
+      const raw = await relayRequest<
+        { success?: boolean; commitBefore?: string; commitAfter?: string } & {
+          result?: { success?: boolean; commitBefore?: string; commitAfter?: string };
+        }
+      >({
         serverId: srv.id,
         path: `/api/apps/${appName}/rollback`,
         method: "POST",
         body: { to_commit },
       });
 
+      // agent-relay nests the payload under `result` only when the rollback
+      // was blocked by preflight; a completed attempt (success or a
+      // non-preflight failure) spreads success/commits at the top level
+      // instead. See apps.ts's twin rollback route for the full rationale.
+      // `log` keeps the raw, unmodified body (same convention as apps.ts),
+      // so GET /deploy/:id's steps[0] preserves whichever shape relay sent.
+      const payload = raw.result ?? raw;
+
       await prisma.deploy.update({
         where: { id: deployId },
         data: {
-          status: result.success ? "rolled_back" : "failed",
-          commitBefore: result.commitBefore,
-          commitAfter: result.commitAfter,
-          log: JSON.stringify(result),
+          status: payload.success ? "rolled_back" : "failed",
+          commitBefore: payload.commitBefore,
+          commitAfter: payload.commitAfter,
+          log: JSON.stringify(raw),
         },
       });
     } catch (err) {
+      // A RelayError with a 4xx status means the relay already gave a
+      // definite answer (e.g. "no previous deploy to roll back to"), not a
+      // connection that dropped mid-flight. Routing this into
+      // recoverBrokenDeploy would run the post-deploy health probe, which
+      // can't tell "rollback never ran, app still healthy from the prior
+      // deploy" apart from "rollback succeeded", silently turning a real
+      // failure into a green success row (mirrors apps.ts's rollback route,
+      // PR #124). Mark the row failed directly instead.
+      if (err instanceof RelayError && err.status >= 400 && err.status < 500) {
+        await prisma.deploy.update({
+          where: { id: deployId },
+          data: { status: "failed", log: err.message },
+        });
+        return;
+      }
+
       const errMsg = err instanceof Error ? err.message : String(err);
       recoverBrokenDeploy(deployId, appRecord.id, srv.id, appName, errMsg);
     }

@@ -62,8 +62,9 @@ vi.mock("../src/config/index.js", () => ({
 }));
 
 import { prisma } from "../src/lib/prisma.js";
-import { relayRequest } from "../src/lib/relay.js";
+import { relayRequest, RelayError } from "../src/lib/relay.js";
 import { streamDeploy } from "../src/lib/stream-deploy.js";
+import { recoverBrokenDeploy } from "../src/lib/deploy-recovery.js";
 import { v1Router } from "../src/routes/v1.js";
 import { Hono } from "hono";
 
@@ -534,5 +535,128 @@ describe("v1 POST /rollback — owned server flow", () => {
     expect(res.status).toBe(404);
     expect(mDeploy.create).not.toHaveBeenCalled();
     expect(relayRequest).not.toHaveBeenCalled();
+  });
+});
+
+// agent-relay nests the payload under `result` only when the rollback was
+// blocked by preflight (mirrors apps.ts's rollback route and
+// backend/tests/apps-rollback-route.test.ts); a completed attempt spreads
+// success/commits at the top level instead. These tests pin that v1.ts
+// reads BOTH shapes correctly.
+describe("v1 POST /rollback: agent-relay result shape", () => {
+  const deployRecord = { id: "rollback-1", status: "running", serverId: "srv-a", appId: "app-a" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mServer.findFirst.mockResolvedValue(ownedServer);
+    mApp.findUnique.mockResolvedValue(appRecord);
+    mDeploy.create.mockResolvedValue(deployRecord);
+    mDeploy.update.mockResolvedValue({});
+  });
+
+  it("blocked by preflight: nested `result` is unwrapped, row is failed with the nested commits preserved, and the raw (still-nested) body is stored in log", async () => {
+    const raw = {
+      result: {
+        success: false,
+        blocked: true,
+        preflight: { passed: false, checks: [] },
+        commitBefore: "abc123",
+        commitAfter: "abc123",
+      },
+    };
+    vi.mocked(relayRequest).mockResolvedValue(raw);
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: "my-app" }),
+    });
+
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mDeploy.update).toHaveBeenCalledTimes(1);
+    const updateData = mDeploy.update.mock.calls[0][0].data;
+    expect(updateData.status).toBe("failed");
+    expect(updateData.commitBefore).toBe("abc123");
+    expect(updateData.commitAfter).toBe("abc123");
+    expect(JSON.parse(updateData.log)).toEqual(raw);
+  });
+
+  it("positive case: flat top-level success shape marks the row rolled_back", async () => {
+    vi.mocked(relayRequest).mockResolvedValue({ success: true, commitBefore: "abc", commitAfter: "def" });
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: "my-app" }),
+    });
+
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 0));
+
+    const updateData = mDeploy.update.mock.calls[0][0].data;
+    expect(updateData.status).toBe("rolled_back");
+    expect(updateData.commitBefore).toBe("abc");
+    expect(updateData.commitAfter).toBe("def");
+  });
+});
+
+// The real reachable failure path: agent-relay answers a non-preflight
+// rollback failure with HTTP 4xx `{ error }`, which relayRequest() turns
+// into a thrown RelayError: it never reaches the try block's flat-shape
+// branch above. Before this fix, every RelayError (regardless of status)
+// was routed to recoverBrokenDeploy, whose post-deploy health probe can't
+// distinguish "rollback never ran, app still healthy from the prior
+// deploy" from "rollback succeeded", a real, already-answered failure
+// could end up recorded as a green success row. Modelled on
+// backend/tests/apps-rollback-route.test.ts's twin describe block.
+describe("v1 POST /rollback: RelayError from the relay call itself", () => {
+  const deployRecord = { id: "rollback-1", status: "running", serverId: "srv-a", appId: "app-a" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mServer.findFirst.mockResolvedValue(ownedServer);
+    mApp.findUnique.mockResolvedValue(appRecord);
+    mDeploy.create.mockResolvedValue(deployRecord);
+    mDeploy.update.mockResolvedValue({});
+  });
+
+  it("4xx RelayError: deploy row is marked failed directly with the relay's message, and recoverBrokenDeploy is NOT invoked", async () => {
+    vi.mocked(relayRequest).mockRejectedValue(
+      new RelayError('Relay error (400): {"error":"no previous deploy to roll back to"}', 400),
+    );
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: "my-app" }),
+    });
+
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mDeploy.update).toHaveBeenCalledTimes(1);
+    const updateData = mDeploy.update.mock.calls[0][0].data;
+    expect(updateData.status).toBe("failed");
+    expect(updateData.log).toContain("no previous deploy to roll back to");
+
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+  });
+
+  it("5xx RelayError: still routed through recoverBrokenDeploy, not marked failed directly", async () => {
+    vi.mocked(relayRequest).mockRejectedValue(new RelayError("Relay error (500): boom", 500));
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: "my-app" }),
+    });
+
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(recoverBrokenDeploy).toHaveBeenCalledTimes(1);
+    expect(mDeploy.update).not.toHaveBeenCalled();
   });
 });
