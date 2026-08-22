@@ -2,13 +2,11 @@
 
 MCP (Model Context Protocol) server for [deploy-panel](../README.md). It lets an
 AI agent deploy, inspect, and roll back apps across your fleet by calling the
-panel's `/api/v1` API over stdio for five of its six tools. `deploy_rollback`
-is the exception: it calls the panel's non-v1 `POST
-/api/servers/:serverId/apps/:app/rollback` route, which resolves the server
-by ID (not by name), so rollback needs a server ID even though the tool
-accepts "Server name or ID". Separately, `deploy_list_apps`'s optional
-`server` filter also only works by ID: `/api/v1/apps?server_id=` is matched
-as a raw `serverId` on the backend, with no name resolution.
+panel's `/api/v1` API over stdio for all six tools. Every tool parameter
+described as "Server name or ID" (`deploy_app`, `deploy_preflight`,
+`deploy_rollback`, and `deploy_list_apps`'s optional `server` filter)
+resolves either form on the backend the same way (`findOwnedServerByIdOrName`
+in `backend/src/lib/ownership.ts`).
 
 ## Run it
 
@@ -54,8 +52,30 @@ allowed to manage.
 | Tool                  | Description                                                                          |
 |-----------------------|--------------------------------------------------------------------------------------|
 | `deploy_list_servers` | List all servers with their status and app count.                                    |
-| `deploy_list_apps`    | List apps across servers (optional `server` filter by server ID).                    |
+| `deploy_list_apps`    | List apps across servers (optional `server` filter by name or ID). 404s if `server` doesn't resolve to a server you own. |
 | `deploy_app`          | Deploy an app (`server`, `app`, optional `force`, `ref`, `wait`); polls until completion unless `wait` is `false`. |
 | `deploy_status`       | Get the status of a deploy by `deploy_id`.                                           |
 | `deploy_preflight`    | Run preflight checks for an app without deploying.                                   |
-| `deploy_rollback`     | Roll an app back to its previous version (server must be given by ID, not name).      |
+| `deploy_rollback`     | Roll an app back to its previous version (`server`, `app`, optional `wait`); polls until completion unless `wait` is `false`. |
+
+### `deploy_rollback`: blocked-rollback shape
+
+If the relay's own preflight blocks the rollback, `POST /api/v1/rollback`
+still records a deploy row (status ends up `failed`, since the relay result
+has no `success: true`), not an HTTP error. agent-relay nests a blocked
+result's payload under a `result` key (a completed attempt spreads
+success/commits at the top level instead), and the panel stores that raw
+relay body as-is, so the returned deploy's `steps` is a single-element array
+holding it unmodified:
+
+```json
+{
+  "id": "d9",
+  "status": "failed",
+  "steps": [{ "result": { "success": false, "blocked": true, "preflight": { "passed": false, "checks": [...] }, "commitBefore": "abc123", "commitAfter": "abc123" } }]
+}
+```
+
+This differs from a normal deploy/rollback's `steps`, which is a list of
+step objects. Check `steps[0]?.result?.blocked` to distinguish a preflight
+block from any other failure.

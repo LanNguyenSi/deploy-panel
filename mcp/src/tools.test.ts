@@ -138,6 +138,22 @@ describe("deploy_list_apps", () => {
     expect(textOf(result)).toEqual(apps);
   });
 
+  // The backend resolves server_id by name OR id (findOwnedServerByIdOrName
+  // in v1.ts); the tool/client layer passes the value through unchanged
+  // either way, so a name and an id-shaped value both flow to the same
+  // query param.
+  it.each([
+    ["a server name", "srv-1"],
+    ["a server id", "clx1y2z3a0000abc123def456"],
+  ])("forwards %s unchanged as the server_id query param", async (_label, server) => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ apps: [] }));
+
+    await cb({ server });
+
+    const [url] = fetchSpy.mock.calls[0];
+    expect(url).toBe(`${API_URL}/api/v1/apps?server_id=${server}`);
+  });
+
   it("wraps a fetch failure into an isError result instead of throwing", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ message: "boom" }, 500));
 
@@ -145,6 +161,21 @@ describe("deploy_list_apps", () => {
 
     expect(result.isError).toBe(true);
     expect(textOf(result)).toEqual({ error: "boom" });
+  });
+
+  // Regression coverage: GET /api/v1/apps now 404s on an unresolvable
+  // server_id (backend/src/routes/v1.ts) instead of silently returning
+  // {apps: []}, matching the other v1 routes. Assert the tool surfaces that
+  // as an isError result with the backend's message, not a bare success.
+  it("surfaces a 404 not_found for an unresolvable server as an isError result", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({ error: "not_found", message: 'Server "nope" not found' }, 404),
+    );
+
+    const result = await cb({ server: "nope" });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toEqual({ error: 'Server "nope" not found' });
   });
 });
 
@@ -291,30 +322,132 @@ describe("deploy_preflight", () => {
 describe("deploy_rollback", () => {
   const { schema, cb } = registered.deploy_rollback;
 
-  it("requires server and app", () => {
+  it("requires server and app, rejects a wrong type, and keeps wait optional", () => {
     const shape = z.object(schema);
     expect(shape.safeParse({ server: "s", app: "a" }).success).toBe(true);
     expect(shape.safeParse({ server: "s" }).success).toBe(false);
     expect(shape.safeParse({ app: "a" }).success).toBe(false);
+    expect(shape.safeParse({ server: "s", app: "a", wait: "yes" }).success).toBe(false);
+    expect(shape.safeParse({ server: "s", app: "a", wait: false }).success).toBe(true);
   });
 
-  // Safety-critical: server and app are interpolated into the URL PATH, not
-  // a body. A swapped mapping in client.rollback would roll back the WRONG
-  // app on the WRONG server. Use two distinct, order-sensitive values so a
-  // swap cannot pass by accident.
-  it("issues an exact POST to /api/servers/<server>/apps/<app>/rollback with server and app in the correct path segments", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ deploy: { id: "d9", success: true } }));
+  it("wait:false returns the started envelope after a single rollback POST, without polling", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({ deploy: { id: "d9", status: "running", server: "s", app: "a", triggeredBy: "agent" } }),
+    );
 
-    const result = await cb({ server: "prod-1", app: "my-app" });
+    const result = await cb({ server: "s", app: "a", wait: false });
 
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, init] = fetchSpy.mock.calls[0];
-    expect(url).toBe(`${API_URL}/api/servers/prod-1/apps/my-app/rollback`);
+    expect(url).toBe(`${API_URL}/api/v1/rollback`);
     expect(init?.method).toBe("POST");
-    expect(init?.body).toBeUndefined();
-    expect(textOf(result)).toEqual({ deploy: { id: "d9", success: true } });
+    expect(textOf(result)).toEqual({ message: "Rollback started", deployId: "d9", status: "running" });
   });
 
-  it("wraps a fetch failure into an isError result instead of throwing", async () => {
+  // A preflight-blocked rollback: agent-relay nests a blocked result's
+  // payload under a `result` key (`{ result: { success: false, blocked:
+  // true, preflight, commitBefore, commitAfter } }`, see
+  // backend/tests/apps-rollback-route.test.ts and apps.ts's twin rollback
+  // route). v1.ts's POST /rollback stores that raw relay body unmodified in
+  // deploy.log and marks the deploy "failed" since the unwrapped payload's
+  // `success` isn't true. GET /deploy/:id normalises that non-array log
+  // into a single-element steps array (see backend/tests/v1-api.test.ts's
+  // "steps normalisation" suite), so steps[0] holds the raw nested body,
+  // not a flattened one. Assert the tool passes that real shape through
+  // unmodified so a caller can inspect steps[0].result.blocked/preflight.
+  it("passes through the blocked-rollback shape (status 'failed', steps[0] holding the relay's nested result.blocked/preflight payload)", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        jsonResponse({ deploy: { id: "d9", status: "running", server: "s", app: "a", triggeredBy: "agent" } }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          deploy: {
+            id: "d9",
+            status: "failed",
+            server: "s",
+            app: "a",
+            steps: [
+              {
+                result: {
+                  success: false,
+                  blocked: true,
+                  preflight: { passed: false, checks: [] },
+                  commitBefore: "abc123",
+                  commitAfter: "abc123",
+                },
+              },
+            ],
+            createdAt: "2026-07-01T00:00:00Z",
+          },
+        }),
+      );
+
+    const result = await cb({ server: "s", app: "a" });
+
+    const deploy = textOf(result) as {
+      status: string;
+      steps: Array<{ result: { blocked: boolean; commitBefore: string; commitAfter: string } }>;
+    };
+    expect(deploy.status).toBe("failed");
+    expect(deploy.steps).toEqual([
+      {
+        result: {
+          success: false,
+          blocked: true,
+          preflight: { passed: false, checks: [] },
+          commitBefore: "abc123",
+          commitAfter: "abc123",
+        },
+      },
+    ]);
+    expect(deploy.steps[0].result.blocked).toBe(true);
+  });
+
+  // Safety-critical: server and app identify WHICH app on WHICH server gets
+  // rolled back. Use two distinct values so a swapped mapping in
+  // client.rollback cannot pass by accident. The backend resolves `server`
+  // by name or id the same way as the other v1 routes.
+  it.each([
+    ["a server name", "prod-1"],
+    ["a server id", "clx1y2z3a0000abc123def456"],
+  ])("triggers via POST /api/v1/rollback with {server, app} for %s, then polls to the final result", async (_label, server) => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        jsonResponse({ deploy: { id: "d9", status: "running", server, app: "my-app", triggeredBy: "agent" } }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          deploy: {
+            id: "d9",
+            status: "rolled_back",
+            server,
+            app: "my-app",
+            steps: [],
+            createdAt: "2026-07-01T00:00:00Z",
+          },
+        }),
+      );
+
+    const result = await cb({ server, app: "my-app" });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    const [rollbackUrl, rollbackInit] = fetchSpy.mock.calls[0];
+    expect(rollbackUrl).toBe(`${API_URL}/api/v1/rollback`);
+    expect(rollbackInit?.method).toBe("POST");
+    expect(rollbackInit?.body).toBe(JSON.stringify({ server, app: "my-app" }));
+
+    const [statusUrl, statusInit] = fetchSpy.mock.calls[1];
+    expect(statusUrl).toBe(`${API_URL}/api/v1/deploy/d9`);
+    expect(statusInit?.method).toBe("GET");
+
+    expect(textOf(result).status).toBe("rolled_back");
+  });
+
+  it("wraps a failed rollback POST into an isError result instead of throwing", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ message: "boom" }, 500));
 
     const result = await cb({ server: "s", app: "a" });
