@@ -87,8 +87,10 @@ The repo ships a full `docker-compose.yml` for db + backend + frontend:
 
 ```bash
 cp .env.example .env
-# edit .env: set SESSION_SECRET to a real value, point NEXT_PUBLIC_API_URL at
-# the public URL where the backend will be reachable
+# edit .env: set SESSION_SECRET to a real value, set APP_SECRETS_KEY to a
+# generated value (openssl rand -hex 32, REQUIRED: docker-compose.yml has no
+# fallback for it, so the backend refuses to start without it), and point
+# NEXT_PUBLIC_API_URL at the public URL where the backend will be reachable
 docker compose up -d --build
 ```
 
