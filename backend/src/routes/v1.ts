@@ -44,7 +44,7 @@ v1Router.get("/apps", async (c) => {
   // App ownership inherits through the parent server. Admin: no filter.
   // Non-admin: apps whose server is owned by the actor. server_id accepts a
   // name or an id, resolved the same way as the other v1 routes
-  // (findOwnedServerByIdOrName) — a raw Prisma `{ serverId }` filter only
+  // (findOwnedServerByIdOrName), a raw Prisma `{ serverId }` filter only
   // ever matched an id, so passing a server name here used to silently
   // return an empty list. An unresolvable server_id now 404s, matching the
   // five sibling v1 routes and findOwnedServerByIdOrName's own docstring
@@ -153,7 +153,7 @@ v1Router.get("/deploy/:id", async (c) => {
   }
 
   // deploy.log isn't always a JSON array: POST /rollback stores the raw
-  // relay result object (`JSON.stringify(result)` in the rollback handler
+  // relay result object (`JSON.stringify(raw)` in the rollback handler
   // below), and a preflight-blocked deploy can store a bare string
   // (stream-deploy.ts). Parsing either straight into `steps` would type it
   // as unknown[] while actually holding an object or a string at runtime.
@@ -298,18 +298,26 @@ v1Router.post("/rollback", async (c) => {
         },
       });
     } catch (err) {
-      // A RelayError with a 4xx status means the relay already gave a
-      // definite answer (e.g. "no previous deploy to roll back to"), not a
+      // A RelayError with a 4xx status means agent-relay (or our own relay
+      // lookup) already gave a definite answer: the request was received
+      // and rejected (e.g. "no previous deploy to roll back to"), not a
       // connection that dropped mid-flight. Routing this into
       // recoverBrokenDeploy would run the post-deploy health probe, which
       // can't tell "rollback never ran, app still healthy from the prior
       // deploy" apart from "rollback succeeded", silently turning a real
       // failure into a green success row (mirrors apps.ts's rollback route,
       // PR #124). Mark the row failed directly instead.
+      //
+      // `log` is stored as a JSON-encoded single-element array (not the
+      // bare `err.message` string) so it round-trips through the same
+      // steps-normalisation GET /deploy/:id applies to every other log
+      // shape: a bare string there falls through the `JSON.parse` catch
+      // and comes back as `steps: []`, hiding the failure reason from the
+      // MCP caller entirely.
       if (err instanceof RelayError && err.status >= 400 && err.status < 500) {
         await prisma.deploy.update({
           where: { id: deployId },
-          data: { status: "failed", log: err.message },
+          data: { status: "failed", log: JSON.stringify([{ error: err.message }]) },
         });
         return;
       }
@@ -317,7 +325,7 @@ v1Router.post("/rollback", async (c) => {
       const errMsg = err instanceof Error ? err.message : String(err);
       recoverBrokenDeploy(deployId, appRecord.id, srv.id, appName, errMsg);
     }
-  })();
+  })().catch((e) => console.error("[v1 rollback] background task failed", e));
 
   return c.json({
     deploy: { id: deployId, status: "running", server: srv.name, app: appName, triggeredBy },

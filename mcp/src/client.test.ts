@@ -44,7 +44,7 @@ describe("DeployPanelClient error handling", () => {
 });
 
 describe("DeployPanelClient.rollback", () => {
-  // The server param accepts either a name or an id — the backend resolves
+  // The server param accepts either a name or an id, the backend resolves
   // it via findOwnedServerByIdOrName (v1.ts POST /rollback). The client
   // itself does no format-specific handling, so both forms must produce the
   // exact same request shape.

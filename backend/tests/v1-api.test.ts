@@ -640,8 +640,59 @@ describe("v1 POST /rollback: RelayError from the relay call itself", () => {
     const updateData = mDeploy.update.mock.calls[0][0].data;
     expect(updateData.status).toBe("failed");
     expect(updateData.log).toContain("no previous deploy to roll back to");
+    // `log` is a JSON-encoded single-element array, not the bare
+    // err.message string, so it survives GET /deploy/:id's steps
+    // normalisation below instead of falling through JSON.parse's catch.
+    expect(JSON.parse(updateData.log)).toEqual([
+      { error: 'Relay error (400): {"error":"no previous deploy to roll back to"}' },
+    ]);
 
     expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+  });
+
+  // Regression coverage: before this fix, the 4xx catch branch stored the
+  // bare `err.message` string in `log`. GET /deploy/:id's steps
+  // normalisation (backend/src/routes/v1.ts) only wraps a JSON-decodable
+  // value; a plain, non-JSON string falls through its JSON.parse catch and
+  // comes back as `steps: []`, so the failure reason the relay actually
+  // gave was invisible to the MCP caller reading the deploy back. This
+  // test round-trips the log this handler writes through the real GET
+  // /deploy/:id normalisation and asserts the error is visible in steps.
+  it("4xx RelayError: the stored log round-trips through GET /deploy/:id as a visible error step, not an empty array", async () => {
+    vi.mocked(relayRequest).mockRejectedValue(
+      new RelayError('Relay error (400): {"error":"no previous deploy to roll back to"}', 400),
+    );
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: "my-app" }),
+    });
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 0));
+
+    const updateData = mDeploy.update.mock.calls[0][0].data;
+
+    mDeploy.findUnique.mockResolvedValue({
+      id: "rollback-1",
+      status: updateData.status,
+      serverId: "srv-a",
+      appId: "app-a",
+      commitBefore: null,
+      commitAfter: null,
+      duration: null,
+      log: updateData.log,
+      triggeredBy: "panel",
+      createdAt: new Date(),
+      app: { name: "my-app" },
+      server: { name: "my-server", userId: "user-a" },
+    });
+
+    const getRes = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy/rollback-1");
+    const body = (await getRes.json()) as { deploy: { steps: unknown } };
+    expect(body.deploy.steps).toEqual([
+      { error: expect.stringContaining("no previous deploy to roll back to") },
+    ]);
   });
 
   it("5xx RelayError: still routed through recoverBrokenDeploy, not marked failed directly", async () => {
