@@ -75,7 +75,7 @@ docker compose up -d --build
 
 Container behaviour:
 
-- `db`: PostgreSQL 16 Alpine, persistent volume `pgdata`, healthcheck via `pg_isready`.
+- `db`: PostgreSQL 16 Alpine, persistent volume `pgdata`, healthcheck via `pg_isready`, published on 127.0.0.1:5433 (loopback only) for host-run dev tooling.
 - `backend`: multi-stage build, runs `prisma db push` to sync the schema on startup, exposes `:3001` internally. Healthcheck hits `/api/health`. Not published to the host by default.
 - `frontend`: multi-stage build with Next.js standalone output, published on `${FRONTEND_PORT:-3000}`.
 

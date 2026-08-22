@@ -1,8 +1,14 @@
 # @deploy-panel/mcp
 
 MCP (Model Context Protocol) server for [deploy-panel](../README.md). It lets an
-AI agent deploy, roll back, and inspect apps across your fleet by calling the
-panel's `/api/v1` API over stdio.
+AI agent deploy, inspect, and roll back apps across your fleet by calling the
+panel's `/api/v1` API over stdio for five of its six tools. `deploy_rollback`
+is the exception: it calls the panel's non-v1 `POST
+/api/servers/:serverId/apps/:app/rollback` route, which resolves the server
+by ID (not by name), so rollback needs a server ID even though the tool
+accepts "Server name or ID". Separately, `deploy_list_apps`'s optional
+`server` filter also only works by ID: `/api/v1/apps?server_id=` is matched
+as a raw `serverId` on the backend, with no name resolution.
 
 ## Run it
 
@@ -48,8 +54,8 @@ allowed to manage.
 | Tool                  | Description                                                                          |
 |-----------------------|--------------------------------------------------------------------------------------|
 | `deploy_list_servers` | List all servers with their status and app count.                                    |
-| `deploy_list_apps`    | List apps across servers (optional `server` filter by name or ID).                   |
+| `deploy_list_apps`    | List apps across servers (optional `server` filter by server ID).                    |
 | `deploy_app`          | Deploy an app (`server`, `app`, optional `force`, `ref`, `wait`); polls until completion unless `wait` is `false`. |
 | `deploy_status`       | Get the status of a deploy by `deploy_id`.                                           |
 | `deploy_preflight`    | Run preflight checks for an app without deploying.                                   |
-| `deploy_rollback`     | Roll an app back to its previous version.                                            |
+| `deploy_rollback`     | Roll an app back to its previous version (server must be given by ID, not name).      |
