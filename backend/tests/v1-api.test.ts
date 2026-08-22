@@ -276,6 +276,62 @@ describe("v1 GET /deploys — ownership filtering", () => {
     const where = mDeploy.findMany.mock.calls[0]?.[0]?.where;
     expect(where?.server).toEqual({ userId: "__no_access__" });
   });
+
+  // Regression coverage for the same name-resolution fix as GET /apps
+  // (backend/src/routes/v1.ts): server_id used to be passed straight into
+  // a raw Prisma `{ serverId }` filter, so a server NAME silently matched
+  // zero deploys. It must now resolve through findOwnedServerByIdOrName
+  // like the other v1 routes.
+  it("server_id=<name>: resolves via findOwnedServerByIdOrName and filters by the resolved id", async () => {
+    mServer.findFirst.mockResolvedValue(ownedServer);
+    mDeploy.findMany.mockResolvedValue([]);
+    mDeploy.count.mockResolvedValue(0);
+
+    await appFor({ userId: "user-a", isAdmin: false }).request("/deploys?server_id=my-server");
+
+    expect(mServer.findFirst).toHaveBeenCalledWith({
+      where: { OR: [{ id: "my-server" }, { name: "my-server" }] },
+    });
+    const where = mDeploy.findMany.mock.calls[0]?.[0]?.where;
+    expect(where?.serverId).toBe("srv-a");
+  });
+
+  it("server_id=<id>: resolves the same way when passed the server's actual id", async () => {
+    mServer.findFirst.mockResolvedValue(ownedServer);
+    mDeploy.findMany.mockResolvedValue([]);
+    mDeploy.count.mockResolvedValue(0);
+
+    await appFor({ userId: "user-a", isAdmin: false }).request("/deploys?server_id=srv-a");
+
+    expect(mServer.findFirst).toHaveBeenCalledWith({
+      where: { OR: [{ id: "srv-a" }, { name: "srv-a" }] },
+    });
+    const where = mDeploy.findMany.mock.calls[0]?.[0]?.where;
+    expect(where?.serverId).toBe("srv-a");
+  });
+
+  it("server_id that does not resolve (unowned or unknown): 404s without ever calling deploy.findMany with a raw unresolved filter", async () => {
+    mServer.findFirst.mockResolvedValue(null);
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploys?server_id=nope");
+
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("not_found");
+    expect(body.message).toContain("nope");
+    expect(mDeploy.findMany).not.toHaveBeenCalled();
+  });
+
+  it("app_id stays a raw Prisma filter (no name resolution attempted)", async () => {
+    mDeploy.findMany.mockResolvedValue([]);
+    mDeploy.count.mockResolvedValue(0);
+
+    await appFor({ userId: "user-a", isAdmin: false }).request("/deploys?app_id=app-a");
+
+    const where = mDeploy.findMany.mock.calls[0]?.[0]?.where;
+    expect(where?.appId).toBe("app-a");
+    expect(mServer.findFirst).not.toHaveBeenCalled();
+  });
 });
 
 // ── POST /deploy ──────────────────────────────────────────────────────────────

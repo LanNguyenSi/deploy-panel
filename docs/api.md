@@ -70,7 +70,7 @@ All v1 endpoints are prefixed with `/api/v1` and authenticated with a Bearer cre
 | GET    | `/api/v1/apps`        | List all apps (optionally filtered by `server_id`, which accepts a server name or id). `server_id` set to a server you don't own, or that doesn't resolve, answers 404 rather than an empty list |
 | POST   | `/api/v1/deploy`      | Trigger a deploy for a given app                                   |
 | GET    | `/api/v1/deploy/:id`  | Get status of a specific deploy                                    |
-| GET    | `/api/v1/deploys`     | List deploys with `offset` / `total` pagination                    |
+| GET    | `/api/v1/deploys`     | List deploys with `offset` / `total` pagination, optionally filtered by `server_id` (accepts a server name or id), `app_id`, `status`. `server_id` set to a server you don't own, or that doesn't resolve, answers 404 rather than an empty list |
 | POST   | `/api/v1/rollback`    | Trigger a rollback for a given app                                 |
 | GET    | `/api/v1/logs`        | Fetch logs for a given app                                         |
 | POST   | `/api/v1/preflight`   | Run preflight checks for a given app                               |
