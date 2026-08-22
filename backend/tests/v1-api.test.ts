@@ -232,14 +232,15 @@ describe("v1 GET /apps — ownership filtering", () => {
     expect(where?.serverId).toBe("srv-a");
   });
 
-  it("server_id that does not resolve (unowned or unknown): returns an empty list without ever calling app.findMany with a raw unresolved filter", async () => {
+  it("server_id that does not resolve (unowned or unknown): 404s like the five sibling v1 routes, without ever calling app.findMany with a raw unresolved filter", async () => {
     mServer.findFirst.mockResolvedValue(null);
 
     const res = await appFor({ userId: "user-a", isAdmin: false }).request("/apps?server_id=nope");
 
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { apps: unknown[] };
-    expect(body.apps).toEqual([]);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("not_found");
+    expect(body.message).toContain("nope");
     expect(mApp.findMany).not.toHaveBeenCalled();
   });
 });
@@ -424,6 +425,66 @@ describe("v1 GET /deploy/:id — foreign-server isolation", () => {
     mDeploy.findUnique.mockResolvedValue(null);
     const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy/no-such-id");
     expect(res.status).toBe(404);
+  });
+});
+
+describe("v1 GET /deploy/:id — steps normalisation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function deployWithLog(log: string | null) {
+    return {
+      id: "deploy-1",
+      status: "failed",
+      serverId: "srv-a",
+      appId: "app-a",
+      commitBefore: null,
+      commitAfter: null,
+      duration: null,
+      log,
+      triggeredBy: "panel",
+      createdAt: new Date(),
+      app: { name: "my-app" },
+      server: { name: "my-server", userId: "user-a" },
+    };
+  }
+
+  it("passes an array log straight through (stream-deploy step list)", async () => {
+    mDeploy.findUnique.mockResolvedValue(deployWithLog(JSON.stringify([{ step: "clone" }, { step: "build" }])));
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy/deploy-1");
+    const body = (await res.json()) as { deploy: { steps: unknown } };
+    expect(body.deploy.steps).toEqual([{ step: "clone" }, { step: "build" }]);
+  });
+
+  // Regression coverage: POST /rollback stores the raw relay result OBJECT
+  // via JSON.stringify(result), not an array. Before this fix, `steps`
+  // would silently hold that object at runtime despite its unknown[] type.
+  it("wraps a non-array log (e.g. the rollback relay payload object) in a single-element array", async () => {
+    mDeploy.findUnique.mockResolvedValue(
+      deployWithLog(JSON.stringify({ blocked: true, preflight: { passed: false, checks: [] } })),
+    );
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy/deploy-1");
+    const body = (await res.json()) as { deploy: { steps: unknown } };
+    expect(body.deploy.steps).toEqual([{ blocked: true, preflight: { passed: false, checks: [] } }]);
+  });
+
+  it("wraps a JSON-encoded string log in a single-element array", async () => {
+    mDeploy.findUnique.mockResolvedValue(deployWithLog(JSON.stringify("blocked by preflight")));
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy/deploy-1");
+    const body = (await res.json()) as { deploy: { steps: unknown } };
+    expect(body.deploy.steps).toEqual(["blocked by preflight"]);
+  });
+
+  it("falls back to an empty array for a non-JSON log (e.g. 'Relay returned invalid JSON')", async () => {
+    mDeploy.findUnique.mockResolvedValue(deployWithLog("Relay returned invalid JSON"));
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy/deploy-1");
+    const body = (await res.json()) as { deploy: { steps: unknown } };
+    expect(body.deploy.steps).toEqual([]);
   });
 });
 

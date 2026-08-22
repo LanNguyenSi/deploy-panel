@@ -162,6 +162,21 @@ describe("deploy_list_apps", () => {
     expect(result.isError).toBe(true);
     expect(textOf(result)).toEqual({ error: "boom" });
   });
+
+  // Regression coverage: GET /api/v1/apps now 404s on an unresolvable
+  // server_id (backend/src/routes/v1.ts) instead of silently returning
+  // {apps: []}, matching the other v1 routes. Assert the tool surfaces that
+  // as an isError result with the backend's message, not a bare success.
+  it("surfaces a 404 not_found for an unresolvable server as an isError result", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({ error: "not_found", message: 'Server "nope" not found' }, 404),
+    );
+
+    const result = await cb({ server: "nope" });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toEqual({ error: 'Server "nope" not found' });
+  });
 });
 
 describe("deploy_app", () => {
@@ -307,11 +322,60 @@ describe("deploy_preflight", () => {
 describe("deploy_rollback", () => {
   const { schema, cb } = registered.deploy_rollback;
 
-  it("requires server and app", () => {
+  it("requires server and app, rejects a wrong type, and keeps wait optional", () => {
     const shape = z.object(schema);
     expect(shape.safeParse({ server: "s", app: "a" }).success).toBe(true);
     expect(shape.safeParse({ server: "s" }).success).toBe(false);
     expect(shape.safeParse({ app: "a" }).success).toBe(false);
+    expect(shape.safeParse({ server: "s", app: "a", wait: "yes" }).success).toBe(false);
+    expect(shape.safeParse({ server: "s", app: "a", wait: false }).success).toBe(true);
+  });
+
+  it("wait:false returns the started envelope after a single rollback POST, without polling", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({ deploy: { id: "d9", status: "running", server: "s", app: "a", triggeredBy: "agent" } }),
+    );
+
+    const result = await cb({ server: "s", app: "a", wait: false });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe(`${API_URL}/api/v1/rollback`);
+    expect(init?.method).toBe("POST");
+    expect(textOf(result)).toEqual({ message: "Rollback started", deployId: "d9", status: "running" });
+  });
+
+  // A preflight-blocked rollback: v1.ts's POST /rollback stores the relay's
+  // raw result object (which for a block includes `blocked`/`preflight`,
+  // not `success`) and marks the deploy "failed" since `success` isn't
+  // true. GET /deploy/:id now normalises that non-array log into a
+  // single-element steps array (see backend/tests/v1-api.test.ts's "steps
+  // normalisation" suite) instead of the raw object living where an
+  // unknown[] is documented. Assert the tool passes that shape through
+  // unmodified so a caller can inspect steps[0].blocked/preflight.
+  it("passes through the blocked-rollback shape (status 'failed', steps[0] holding the relay's blocked/preflight payload)", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        jsonResponse({ deploy: { id: "d9", status: "running", server: "s", app: "a", triggeredBy: "agent" } }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          deploy: {
+            id: "d9",
+            status: "failed",
+            server: "s",
+            app: "a",
+            steps: [{ blocked: true, preflight: { passed: false, checks: [] } }],
+            createdAt: "2026-07-01T00:00:00Z",
+          },
+        }),
+      );
+
+    const result = await cb({ server: "s", app: "a" });
+
+    const deploy = textOf(result) as { status: string; steps: Array<{ blocked: boolean }> };
+    expect(deploy.status).toBe("failed");
+    expect(deploy.steps).toEqual([{ blocked: true, preflight: { passed: false, checks: [] } }]);
   });
 
   // Safety-critical: server and app identify WHICH app on WHICH server gets

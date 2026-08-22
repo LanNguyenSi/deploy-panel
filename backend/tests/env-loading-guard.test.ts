@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { spawn } from "node:child_process";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:net";
 import path from "node:path";
@@ -29,10 +29,46 @@ import { fileURLToPath } from "node:url";
  *      an already-exported var (e.g. an accidental `env -i`, or an npm
  *      config that strips env). We guard THAT by actually running the real
  *      `make dev-backend` command with an injected APP_SECRETS_KEY and
- *      confirming a descendant process still has it.
+ *      confirming the backend process itself received it, two independent
+ *      ways:
+ *        a. Portable: server.ts logs a literal `app-secrets:
+ *           configured|absent` line derived from `config.APP_SECRETS_KEY`
+ *           (never the value itself). This is per-variable and runs on
+ *           every platform/CI.
+ *        b. Linux only: read the actual backend (tsx/server.ts) process's
+ *           /proc/<pid>/environ directly, with zero cooperation from
+ *           application code. Kept as an independent confirmation of (a)
+ *           that doesn't rely on the backend's own config code being
+ *           correct; skipped where /proc doesn't exist (e.g. macOS dev
+ *           boxes) since the portable check above already runs there.
+ *
+ *      Reaching the "listening on port" boot line at all additionally
+ *      proves SESSION_SECRET (required, no fallback) was delivered through
+ *      the same chain. That is evidence the chain propagates *some*
+ *      variables — it is an assumption, not a proof, that propagation is
+ *      uniform across variable names (i.e. that make/npm/sh/tsx don't
+ *      special-case one env var over another); (a) and (b) above are what
+ *      actually verify APP_SECRETS_KEY specifically, which is why both
+ *      exist rather than relying on the boot line alone.
  */
 
 const repoRoot = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
+
+// Syntactically valid but unroutable Postgres URL, injected into every
+// spawned child below. PrismaClient (backend/src/lib/prisma.ts) only
+// validates the URL's shape at construction and doesn't connect until a
+// query runs, so this alone doesn't affect whether "listening on port" or
+// the app-secrets line appear (both log before any query). It exists so
+// the child doesn't die on an *unrelated* failure a few seconds later:
+// backend/src/lib/scheduler.ts's checkScheduled() fires 5s after boot via
+// an unguarded `setTimeout` (no try/catch, unlike the awaited
+// recoverStuckDeploys() call, which server.ts does wrap) and would reject
+// with "Environment variable not found: DATABASE_URL" if none were set at
+// all, crashing the child on an unhandled rejection. Taking both snapshots
+// immediately after the boot line (well under 5s) already avoids that race
+// on its own; this is defense in depth so the child's stderr stays quiet
+// enough to read on a slow CI runner.
+const DUMMY_DATABASE_URL = "postgresql://guard-probe:guard-probe@127.0.0.1:1/guard_probe_db";
 
 function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -43,6 +79,10 @@ function getFreePort(): Promise<number> {
       srv.close((err) => {
         if (err) return reject(err);
         if (port === null) return reject(new Error("could not determine a free port"));
+        // TOCTOU: the port is free at this instant but nothing reserves it
+        // between this close() and the child's bind a moment later. Accepted
+        // for a locally-run test guard; a collision would surface as a
+        // flaky EADDRINUSE rather than a false pass/fail either way.
         resolve(port);
       });
     });
@@ -69,21 +109,64 @@ function waitForOutput(stream: NodeJS.ReadableStream, pattern: RegExp, timeoutMs
   });
 }
 
+function buildEnv(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, NODE_ENV: "test", DATABASE_URL: DUMMY_DATABASE_URL };
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) delete env[key];
+    else env[key] = value;
+  }
+  return env;
+}
+
+function spawnDevBackend(port: number, overrides: Record<string, string | undefined>) {
+  const child = spawn("make", ["dev-backend"], {
+    cwd: repoRoot,
+    env: buildEnv({ PORT: String(port), ...overrides }),
+    detached: true,
+  }) as ChildProcessWithoutNullStreams;
+  let out = "";
+  child.stdout.on("data", (c: Buffer) => (out += c.toString("utf8")));
+  child.stderr.on("data", (c: Buffer) => (out += c.toString("utf8")));
+  return { child, output: () => out };
+}
+
+function killTree(child: ChildProcessWithoutNullStreams | undefined) {
+  if (!child?.pid) return;
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    // already dead
+  }
+}
+
 /**
- * Scan /proc (Linux only) for any process owned by the current user whose
- * environment contains `NAME=value`. This needs zero cooperation from
- * application code — it reads the OS-level environment of whatever
- * descendant of `make dev-backend` actually ends up running (make -> sh -c
- * "npm run dev" -> npm -> sh -c "tsx watch src/server.ts" -> node), without
- * having to walk that exact process tree by pid.
+ * Scan /proc (Linux only) for a process owned by the current user whose
+ * environment contains `NAME=value` AND whose cmdline matches
+ * `cmdlineMustMatch`. The cmdline filter (and the `excludePid` exclusion)
+ * matter: `make dev-backend`'s own process inherits its env from THIS
+ * test's `spawn()` call by construction, so it always carries the injected
+ * var regardless of whether the make -> npm -> tsx chain actually passes
+ * it on to the real backend process — matching on env alone against every
+ * process on the box would make the check unable to fail. Requiring the
+ * matched pid's cmdline to reference `tsx` or `server.ts` restricts the
+ * match to the actual backend (or its `tsx` launcher), which is the only
+ * process whose environment this guard cares about.
  */
-function findProcessWithEnvVar(name: string, value: string): number | null {
+function findProcessWithEnvVar(
+  name: string,
+  value: string,
+  opts: { excludePid?: number; cmdlineMustMatch: RegExp },
+): number | null {
   const needle = `${name}=${value}`;
   for (const entry of readdirSync("/proc")) {
     if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    if (pid === opts.excludePid) continue;
     try {
       const environ = readFileSync(`/proc/${entry}/environ`, "latin1");
-      if (environ.split("\0").includes(needle)) return Number(entry);
+      if (!environ.split("\0").includes(needle)) continue;
+      const cmdline = readFileSync(`/proc/${entry}/cmdline`, "latin1").replace(/\0/g, " ").trim();
+      if (opts.cmdlineMustMatch.test(cmdline)) return pid;
     } catch {
       // Process exited between readdir and read, or not readable by us — skip.
     }
@@ -113,67 +196,58 @@ describe("docker-compose.yml — APP_SECRETS_KEY fails closed", () => {
 });
 
 describe("make dev-backend — APP_SECRETS_KEY reaches the backend child process", () => {
-  it(
-    "boots the real `make dev-backend` chain with an injected APP_SECRETS_KEY and observes it in a descendant process's environment",
-    async () => {
-      const probeKey = `guard-probe-app-secrets-key-${Date.now()}`;
-      const port = await getFreePort();
+  let child: ChildProcessWithoutNullStreams | undefined;
+  let getOutput: () => string = () => "";
+  let probeKey: string;
 
-      const child = spawn("make", ["dev-backend"], {
-        cwd: repoRoot,
-        env: {
-          ...process.env,
-          SESSION_SECRET: "guard-probe-session-secret-0123456789",
-          APP_SECRETS_KEY: probeKey,
-          PORT: String(port),
-          NODE_ENV: "test",
-        },
-        detached: true,
+  beforeAll(async () => {
+    probeKey = `guard-probe-app-secrets-key-${Date.now()}`;
+    const port = await getFreePort();
+
+    const spawned = spawnDevBackend(port, {
+      SESSION_SECRET: "guard-probe-session-secret-0123456789",
+      APP_SECRETS_KEY: probeKey,
+    });
+    child = spawned.child;
+    getOutput = spawned.output;
+
+    try {
+      // config/index.ts validates SESSION_SECRET (required, no fallback)
+      // at import time, before server.ts logs "listening on port" —
+      // reaching that log line proves the full make -> npm run -> tsx
+      // watch chain delivered THIS test's injected env into the backend
+      // process at all. See the module docblock for why that alone isn't
+      // treated as proof APP_SECRETS_KEY specifically got through.
+      await waitForOutput(child.stdout, /listening on port/, 25_000);
+      // Take both the portable and the /proc snapshot right after the boot
+      // line, before the unguarded 5s scheduler tick (see
+      // DUMMY_DATABASE_URL above) could crash the child.
+      await waitForOutput(child.stdout, /app-secrets: (configured|absent)/, 10_000);
+    } catch (err) {
+      killTree(child);
+      throw new Error(`${(err as Error).message}\n\n--- child output ---\n${getOutput()}`);
+    }
+  }, 30_000);
+
+  afterAll(() => {
+    killTree(child);
+  });
+
+  it("reports APP_SECRETS_KEY as configured via the backend's own portable readback (runs on every platform)", () => {
+    expect(getOutput(), `child output:\n${getOutput()}`).toMatch(/app-secrets: configured/);
+    expect(getOutput()).not.toMatch(/app-secrets: absent/);
+  });
+
+  describe.skipIf(process.platform !== "linux")("/proc — literal per-variable confirmation (Linux, e.g. CI's ubuntu-latest runners)", () => {
+    it("finds APP_SECRETS_KEY in the environ of the actual tsx/server.ts backend process, not an ancestor make/npm/sh process", () => {
+      const pid = findProcessWithEnvVar("APP_SECRETS_KEY", probeKey, {
+        excludePid: child?.pid,
+        cmdlineMustMatch: /(tsx|server\.ts)/,
       });
-
-      let stdout = "";
-      child.stdout?.on("data", (c: Buffer) => {
-        stdout += c.toString("utf8");
-      });
-      child.stderr?.on("data", (c: Buffer) => {
-        stdout += c.toString("utf8");
-      });
-
-      try {
-        // config/index.ts validates SESSION_SECRET (required, no fallback)
-        // at import time, before server.ts logs "listening on port" —
-        // reaching that log line proves the full make -> npm run -> tsx
-        // watch chain delivered THIS test's injected env into the backend
-        // process at all (env propagation is uniform across variable
-        // names in that chain — there is no per-variable special-casing
-        // anywhere in make/npm/sh/tsx).
-        await waitForOutput(child.stdout!, /listening on port/, 25_000);
-
-        if (process.platform === "linux") {
-          // Literal, per-variable confirmation — runs on CI (ci.yml uses
-          // ubuntu-latest runners). /proc is Linux-only, so this branch is
-          // a no-op elsewhere (see the boot assertion above, which does
-          // run everywhere and already proves general propagation).
-          const pid = findProcessWithEnvVar("APP_SECRETS_KEY", probeKey);
-          expect(pid, "no descendant of `make dev-backend` had APP_SECRETS_KEY in its environment").not.toBeNull();
-        } else {
-          console.warn(
-            `[env-loading-guard] skipped the /proc-based APP_SECRETS_KEY check on ${process.platform} ` +
-              "(Linux-only); the boot-with-injected-env assertion above still ran.",
-          );
-        }
-      } catch (err) {
-        throw new Error(`${(err as Error).message}\n\n--- child output ---\n${stdout}`);
-      } finally {
-        if (child.pid) {
-          try {
-            process.kill(-child.pid, "SIGKILL");
-          } catch {
-            // already dead
-          }
-        }
-      }
-    },
-    30_000,
-  );
+      expect(
+        pid,
+        "no backend (tsx/server.ts) descendant of `make dev-backend` had APP_SECRETS_KEY in its environment",
+      ).not.toBeNull();
+    });
+  });
 });

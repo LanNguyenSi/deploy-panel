@@ -52,8 +52,27 @@ allowed to manage.
 | Tool                  | Description                                                                          |
 |-----------------------|--------------------------------------------------------------------------------------|
 | `deploy_list_servers` | List all servers with their status and app count.                                    |
-| `deploy_list_apps`    | List apps across servers (optional `server` filter by name or ID).                   |
+| `deploy_list_apps`    | List apps across servers (optional `server` filter by name or ID). 404s if `server` doesn't resolve to a server you own. |
 | `deploy_app`          | Deploy an app (`server`, `app`, optional `force`, `ref`, `wait`); polls until completion unless `wait` is `false`. |
 | `deploy_status`       | Get the status of a deploy by `deploy_id`.                                           |
 | `deploy_preflight`    | Run preflight checks for an app without deploying.                                   |
-| `deploy_rollback`     | Roll an app back to its previous version; polls until completion.                    |
+| `deploy_rollback`     | Roll an app back to its previous version (`server`, `app`, optional `wait`); polls until completion unless `wait` is `false`. |
+
+### `deploy_rollback` — blocked-rollback shape
+
+If the relay's own preflight blocks the rollback, `POST /api/v1/rollback`
+still records a deploy row (status ends up `failed`, since the relay result
+has no `success: true`), not an HTTP error. The returned deploy's `steps` is
+a single-element array holding the relay's raw blocked/preflight payload:
+
+```json
+{
+  "id": "d9",
+  "status": "failed",
+  "steps": [{ "blocked": true, "preflight": { "passed": false, "checks": [...] } }]
+}
+```
+
+This differs from a normal deploy/rollback's `steps`, which is a list of
+step objects. Check `steps[0]?.blocked` to distinguish a preflight block
+from any other failure.

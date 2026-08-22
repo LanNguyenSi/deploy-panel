@@ -46,11 +46,15 @@ v1Router.get("/apps", async (c) => {
   // name or an id, resolved the same way as the other v1 routes
   // (findOwnedServerByIdOrName) — a raw Prisma `{ serverId }` filter only
   // ever matched an id, so passing a server name here used to silently
-  // return an empty list.
+  // return an empty list. An unresolvable server_id now 404s, matching the
+  // five sibling v1 routes and findOwnedServerByIdOrName's own docstring
+  // ("callers should render a 404 ... to avoid leaking existence"), rather
+  // than degrading to an empty {apps: []} that reads the same as "this
+  // server legitimately has zero apps".
   const where: Record<string, unknown> = {};
   if (serverIdentifier) {
     const srv = await findOwnedServerByIdOrName(actor, serverIdentifier);
-    if (!srv) return c.json({ apps: [] });
+    if (!srv) return c.json({ error: "not_found", message: `Server "${serverIdentifier}" not found` }, 404);
     where.serverId = srv.id;
   }
   if (!actor.isAdmin) {
@@ -148,9 +152,20 @@ v1Router.get("/deploy/:id", async (c) => {
     return c.json({ error: "not_found", message: "Deploy not found" }, 404);
   }
 
+  // deploy.log isn't always a JSON array: POST /rollback stores the raw
+  // relay result object (`JSON.stringify(result)` in the rollback handler
+  // below), and a preflight-blocked deploy can store a bare string
+  // (stream-deploy.ts). Parsing either straight into `steps` would type it
+  // as unknown[] while actually holding an object or a string at runtime.
+  // Normalise to a single-element array so the field's shape matches its
+  // declared type (and mcp/src/client.ts's DeployInfo.steps) regardless of
+  // what produced the log.
   let steps: unknown[] = [];
   if (deploy.log) {
-    try { steps = JSON.parse(deploy.log); } catch {}
+    try {
+      const parsed = JSON.parse(deploy.log);
+      steps = Array.isArray(parsed) ? parsed : [parsed];
+    } catch {}
   }
 
   return c.json({

@@ -104,14 +104,20 @@ export function registerTools(server: McpServer, client: DeployPanelClient) {
 
   server.tool(
     "deploy_rollback",
-    "Rollback an app to its previous version via the relay. Triggers the rollback and polls until completion, returning the final deploy result.",
+    "Rollback an app to its previous version via the relay. Triggers the rollback and polls until completion unless wait is false, returning the final deploy result. If the relay's preflight blocked the rollback, the returned deploy has status 'failed' with the preflight/blocked details in steps[0] (see mcp/README.md).",
     {
       server: z.string().describe("Server name or ID"),
       app: z.string().describe("App name"),
+      wait: z.boolean().optional().describe("Wait for rollback to complete (default: true)"),
     },
-    async ({ server, app }) => {
+    async ({ server, app, wait }) => {
       try {
         const { deploy } = await client.rollback(server, app);
+
+        if (wait === false) {
+          return text({ message: "Rollback started", deployId: deploy.id, status: deploy.status });
+        }
+
         const result = await client.pollDeploy(deploy.id);
         return text(result.deploy);
       } catch (e) {
