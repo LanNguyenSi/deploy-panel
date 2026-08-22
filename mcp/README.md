@@ -1,8 +1,12 @@
 # @deploy-panel/mcp
 
 MCP (Model Context Protocol) server for [deploy-panel](../README.md). It lets an
-AI agent deploy, roll back, and inspect apps across your fleet by calling the
-panel's `/api/v1` API over stdio.
+AI agent deploy, inspect, and roll back apps across your fleet by calling the
+panel's `/api/v1` API over stdio for five of its six tools. `deploy_rollback`
+is the exception: it calls the panel's non-v1 `POST
+/api/servers/:serverId/apps/:app/rollback` route, which resolves the server
+by ID (not by name), so rollback needs a server ID even though the tool
+accepts "Server name or ID".
 
 ## Run it
 

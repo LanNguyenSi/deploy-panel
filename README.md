@@ -92,7 +92,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-The backend waits for the db health check before starting, the frontend waits for the backend, and only the frontend port is published by default. See [docs/configuration.md](docs/configuration.md) for the full env var matrix and production notes.
+The backend waits for the db health check before starting, the frontend waits for the backend, and only the frontend is published beyond loopback; the db is additionally published on 127.0.0.1:5433 for host-run dev tooling. See [docs/configuration.md](docs/configuration.md) for the full env var matrix and production notes.
 
 ## Related
 

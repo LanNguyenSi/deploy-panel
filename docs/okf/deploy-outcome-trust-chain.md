@@ -3,7 +3,7 @@ type: invariant
 title: Deploy-outcome trust chain — the relay's "success" is never taken at face value
 description: finalizeDeploy is the single choke point for all three relay outcome shapes (SSE done, JSON fallback, stream-ended-without-done); every relay-reported success runs verifyDeployHealth and can be downgraded to failed, while connection-lost recovery uses the gate's stricter fail-closed mode and startup recovery applies the same fail-closed posture via a relay preflight — the mechanism behind the self-deploy-502-but-succeeds quirk.
 tags: [deploy, health-gate, recovery, invariant]
-timestamp: 2026-08-17T14:45:00Z
+timestamp: 2026-08-22T00:00:00Z
 sources:
   - backend/src/lib/stream-deploy.ts
   - backend/src/lib/post-deploy-gate.ts
@@ -16,9 +16,9 @@ sources:
 
 No deploy is written to the database as `status: "success"` on the relay's word alone. `finalizeDeploy` (`backend/src/lib/stream-deploy.ts:32-79`) is the single choke point every relay-reported outcome funnels through, and it re-verifies before trusting a reported success.
 
-`streamDeploy` (stream-deploy.ts:85-236) hands `finalizeDeploy` exactly three shapes of relay outcome, all converging on the same function:
+`streamDeploy` (stream-deploy.ts:90-241) hands `finalizeDeploy` exactly three shapes of relay outcome, all converging on the same function:
 
-1. **SSE `done` event** (`handleEvent`, stream-deploy.ts:259-271) — the relay finished streaming and reported `success`/`failure` explicitly.
+1. **SSE `done` event** (`handleEvent`, stream-deploy.ts:264-276) — the relay finished streaming and reported `success`/`failure` explicitly.
 2. **JSON fallback** (stream-deploy.ts:149-189) — the relay doesn't support streaming and returned a single JSON body instead; `success` is derived from `data.result.success` or `data.deploy.status`.
 3. **Stream ended without a `done` event** (stream-deploy.ts:217-230) — the connection closed cleanly but no terminal event arrived; success is inferred from whether every accumulated step reports `"success"` or `"skipped"`.
 
