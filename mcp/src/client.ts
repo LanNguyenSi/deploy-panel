@@ -58,7 +58,9 @@ export class DeployPanelClient {
   }
 
   async rollback(server: string, app: string) {
-    return this.request<{ deploy: { id: string; success?: boolean } }>("POST", `/api/servers/${server}/apps/${app}/rollback`);
+    return this.request<{ deploy: { id: string; status: string; server: string; app: string; triggeredBy: string } }>("POST", "/api/v1/rollback", {
+      server, app,
+    });
   }
 
   async pollDeploy(deployId: string, intervalMs = 5000, timeoutMs = 300000): Promise<{ deploy: DeployInfo }> {

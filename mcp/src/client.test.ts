@@ -43,6 +43,30 @@ describe("DeployPanelClient error handling", () => {
   });
 });
 
+describe("DeployPanelClient.rollback", () => {
+  // The server param accepts either a name or an id — the backend resolves
+  // it via findOwnedServerByIdOrName (v1.ts POST /rollback). The client
+  // itself does no format-specific handling, so both forms must produce the
+  // exact same request shape.
+  it.each([
+    ["a server name", "prod-1"],
+    ["a server id", "clx1y2z3a0000abc123def456"],
+  ])("issues POST /api/v1/rollback with {server, app} in the body for %s", async (_label, server) => {
+    const client = new DeployPanelClient({ apiUrl: API_URL, apiKey: API_KEY });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({ deploy: { id: "d9", status: "running", server, app: "my-app", triggeredBy: "agent" } }),
+    );
+
+    const result = await client.rollback(server, "my-app");
+
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe(`${API_URL}/api/v1/rollback`);
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBe(JSON.stringify({ server, app: "my-app" }));
+    expect(result.deploy.status).toBe("running");
+  });
+});
+
 describe("DeployPanelClient.pollDeploy", () => {
   it("polls again while status is 'running' and returns once it settles", async () => {
     const client = new DeployPanelClient({ apiUrl: API_URL, apiKey: API_KEY });

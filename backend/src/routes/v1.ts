@@ -39,12 +39,20 @@ v1Router.get("/servers", async (c) => {
 
 v1Router.get("/apps", async (c) => {
   const actor = getActorContext(c);
-  const serverId = c.req.query("server_id");
+  const serverIdentifier = c.req.query("server_id");
 
   // App ownership inherits through the parent server. Admin: no filter.
-  // Non-admin: apps whose server is owned by the actor. Explicit serverId
-  // still works but gets AND-ed with the ownership filter.
-  const where: Record<string, unknown> = serverId ? { serverId } : {};
+  // Non-admin: apps whose server is owned by the actor. server_id accepts a
+  // name or an id, resolved the same way as the other v1 routes
+  // (findOwnedServerByIdOrName) — a raw Prisma `{ serverId }` filter only
+  // ever matched an id, so passing a server name here used to silently
+  // return an empty list.
+  const where: Record<string, unknown> = {};
+  if (serverIdentifier) {
+    const srv = await findOwnedServerByIdOrName(actor, serverIdentifier);
+    if (!srv) return c.json({ apps: [] });
+    where.serverId = srv.id;
+  }
   if (!actor.isAdmin) {
     where.server = { userId: actor.userId ?? "__no_access__" };
   }

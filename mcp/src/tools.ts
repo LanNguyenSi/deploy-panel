@@ -104,15 +104,16 @@ export function registerTools(server: McpServer, client: DeployPanelClient) {
 
   server.tool(
     "deploy_rollback",
-    "Rollback an app to its previous version via the relay.",
+    "Rollback an app to its previous version via the relay. Triggers the rollback and polls until completion, returning the final deploy result.",
     {
       server: z.string().describe("Server name or ID"),
       app: z.string().describe("App name"),
     },
     async ({ server, app }) => {
       try {
-        const result = await client.rollback(server, app);
-        return text(result);
+        const { deploy } = await client.rollback(server, app);
+        const result = await client.pollDeploy(deploy.id);
+        return text(result.deploy);
       } catch (e) {
         return error(e);
       }

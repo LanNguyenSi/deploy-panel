@@ -201,6 +201,47 @@ describe("v1 GET /apps — ownership filtering", () => {
     const where = mApp.findMany.mock.calls[0]?.[0]?.where;
     expect(where?.server).toEqual({ userId: "__no_access__" });
   });
+
+  // Regression coverage for the MCP name-resolution fix: server_id used to
+  // be passed straight into a raw Prisma `{ serverId }` filter, so a server
+  // NAME (rather than its id) silently matched zero apps. It must now
+  // resolve through findOwnedServerByIdOrName like the other v1 routes.
+  it("server_id=<name>: resolves via findOwnedServerByIdOrName and filters by the resolved id", async () => {
+    mServer.findFirst.mockResolvedValue(ownedServer);
+    mApp.findMany.mockResolvedValue([]);
+
+    await appFor({ userId: "user-a", isAdmin: false }).request("/apps?server_id=my-server");
+
+    expect(mServer.findFirst).toHaveBeenCalledWith({
+      where: { OR: [{ id: "my-server" }, { name: "my-server" }] },
+    });
+    const where = mApp.findMany.mock.calls[0]?.[0]?.where;
+    expect(where?.serverId).toBe("srv-a");
+  });
+
+  it("server_id=<id>: resolves the same way when passed the server's actual id", async () => {
+    mServer.findFirst.mockResolvedValue(ownedServer);
+    mApp.findMany.mockResolvedValue([]);
+
+    await appFor({ userId: "user-a", isAdmin: false }).request("/apps?server_id=srv-a");
+
+    expect(mServer.findFirst).toHaveBeenCalledWith({
+      where: { OR: [{ id: "srv-a" }, { name: "srv-a" }] },
+    });
+    const where = mApp.findMany.mock.calls[0]?.[0]?.where;
+    expect(where?.serverId).toBe("srv-a");
+  });
+
+  it("server_id that does not resolve (unowned or unknown): returns an empty list without ever calling app.findMany with a raw unresolved filter", async () => {
+    mServer.findFirst.mockResolvedValue(null);
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/apps?server_id=nope");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { apps: unknown[] };
+    expect(body.apps).toEqual([]);
+    expect(mApp.findMany).not.toHaveBeenCalled();
+  });
 });
 
 // ── GET /deploys ownership ────────────────────────────────────────────────────
