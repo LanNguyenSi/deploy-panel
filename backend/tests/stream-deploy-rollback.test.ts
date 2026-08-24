@@ -73,6 +73,25 @@ function sseResponse(events: SseEvent[]): Response {
   } as unknown as Response;
 }
 
+// Delivers each string as its OWN chunk (its own `reader.read()` result),
+// unlike sseResponse's single combined chunk — for exercising the reader
+// loop's handling of a frame split across chunk boundaries.
+function sseResponseChunked(textChunks: string[]): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of textChunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+  return {
+    ok: true,
+    status: 200,
+    body,
+    headers: new Headers({ "content-type": "text/event-stream" }),
+  } as unknown as Response;
+}
+
 const rollbackSteps: SseEvent[] = [
   { event: "step", data: { name: "rollback: git reset", status: "success", durationMs: 10 } },
   { event: "step", data: { name: "rollback: preflight", status: "success", durationMs: 5 } },
@@ -111,7 +130,15 @@ describe("streamDeploy — rollback visibility + terminal status on health-check
     mDeployFindUnique.mockImplementation(async () => ({ status: currentStatus }));
   });
 
-  it("ends failed (not stuck running) and preserves the rollback steps + enriched health-check output when the relay sends a `done` event", async () => {
+  // This test's `done` event carries its OWN `steps` array (rollback steps +
+  // enriched health-check output already included), and finalizeDeploy uses
+  // `data.steps ?? steps` — the relay's array wins outright. So this only
+  // guards finalizeDeploy's done-event passthrough (ends failed, not stuck
+  // running, whatever `data.steps` says survives verbatim); it does NOT
+  // exercise handleEvent's own step-accumulator, which only matters on the
+  // no-done path below. Passes even with the handleEvent output-carry fix
+  // reverted — do not read it as coverage for that fix.
+  it("passes through the relay's own `done`-event steps array unchanged, ending failed not stuck running", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       sseResponse([
         { event: "step", data: { name: "compose up", status: "success", durationMs: 21252 } },
@@ -186,6 +213,13 @@ describe("streamDeploy — rollback visibility + terminal status on health-check
       "rollback: compose build",
       "rollback: compose up",
     ]);
+    // The `step` event's own output was dropped by handleEvent on this
+    // no-done path (the `done` event's `steps` array bypasses handleEvent's
+    // accumulator entirely, so that path never showed this loss) — this is
+    // the exact incident shape: the persisted health-check step lost its
+    // diagnosis.
+    const healthStep = steps.find((s: any) => s.name === "health check");
+    expect(healthStep.output).toContain("HTTP_STATUS=500");
 
     fetchSpy.mockRestore();
   });
@@ -217,6 +251,32 @@ describe("streamDeploy — rollback visibility + terminal status on health-check
     expect(lastCall(mAppUpdate).data.status).toBe("healthy");
     const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
     expect(steps.some((s: any) => s.name.startsWith("rollback:"))).toBe(false);
+
+    fetchSpy.mockRestore();
+  });
+
+  // The reader loop used to declare `eventType` INSIDE the while body, so
+  // an `event: `/`data: ` pair split across two chunks lost the event: the
+  // `event: step` line was parsed and remembered in one read() call, but the
+  // next read() call's iteration reset eventType to "" before the `data: `
+  // line for that same event arrived, so the `data: ` branch's `&&
+  // eventType` guard silently dropped it. Frames are ~4KB+ now that step
+  // output carries diagnostic text, so this is no longer a corner case.
+  it("still parses a step whose event/data lines are split across two stream chunks", async () => {
+    const step = { name: "health check", status: "failure", durationMs: 22525, output: "HTTP_STATUS=500" };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      sseResponseChunked([
+        // Chunk 1 ends right after a complete "event: " line.
+        "event: step\n",
+        // Chunk 2 carries the "data: " line for that same event.
+        `data: ${JSON.stringify(step)}\n\n`,
+      ]),
+    );
+
+    await streamDeploy(baseOpts);
+
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps).toEqual([step]);
 
     fetchSpy.mockRestore();
   });

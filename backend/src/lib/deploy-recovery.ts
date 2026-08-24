@@ -1,6 +1,27 @@
 import { prisma } from "./prisma.js";
 import { verifyDeployHealth } from "./post-deploy-gate.js";
 
+type LoggedStep = { name: string; status: string; durationMs?: number; [k: string]: unknown };
+
+/**
+ * Parses the deploy's existing `log` column (whatever streamDeploy's reader
+ * loop had accumulated before the connection dropped, e.g. rollback steps
+ * streamed via the fixed onStep path) so recovery APPENDS to it instead of
+ * replacing it. Falls back to an empty array — never to a synthetic
+ * replacement — when the column is missing or unparseable, since a bare
+ * string log (see stream-deploy.ts's failureStepLog) is not JSON and
+ * shouldn't be treated as data loss on recovery's part.
+ */
+function readExistingSteps(rawLog: string | null | undefined): LoggedStep[] {
+  if (!rawLog) return [];
+  try {
+    const parsed = JSON.parse(rawLog);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 // Recovery polls longer than the post-success gate: when the deploy STREAM
 // drops it is usually because containers are mid-recreate, so give them more
 // time to settle before deciding. ~60s window (5 polls x 12s) preserves the
@@ -36,6 +57,17 @@ const RECOVERY_INTERVAL_MS = 12_000;
  * `containers_running` preflight check, which passes for ANY existing
  * container (a crashlooping one still has an ID) — re-opening the exact
  * crashloop-as-healthy bug the gate exists to close.
+ *
+ * The deploy's existing `log` is APPENDED to, not replaced: streamDeploy's
+ * reader loop may already have accumulated real steps before the connection
+ * dropped — including, since the onStep rollback-streaming fix, the
+ * rollback's own steps. Replacing that array with a synthetic 2-step one (as
+ * this used to do) silently discarded them. And a healthy probe here does
+ * NOT by itself mean this deploy succeeded: if the accumulated log already
+ * shows a rollback (or any outright step failure), the healthy probe is
+ * evidence the OLD version came back up, not that the new one is running —
+ * so that combination is recorded failed, with a message saying so, instead
+ * of the optimistic success verdict this function used to hand out.
  */
 export async function recoverBrokenDeploy(
   deployId: string,
@@ -55,6 +87,20 @@ export async function recoverBrokenDeploy(
       return null;
     });
 
+  const existingDeploy = await prisma.deploy
+    .findUnique({ where: { id: deployId }, select: { log: true } })
+    .catch((err) => {
+      // Same degrade-don't-abort posture as the liveUrl lookup above: fall
+      // back to an empty accumulated-steps array (readExistingSteps' own
+      // "unparseable" fallback) rather than block recovery on a DB hiccup.
+      console.warn(`[deploy-recovery] could not load existing log for ${appName}: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    });
+  const existingSteps = readExistingSteps(existingDeploy?.log);
+  const hasRollbackOrFailure = existingSteps.some(
+    (s) => s.status === "failure" || (typeof s.name === "string" && s.name.startsWith("rollback")),
+  );
+
   const verdict = await verifyDeployHealth({
     serverId,
     appName,
@@ -66,14 +112,37 @@ export async function recoverBrokenDeploy(
 
   const noteSuffix = verdict.notes?.length ? ` [${verdict.notes.join("; ")}]` : "";
 
-  if (verdict.healthy) {
+  if (verdict.healthy && hasRollbackOrFailure) {
+    console.log(`[deploy-recovery] ${appName} probe healthy but the log already shows a rollback/failure — refusing the optimistic success verdict`);
+    await prisma.deploy.update({
+      where: { id: deployId },
+      data: {
+        status: "failed",
+        log: JSON.stringify([
+          ...existingSteps,
+          {
+            name: "recovery",
+            status: "failure",
+            durationMs: 0,
+            output: `Connection lost during deploy: ${error}. The app is healthy because the rollback already restored the previous version, not because this deploy succeeded${noteSuffix}`,
+          },
+        ]),
+      },
+    }).catch(() => {});
+    // The app itself really is up (the old version) — reflect that on the
+    // app card while still recording this deploy attempt as failed.
+    await prisma.app.update({
+      where: { id: appId },
+      data: { status: "healthy", lastDeployAt: new Date() },
+    }).catch(() => {});
+  } else if (verdict.healthy) {
     console.log(`[deploy-recovery] ${appName} verified healthy — marking deploy success`);
     await prisma.deploy.update({
       where: { id: deployId },
       data: {
         status: "success",
         log: JSON.stringify([
-          { name: "deploy", status: "success", durationMs: 0 },
+          ...existingSteps,
           { name: "recovery", status: "success", durationMs: 0, output: `Connection lost during deploy; verified healthy via post-deploy gate${noteSuffix}` },
         ]),
       },
@@ -89,8 +158,8 @@ export async function recoverBrokenDeploy(
       data: {
         status: "failed",
         log: JSON.stringify([
-          { name: "deploy", status: "failure", durationMs: 0, output: `Connection lost during deploy: ${error}` },
-          { name: "recovery", status: "failure", durationMs: 0, output: `${verdict.reason ?? "post-deploy health check failed after recovery"}${noteSuffix}` },
+          ...existingSteps,
+          { name: "recovery", status: "failure", durationMs: 0, output: `Connection lost during deploy: ${error}. ${verdict.reason ?? "post-deploy health check failed after recovery"}${noteSuffix}` },
         ]),
       },
     }).catch(() => {});
