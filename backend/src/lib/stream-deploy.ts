@@ -229,6 +229,12 @@ export async function streamDeploy(opts: {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    // Hoisted above the read loop: an `event: `/`data: ` pair can land in
+    // separate chunks (frames are ~4KB+ now that step output carries
+    // diagnostic text), and declaring this inside the loop body reset it to
+    // "" on every chunk boundary, silently dropping any event whose `data: `
+    // line arrived in the next read().
+    let eventType = "";
 
     while (true) {
       const { done, value } = await reader.read();
@@ -238,7 +244,6 @@ export async function streamDeploy(opts: {
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
 
-      let eventType = "";
       for (const line of lines) {
         if (line.startsWith("event: ")) {
           eventType = line.slice(7).trim();
@@ -246,7 +251,11 @@ export async function streamDeploy(opts: {
           try {
             const data = JSON.parse(line.slice(6));
             await handleEvent(eventType, data, { deployId, appId, serverId, appName }, steps);
-          } catch {}
+          } catch (err) {
+            console.warn(
+              `[stream-deploy] ${appName}: failed to parse SSE ${eventType} event payload — ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
           eventType = "";
         }
       }
@@ -280,15 +289,32 @@ interface EventContext {
   appName: string;
 }
 
+// Caps a single step's output before it's persisted — mirrors agent-relay's
+// own HEALTH_FAILURE_LOG_MAX_CHARS cap so an already-capped upstream value
+// passes through unchanged, while still bounding anything a future relay
+// version (or a different step type) sends uncapped.
+const STEP_OUTPUT_MAX_CHARS = 8000;
+
 async function handleEvent(
   event: string,
   data: any,
   ctx: EventContext,
-  steps: Array<{ name: string; status: string; durationMs: number }>,
+  steps: Array<{ name: string; status: string; durationMs: number; output?: string }>,
 ) {
   const { deployId, appId, serverId, appName } = ctx;
   if (event === "step") {
-    steps.push({ name: data.name, status: data.status, durationMs: data.durationMs ?? 0 });
+    // The step event carries `output` (e.g. the health-check step's HTTP
+    // status / container-log excerpt) — this used to be dropped here, which
+    // only lost data on the stream-ends-without-`done` path (the incident
+    // shape) since the `done` event's own `steps` array bypasses this
+    // accumulator entirely. Carry it through so the locally-accumulated log
+    // matches what `done` would have written.
+    steps.push({
+      name: data.name,
+      status: data.status,
+      durationMs: data.durationMs ?? 0,
+      output: typeof data.output === "string" ? data.output.slice(0, STEP_OUTPUT_MAX_CHARS) : undefined,
+    });
     // Update DB with current steps — so polling clients see progress
     await prisma.deploy.update({
       where: { id: deployId },
