@@ -614,7 +614,7 @@ export interface DeployWithRelations extends Deploy {
 export interface DeployDetail extends Deploy {
   app: { name: string; repoUrl: string | null; branch: string };
   server: { name: string; host: string };
-  steps: Array<{ name: string; status: string; durationMs: number }>;
+  steps: Array<{ name: string; status: string; durationMs: number; output?: string }>;
   compareUrl: string | null;
 }
 

@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { getDeploys, getDeployDetail, type DeployWithRelations, type DeployDetail } from "@/lib/api";
 import { deployStatusBadge } from "@/lib/status";
+import { DeployStepList } from "@/components/DeploySteps";
 
 export default function DeploysPage() {
   const [deploys, setDeploys] = useState<DeployWithRelations[]>([]);
@@ -321,19 +322,7 @@ function DeployDetailPanel({ detail, loading }: { detail: DeployDetail | null; l
             Deploy Steps
           </h4>
           {detail.steps.length > 0 ? (
-            <div style={{ display: "grid", gap: "var(--space-1)" }}>
-              {detail.steps.map((step, i) => (
-                <div key={i} className={`deploy-step deploy-step-${step.status === "success" ? "success" : step.status === "skipped" ? "skipped" : "failed"}`}>
-                  <span className="deploy-step-icon">
-                    {step.status === "success" ? "✓" : step.status === "skipped" ? "—" : "✗"}
-                  </span>
-                  <span style={{ color: "var(--text)" }}>{step.name}</span>
-                  {step.durationMs > 0 && (
-                    <span className="deploy-step-duration">{(step.durationMs / 1000).toFixed(1)}s</span>
-                  )}
-                </div>
-              ))}
-            </div>
+            <DeployStepList steps={detail.steps} />
           ) : (
             <p style={{ color: "var(--muted)", fontSize: "var(--text-sm)" }}>No step data available.</p>
           )}
