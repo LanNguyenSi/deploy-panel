@@ -867,6 +867,17 @@ a:hover { color: var(--primary-hover); }
   margin-left: auto;
 }
 
+/* Tightened .log-panel: indented under the step icon, capped shorter so a
+   long failure reason does not dominate the step list. */
+.deploy-step-output {
+  margin-left: var(--space-6);
+}
+
+.deploy-step-output-pre {
+  margin-top: var(--space-1);
+  max-height: 180px;
+}
+
 /* ── Action groups ──────────────────────────────────────────────── */
 
 .action-group-secondary {

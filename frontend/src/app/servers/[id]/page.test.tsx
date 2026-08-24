@@ -201,14 +201,14 @@ describe("ServerDetailPage — Rollback result surfacing", () => {
 // step, but the panel only rendered step.name/status/durationMs, so a human
 // saw a bare "failed" row with no reason. These tests pin that the step's
 // output text now renders, and that steps without output are unaffected.
-describe("ServerDetailPage — deploy step output", () => {
+describe("ServerDetailPage - deploy step output", () => {
   async function clickDeployAndConfirm(user: ReturnType<typeof userEvent.setup>) {
     await user.click(screen.getByRole("button", { name: "Deploy" }));
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
   }
 
-  it("shows a failed step's stored output text", async () => {
+  it("shows a failed step's stored output text, disclosure open by default", async () => {
     const user = await renderPage();
     mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
     mGetDeployStatus.mockResolvedValueOnce({
@@ -229,10 +229,50 @@ describe("ServerDetailPage — deploy step output", () => {
     await clickDeployAndConfirm(user);
 
     await screen.findByText("Deploy Progress");
-    await waitFor(
-      () => expect(screen.getByText("relay rejected: 403 forbidden")).toBeInTheDocument(),
+    const outputText = await waitFor(
+      () => screen.getByText("relay rejected: 403 forbidden"),
       { timeout: 3000 },
     );
+    // The failed step's <details> must be open by default (no extra click)
+    // so the failure reason is visible immediately.
+    expect(outputText).toBeVisible();
+    const details = outputText.closest("details");
+    expect(details).not.toBeNull();
+    expect(details).toHaveAttribute("open");
+  });
+
+  it("collapses a success step's output until the summary is clicked", async () => {
+    const user = await renderPage();
+    mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
+    mGetDeployStatus.mockResolvedValueOnce({
+      deploy: {
+        id: "deploy-1",
+        status: "success",
+        log: JSON.stringify([
+          {
+            name: "docker-compose-up",
+            status: "success",
+            durationMs: 800,
+            output: "up to date, nothing changed",
+          },
+        ]),
+      },
+    });
+
+    await clickDeployAndConfirm(user);
+
+    await screen.findByText("Deploy Progress");
+    await waitFor(() => expect(screen.getByText("Output")).toBeInTheDocument(), {
+      timeout: 3000,
+    });
+    const summary = screen.getByText("Output");
+    const details = summary.closest("details") as HTMLDetailsElement;
+    expect(details).not.toHaveAttribute("open");
+    expect(screen.getByText("up to date, nothing changed")).not.toBeVisible();
+
+    await user.click(summary);
+    expect(details).toHaveAttribute("open");
+    expect(screen.getByText("up to date, nothing changed")).toBeVisible();
   });
 
   it("renders a step without output as before (no output block)", async () => {
@@ -251,9 +291,77 @@ describe("ServerDetailPage — deploy step output", () => {
     await clickDeployAndConfirm(user);
 
     await screen.findByText("Deploy Progress");
-    await waitFor(() => expect(screen.getByText("docker-compose-up")).toBeInTheDocument(), {
+    const { container } = await waitFor(() => {
+      expect(screen.getByText("docker-compose-up")).toBeInTheDocument();
+      return { container: screen.getByText("docker-compose-up").closest("main") as HTMLElement };
+    }, { timeout: 3000 });
+    expect(screen.queryByText("Output")).not.toBeInTheDocument();
+    expect(container.querySelectorAll("details").length).toBe(0);
+  });
+
+  it("renders an empty-string output as no output block at all", async () => {
+    const user = await renderPage();
+    mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
+    mGetDeployStatus.mockResolvedValueOnce({
+      deploy: {
+        id: "deploy-1",
+        status: "success",
+        log: JSON.stringify([
+          { name: "docker-compose-up", status: "success", durationMs: 800, output: "" },
+        ]),
+      },
+    });
+
+    await clickDeployAndConfirm(user);
+
+    await screen.findByText("Deploy Progress");
+    const { container } = await waitFor(() => {
+      expect(screen.getByText("docker-compose-up")).toBeInTheDocument();
+      return { container: screen.getByText("docker-compose-up").closest("main") as HTMLElement };
+    }, { timeout: 3000 });
+    expect(container.querySelectorAll("details").length).toBe(0);
+  });
+
+  it("puts long multi-line output inside the scrollable log-panel block", async () => {
+    const user = await renderPage();
+    const longOutput = Array.from({ length: 30 }, (_, i) => `line ${i}: something happened`).join("\n");
+    mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
+    mGetDeployStatus.mockResolvedValueOnce({
+      deploy: {
+        id: "deploy-1",
+        status: "failure",
+        log: JSON.stringify([
+          { name: "docker-compose-up", status: "failure", durationMs: 800, output: longOutput },
+        ]),
+      },
+    });
+
+    await clickDeployAndConfirm(user);
+
+    await screen.findByText("Deploy Progress");
+    const pre = await waitFor(() => screen.getByText((_, el) => el?.tagName === "PRE" && el.textContent === longOutput), {
       timeout: 3000,
     });
-    expect(screen.queryByText("Output")).not.toBeInTheDocument();
+    expect(pre).toHaveClass("log-panel");
+    expect(pre).toHaveClass("deploy-step-output-pre");
+  });
+
+  it("malformed deploy log JSON renders no steps instead of throwing", async () => {
+    const user = await renderPage();
+    mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
+    mGetDeployStatus.mockResolvedValueOnce({
+      deploy: {
+        id: "deploy-1",
+        status: "failure",
+        // Not an array: a defensive parse must fall back to no steps
+        // rather than crashing the panel.
+        log: JSON.stringify({ not: "an array" }),
+      },
+    });
+
+    await clickDeployAndConfirm(user);
+
+    await screen.findByText("Deploy Progress");
+    await waitFor(() => expect(screen.queryByText("Output")).not.toBeInTheDocument());
   });
 });

@@ -14,6 +14,7 @@ import { requestPermission, notifyDeployResult } from "@/lib/notifications";
 import { isPinned, togglePin } from "@/lib/pinned";
 import EnvVarsPanel from "@/components/EnvVarsPanel";
 import AppSecretsPanel from "@/components/AppSecretsPanel";
+import { DeployStepList } from "@/components/DeploySteps";
 import { ServerReinstallDialog } from "@/components/ServerReinstallDialog";
 import { ServerUpdateImageDialog } from "@/components/ServerUpdateImageDialog";
 
@@ -143,7 +144,10 @@ export default function ServerDetailPage() {
           const { deploy: d } = await getDeployStatus(id, name, deploy.id);
           let steps: Array<{ name: string; status: string; durationMs: number; output?: string }> = [];
           if (d.log) {
-            try { steps = JSON.parse(d.log); } catch {}
+            try {
+              const parsed = JSON.parse(d.log);
+              steps = Array.isArray(parsed) ? parsed : [];
+            } catch {}
           }
           setDeployLog({ status: d.status, steps });
 
@@ -542,34 +546,7 @@ export default function ServerDetailPage() {
                       {deployLog.steps.length === 0 && deployLog.status === "running" && (
                         <div style={{ color: "var(--muted)", fontSize: "var(--text-sm)" }}>Waiting for steps...</div>
                       )}
-                      <div style={{ display: "grid", gap: "var(--space-1)" }}>
-                        {deployLog.steps.map((step, i) => (
-                          <div key={i}>
-                            <div className={`deploy-step deploy-step-${step.status === "success" ? "success" : step.status === "skipped" ? "skipped" : "failed"}`}>
-                              <span className="deploy-step-icon">
-                                {step.status === "success" ? "✓" : step.status === "skipped" ? "—" : "✗"}
-                              </span>
-                              <span style={{ color: "var(--text)" }}>{step.name}</span>
-                              {step.durationMs > 0 && (
-                                <span className="deploy-step-duration">{(step.durationMs / 1000).toFixed(1)}s</span>
-                              )}
-                            </div>
-                            {step.output && (
-                              <details style={{ marginLeft: "26px" }}>
-                                <summary style={{ cursor: "pointer", color: "var(--muted)", fontSize: "var(--text-xs)" }}>
-                                  Output
-                                </summary>
-                                <pre
-                                  className="log-panel"
-                                  style={{ marginTop: "var(--space-1)", maxHeight: "180px" }}
-                                >
-                                  {step.output}
-                                </pre>
-                              </details>
-                            )}
-                          </div>
-                        ))}
-                      </div>
+                      <DeployStepList steps={deployLog.steps} />
                     </div>
                   )}
 
