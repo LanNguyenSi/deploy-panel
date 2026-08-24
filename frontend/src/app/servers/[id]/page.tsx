@@ -35,7 +35,7 @@ export default function ServerDetailPage() {
   const [logs, setLogs] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [deploying, setDeploying] = useState<string | null>(null);
-  const [deployLog, setDeployLog] = useState<{ status: string; steps: Array<{ name: string; status: string; durationMs: number }> } | null>(null);
+  const [deployLog, setDeployLog] = useState<{ status: string; steps: Array<{ name: string; status: string; durationMs: number; output?: string }> } | null>(null);
   const [preflight, setPreflight] = useState<{ passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkDeploying, setBulkDeploying] = useState(false);
@@ -141,7 +141,7 @@ export default function ServerDetailPage() {
       const pollInterval = setInterval(async () => {
         try {
           const { deploy: d } = await getDeployStatus(id, name, deploy.id);
-          let steps: Array<{ name: string; status: string; durationMs: number }> = [];
+          let steps: Array<{ name: string; status: string; durationMs: number; output?: string }> = [];
           if (d.log) {
             try { steps = JSON.parse(d.log); } catch {}
           }
@@ -544,13 +544,28 @@ export default function ServerDetailPage() {
                       )}
                       <div style={{ display: "grid", gap: "var(--space-1)" }}>
                         {deployLog.steps.map((step, i) => (
-                          <div key={i} className={`deploy-step deploy-step-${step.status === "success" ? "success" : step.status === "skipped" ? "skipped" : "failed"}`}>
-                            <span className="deploy-step-icon">
-                              {step.status === "success" ? "✓" : step.status === "skipped" ? "—" : "✗"}
-                            </span>
-                            <span style={{ color: "var(--text)" }}>{step.name}</span>
-                            {step.durationMs > 0 && (
-                              <span className="deploy-step-duration">{(step.durationMs / 1000).toFixed(1)}s</span>
+                          <div key={i}>
+                            <div className={`deploy-step deploy-step-${step.status === "success" ? "success" : step.status === "skipped" ? "skipped" : "failed"}`}>
+                              <span className="deploy-step-icon">
+                                {step.status === "success" ? "✓" : step.status === "skipped" ? "—" : "✗"}
+                              </span>
+                              <span style={{ color: "var(--text)" }}>{step.name}</span>
+                              {step.durationMs > 0 && (
+                                <span className="deploy-step-duration">{(step.durationMs / 1000).toFixed(1)}s</span>
+                              )}
+                            </div>
+                            {step.output && (
+                              <details style={{ marginLeft: "26px" }}>
+                                <summary style={{ cursor: "pointer", color: "var(--muted)", fontSize: "var(--text-xs)" }}>
+                                  Output
+                                </summary>
+                                <pre
+                                  className="log-panel"
+                                  style={{ marginTop: "var(--space-1)", maxHeight: "180px" }}
+                                >
+                                  {step.output}
+                                </pre>
+                              </details>
                             )}
                           </div>
                         ))}

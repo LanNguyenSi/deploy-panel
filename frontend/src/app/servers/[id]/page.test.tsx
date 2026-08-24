@@ -19,6 +19,8 @@ const mGetServer = vi.fn();
 const mGetApps = vi.fn();
 const mSyncServer = vi.fn();
 const mRollbackApp = vi.fn();
+const mDeployApp = vi.fn();
+const mGetDeployStatus = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -28,6 +30,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getApps: (...args: unknown[]) => mGetApps(...args),
     syncServer: (...args: unknown[]) => mSyncServer(...args),
     rollbackApp: (...args: unknown[]) => mRollbackApp(...args),
+    deployApp: (...args: unknown[]) => mDeployApp(...args),
+    getDeployStatus: (...args: unknown[]) => mGetDeployStatus(...args),
   };
 });
 
@@ -189,5 +193,67 @@ describe("ServerDetailPage — Rollback result surfacing", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Rollback triggered");
     expect(alert.textContent?.startsWith("✓ ")).toBe(true);
+  });
+});
+
+// A failed deploy step's stored output (agent-relay rejection text or an
+// SSE error) is otherwise invisible in the UI: PR #128 persists it on the
+// step, but the panel only rendered step.name/status/durationMs, so a human
+// saw a bare "failed" row with no reason. These tests pin that the step's
+// output text now renders, and that steps without output are unaffected.
+describe("ServerDetailPage — deploy step output", () => {
+  async function clickDeployAndConfirm(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("button", { name: "Deploy" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
+  }
+
+  it("shows a failed step's stored output text", async () => {
+    const user = await renderPage();
+    mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
+    mGetDeployStatus.mockResolvedValueOnce({
+      deploy: {
+        id: "deploy-1",
+        status: "failure",
+        log: JSON.stringify([
+          {
+            name: "docker-compose-up",
+            status: "failure",
+            durationMs: 1200,
+            output: "relay rejected: 403 forbidden",
+          },
+        ]),
+      },
+    });
+
+    await clickDeployAndConfirm(user);
+
+    await screen.findByText("Deploy Progress");
+    await waitFor(
+      () => expect(screen.getByText("relay rejected: 403 forbidden")).toBeInTheDocument(),
+      { timeout: 3000 },
+    );
+  });
+
+  it("renders a step without output as before (no output block)", async () => {
+    const user = await renderPage();
+    mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
+    mGetDeployStatus.mockResolvedValueOnce({
+      deploy: {
+        id: "deploy-1",
+        status: "success",
+        log: JSON.stringify([
+          { name: "docker-compose-up", status: "success", durationMs: 800 },
+        ]),
+      },
+    });
+
+    await clickDeployAndConfirm(user);
+
+    await screen.findByText("Deploy Progress");
+    await waitFor(() => expect(screen.getByText("docker-compose-up")).toBeInTheDocument(), {
+      timeout: 3000,
+    });
+    expect(screen.queryByText("Output")).not.toBeInTheDocument();
   });
 });
