@@ -186,13 +186,37 @@ describe("recoverStuckDeploys", () => {
     expect(mAppUpdate).not.toHaveBeenCalled();
   });
 
-  it("skips the app.update when another deploy for the SAME app is still registered active, to avoid clobbering a live \"deploying\" status", async () => {
-    mFindMany.mockResolvedValue([makeStuckDeploy()]);
-    mDeployFindFirst.mockResolvedValue({ id: "newer-live-deploy" });
+  // Mutation probe (this PR): the prior version of this test mocked
+  // findFirst's return value unconditionally, so it passed identically
+  // whether the liveSibling query's `id: { in: listActiveDeployIds() } }`
+  // clause used the real registry or `[]`; the mock never looked at its
+  // own arguments. This version's findFirst mock only reports a live
+  // sibling when the id it was actually asked to look up (from the real
+  // registry, via registerActiveDeploy) appears in the query's `in` list,
+  // so replacing `listActiveDeployIds()` at startup.ts:158 with `[]` makes
+  // this test fail: the query would then always exclude the registered id
+  // and the app.status write would no longer be skipped.
+  it("collects an old orphaned deploy for app X while a NEWER deploy for X is registered active, and does not clobber app.status", async () => {
+    mFindMany.mockResolvedValue([makeStuckDeploy({ id: "orphan", appId: "aX" })]);
+    registerActiveDeploy("newer-registered-for-aX");
+    mDeployFindFirst.mockImplementation(async (args: any) => {
+      const ids: string[] = args.where.id.in;
+      const scopedToApp = args.where.appId === "aX" && args.where.status === "running";
+      return scopedToApp && ids.includes("newer-registered-for-aX")
+        ? { id: "newer-registered-for-aX" }
+        : null;
+    });
 
     await recoverStuckDeploys();
 
+    // The orphaned "old" record is still finalized (compare-and-set
+    // succeeds, count: 1 by default)...
     expect(mUpdateMany).toHaveBeenCalledOnce();
+    expect(mUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "orphan", status: "running" } }),
+    );
+    // ...but the app-level status write is skipped, since a newer deploy
+    // for the same app is genuinely still running.
     expect(mAppUpdate).not.toHaveBeenCalled();
   });
 
