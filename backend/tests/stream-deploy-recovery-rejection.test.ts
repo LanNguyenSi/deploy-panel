@@ -41,27 +41,57 @@ const mRecover = recoverBrokenDeploy as unknown as ReturnType<typeof vi.fn>;
 describe("streamDeploy — recoverBrokenDeploy rejection in the catch block", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mRecover.mockRejectedValue(new Error("recovery boom"));
     activeDeployIds.clear();
   });
 
-  it("does not throw / produce an unhandled rejection when recoverBrokenDeploy itself rejects, and clears the deploy from the active set so the periodic sweep can reclaim it", async () => {
+  it("awaits recoverBrokenDeploy before resolving (not fire-and-forget): streamDeploy must not settle while recoverBrokenDeploy's promise is still pending", async () => {
+    // A deferred promise, not mockRejectedValue's already-rejected one: this
+    // is what actually distinguishes "awaited" from "fire-and-forget" —
+    // an already-settled mock's rejection races the assertions regardless
+    // of whether the SUT awaits it, but a still-pending one can only have
+    // been reached by the SUT if it's genuinely waiting on it.
+    let settleRecover!: () => void;
+    const controlled = new Promise<void>((_resolve, reject) => {
+      settleRecover = () => reject(new Error("recovery boom"));
+    });
+    // Attach our own observer so a pending rejection here never becomes an
+    // unhandled one purely as a test artifact — the SUT's own handling is
+    // what this test actually asserts, via the ordering below.
+    controlled.catch(() => {});
+    mRecover.mockReturnValue(controlled);
+
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("connect ECONNREFUSED"));
 
-    await expect(
-      streamDeploy({
-        serverId: "srv-a",
-        deployId: "d1",
-        appId: "app-1",
-        appName: "thd",
-        relayUrl: "http://relay.example",
-        relayToken: null,
-        body: {},
-      }),
-    ).resolves.toBeUndefined();
+    let streamSettled = false;
+    const streamPromise = streamDeploy({
+      serverId: "srv-a",
+      deployId: "d1",
+      appId: "app-1",
+      appName: "thd",
+      relayUrl: "http://relay.example",
+      relayToken: null,
+      body: {},
+    }).then(() => {
+      streamSettled = true;
+    });
 
-    expect(mRecover).toHaveBeenCalledOnce();
-    // Cleared regardless of the rejection — otherwise a real deploy that hit
+    await vi.waitFor(() => expect(mRecover).toHaveBeenCalledOnce());
+
+    // Flush a few microtask turns. Fire-and-forget code (the mutant) falls
+    // through the catch block and out of streamDeploy in the SAME tick it
+    // calls recoverBrokenDeploy, so streamSettled would already be true
+    // here even though `controlled` hasn't been settled yet.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(streamSettled).toBe(false);
+    expect(activeDeployIds.has("d1")).toBe(true); // finally hasn't run yet either
+
+    settleRecover();
+    await streamPromise;
+
+    expect(streamSettled).toBe(true);
+    // Cleared once recovery has settled — otherwise a real deploy that hit
     // this path would be permanently excluded from the stuck-sweep too.
     expect(activeDeployIds.has("d1")).toBe(false);
 
