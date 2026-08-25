@@ -83,6 +83,15 @@ describe("apps router: streamDeploy delegation", () => {
 
     expect(res.status).toBe(202);
     expect(mStreamDeploy).toHaveBeenCalledOnce();
+    expect(mStreamDeploy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        serverId: "srv-a",
+        deployId: "deploy-1",
+        appId: "app-a",
+        appName: "my-app",
+        relayUrl: "http://relay.example",
+      }),
+    );
     const body = (await res.json()) as { deploy: { id: string; status: string } };
     expect(body.deploy.status).toBe("running");
   });
@@ -100,5 +109,12 @@ describe("apps router: streamDeploy delegation", () => {
 
     expect(res.status).toBe(202);
     expect(mStreamDeploy).toHaveBeenCalledTimes(2);
+    const deployIds = mStreamDeploy.mock.calls.map((c) => (c[0] as { deployId: string }).deployId);
+    expect(deployIds.sort()).toEqual(["deploy-a", "deploy-b"]);
+    for (const [arg] of mStreamDeploy.mock.calls) {
+      expect(arg).toEqual(
+        expect.objectContaining({ serverId: "srv-a", relayUrl: "http://relay.example" }),
+      );
+    }
   });
 });

@@ -201,7 +201,10 @@ describe("recoverStuckDeploys", () => {
     registerActiveDeploy("newer-registered-for-aX");
     mDeployFindFirst.mockImplementation(async (args: any) => {
       const ids: string[] = args.where.id.in;
-      return ids.includes("newer-registered-for-aX") ? { id: "newer-registered-for-aX" } : null;
+      const scopedToApp = args.where.appId === "aX" && args.where.status === "running";
+      return scopedToApp && ids.includes("newer-registered-for-aX")
+        ? { id: "newer-registered-for-aX" }
+        : null;
     });
 
     await recoverStuckDeploys();
