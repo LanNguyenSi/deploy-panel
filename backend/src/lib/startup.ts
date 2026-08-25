@@ -6,8 +6,7 @@ const STUCK_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes (reduced — deploy-recov
 
 // Prevents two sweep passes from overlapping: each stuck deploy costs a
 // relayRequest with up to a 300s budget (relay.ts), run sequentially, so a
-// pass can outlast the 60s interval scheduler.ts drives this on, and the
-// boot-time call in server.ts can also overlap the first tick. Two
+// pass can outlast the 60s interval scheduler.ts drives this on. Two
 // concurrent passes would both see the same stuck record, both append a
 // "startup-recovery" step (one write is lost, since each reads `log`
 // before the other writes it) and both write app.status. Checked and set
@@ -69,12 +68,20 @@ async function sweepOnce(): Promise<void> {
   // mocked Prisma with a non-empty exclusion set.
   const idFilter = activeDeployIds.size > 0 ? { notIn: Array.from(activeDeployIds) } : undefined;
 
+  // orderBy createdAt asc: when a single pass sweeps two orphaned deploys
+  // of the SAME app, each one that reaches the app-status write below
+  // (see the liveSibling check) overwrites the previous one's verdict, so
+  // whichever record is processed LAST wins. Without an explicit order,
+  // Prisma/the DB may return rows in an unspecified order, letting an
+  // older orphaned deploy's verdict win over a newer one's. Oldest-first
+  // guarantees the newest verdict is always the one left standing.
   const stuckDeploys = await prisma.deploy.findMany({
     where: {
       status: "running",
       createdAt: { lt: cutoff },
       ...(idFilter ? { id: idFilter } : {}),
     },
+    orderBy: { createdAt: "asc" },
     include: {
       app: { select: { name: true } },
       server: { select: { id: true, relayUrl: true, relayToken: true } },
@@ -83,7 +90,7 @@ async function sweepOnce(): Promise<void> {
 
   if (stuckDeploys.length === 0) return;
 
-  console.log(`[startup] Found ${stuckDeploys.length} stuck deploy(s), recovering...`);
+  console.log(`[stuck-sweep] Found ${stuckDeploys.length} stuck deploy(s), recovering...`);
 
   for (const deploy of stuckDeploys) {
     try {
@@ -136,7 +143,7 @@ async function sweepOnce(): Promise<void> {
       });
 
       if (count === 0) {
-        console.log(`[startup] Deploy ${deploy.id} (${deploy.app.name}) was already finalized elsewhere, skipping`);
+        console.log(`[stuck-sweep] Deploy ${deploy.id} (${deploy.app.name}) was already finalized elsewhere, skipping`);
         continue;
       }
 
@@ -158,12 +165,12 @@ async function sweepOnce(): Promise<void> {
         });
       }
 
-      console.log(`[startup] Deploy ${deploy.id} (${deploy.app.name}): ${newStatus}`);
+      console.log(`[stuck-sweep] Deploy ${deploy.id} (${deploy.app.name}): ${newStatus}`);
     } catch (err) {
       // One bad record must not abort the rest of the pass: a DB blip or
       // an unexpected shape on a single row used to be able to take down
       // every deploy after it in this batch.
-      console.error(`[startup] Failed to recover deploy ${deploy.id} (${deploy.app?.name}):`, err);
+      console.error(`[stuck-sweep] Failed to recover deploy ${deploy.id} (${deploy.app?.name}):`, err);
     }
   }
 }

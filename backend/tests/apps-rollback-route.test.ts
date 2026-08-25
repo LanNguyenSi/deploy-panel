@@ -49,13 +49,28 @@ vi.mock("../src/lib/audit.js", () => ({
   getActorUserId: vi.fn(() => "user-a"),
 }));
 
-vi.mock("../src/lib/deploy-recovery.js", () => ({
-  recoverBrokenDeploy: vi.fn(),
-  // The rollback route now registers/deregisters against this set for the
-  // duration of its relayRequest call, so it needs a real Set here (not
-  // just a stub), shared with startup.ts's recoverStuckDeploys below.
-  activeDeployIds: new Set<string>(),
-}));
+vi.mock("../src/lib/deploy-recovery.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/deploy-recovery.js")>();
+  return {
+    ...actual,
+    // Only recoverBrokenDeploy is stubbed. activeDeployIds and
+    // readExistingSteps are kept real (via spread) rather than replaced by
+    // a partial factory: a partial factory used to leave readExistingSteps
+    // undefined here, which made startup.ts's recoverStuckDeploys throw
+    // (swallowed by its per-record try/catch) before ever reaching
+    // prisma.deploy.updateMany whenever a candidate row slipped past the
+    // activeDeployIds exclusion, masking exactly the registration mutants
+    // the "activeDeployIds registration" describe block below exists to
+    // catch, since the assertion `updateMany not called` then passed for
+    // the wrong reason.
+    //
+    // Resolves a real promise (not a bare vi.fn(), which returns
+    // undefined): the route now calls `.catch(...)` on recoverBrokenDeploy's
+    // return value (fire-and-forget with its own rejection guard), and
+    // undefined.catch(...) throws.
+    recoverBrokenDeploy: vi.fn().mockResolvedValue(undefined),
+  };
+});
 vi.mock("../src/lib/stream-deploy.js", () => ({ streamDeploy: vi.fn() }));
 
 import { relayRequest, RelayError } from "../src/lib/relay.js";
@@ -289,5 +304,95 @@ describe("POST /:name/rollback: activeDeployIds registration", () => {
     await requestPromise;
 
     expect(activeDeployIds.has("rollback-guard-1")).toBe(false);
+  });
+
+  // Pins the actual hand-off HIGH-1 added: recoverBrokenDeploy polls health
+  // for up to ~60s after this handler has already returned its HTTP
+  // response, so the deploy id must stay in activeDeployIds for that whole
+  // window, not just until the response settles. Two mutants would survive
+  // without this test: making the route's `if (!recovering)
+  // activeDeployIds.delete(deploy.id)` guard in the `finally` block
+  // unconditional (it would then delete the id the moment the response
+  // settles, regardless of recoverBrokenDeploy still running), or deleting
+  // recoverBrokenDeploy's own self-registration entirely (covered
+  // separately, in deploy-recovery.test.ts, with the real function).
+  it("keeps the deploy id registered while recoverBrokenDeploy is still pending after a non-4xx error hand-off", async () => {
+    mRelay.mockRejectedValueOnce(new Error("connect ECONNRESET"));
+
+    let settleRecover!: () => void;
+    const controlled = new Promise<void>((resolve) => {
+      settleRecover = resolve;
+    });
+    mRecoverBrokenDeploy.mockReturnValue(controlled);
+
+    const requestPromise = app().request("/servers/srv-a/apps/my-app/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    await requestPromise;
+    expect(mRecoverBrokenDeploy).toHaveBeenCalledTimes(1);
+
+    // The HTTP response has already settled, but recoverBrokenDeploy's own
+    // hand-off promise has not: the id must still be registered. (The
+    // mock here stands in for recoverBrokenDeploy's own add/delete
+    // lifecycle, which is a separate concern pinned with the REAL function
+    // in deploy-recovery.test.ts's "self-registration" tests.)
+    expect(activeDeployIds.has("rollback-guard-1")).toBe(true);
+
+    settleRecover();
+    await controlled;
+  });
+});
+
+// The route's `recoverBrokenDeploy(...)` call is fire-and-forget (see the
+// comment above the call site in apps.ts): recoverBrokenDeploy's internal
+// prisma calls already each carry a trailing .catch, but a throw before any
+// of them (e.g. verifyDeployHealth itself rejecting) used to become an
+// unhandled rejection with nothing chained here. Node >=20 treats an
+// unhandled rejection as fatal by default and prod runs this as a single
+// container under `restart: unless-stopped`, so this is a real crash risk,
+// not just an ugly log line.
+describe("POST /:name/rollback: recoverBrokenDeploy rejection is caught, not left unhandled", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    activeDeployIds.clear();
+    mAppUpsert.mockResolvedValue({ id: "app-a", name: "my-app" });
+    mDeployCreate.mockResolvedValue({ id: "guard-1", status: "running" });
+    mDeployUpdate.mockResolvedValue({});
+  });
+
+  it("logs and swallows a recoverBrokenDeploy rejection via its own .catch, instead of letting it propagate unhandled", async () => {
+    mRelay.mockRejectedValueOnce(new Error("connect ECONNRESET"));
+
+    let rejectRecover!: (err: Error) => void;
+    const controlled = new Promise<void>((_resolve, reject) => {
+      rejectRecover = reject;
+    });
+    mRecoverBrokenDeploy.mockReturnValue(controlled);
+
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await app().request("/servers/srv-a/apps/my-app/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(mRecoverBrokenDeploy).toHaveBeenCalledTimes(1);
+
+    rejectRecover(new Error("verifyDeployHealth exploded"));
+    // Give the .catch handler's microtask a turn to run. If the call site
+    // has no .catch chained (the mutant this test exists to catch), this
+    // rejection is left with no handler attached in this same synchronous
+    // window, which is exactly what makes Node treat it as unhandled.
+    await new Promise((r) => setTimeout(r, 0));
+
+    const logged = consoleErrorSpy.mock.calls.some((args) =>
+      String(args[0]).includes("[stuck-sweep] recoverBrokenDeploy failed"),
+    );
+    expect(logged).toBe(true);
+
+    consoleErrorSpy.mockRestore();
   });
 });

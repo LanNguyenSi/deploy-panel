@@ -353,7 +353,17 @@ v1Router.post("/rollback", async (c) => {
 
       const errMsg = err instanceof Error ? err.message : String(err);
       recovering = true;
-      recoverBrokenDeploy(deployId, appRecord.id, srv.id, appName, errMsg);
+      // Fire-and-forget, but with its own .catch (mirrors stream-deploy.ts's
+      // guard on the same call): recoverBrokenDeploy's internal prisma
+      // calls already each carry a trailing .catch, but a throw before any
+      // of them (e.g. verifyDeployHealth itself rejecting) would otherwise
+      // become an unhandled rejection. The surrounding IIFE's own .catch at
+      // the bottom of this route does NOT cover it, since this call is
+      // neither awaited nor returned: the IIFE's promise settles once this
+      // function body finishes, not once this un-awaited promise does.
+      recoverBrokenDeploy(deployId, appRecord.id, srv.id, appName, errMsg).catch((recoveryErr) => {
+        console.error(`[stuck-sweep] recoverBrokenDeploy failed for ${deployId} (${appName}):`, recoveryErr);
+      });
     } finally {
       if (!recovering) activeDeployIds.delete(deployId);
     }

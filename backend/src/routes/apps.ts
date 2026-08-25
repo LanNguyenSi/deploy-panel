@@ -343,7 +343,15 @@ appsRouter.post("/:name/rollback", async (c) => {
     // itself), where a broken/degraded connection is still plausible.
     const errMsg = err instanceof Error ? err.message : String(err);
     recovering = true;
-    recoverBrokenDeploy(deploy.id, app.id, serverId, name, errMsg);
+    // Fire-and-forget, but with its own .catch (mirrors stream-deploy.ts's
+    // guard on the same call): recoverBrokenDeploy's internal prisma calls
+    // already each carry a trailing .catch, but a throw before any of them
+    // (e.g. verifyDeployHealth itself rejecting) would otherwise become an
+    // unhandled rejection. Node >=20 treats that as fatal by default and
+    // prod runs this as a single container under restart: unless-stopped.
+    recoverBrokenDeploy(deploy.id, app.id, serverId, name, errMsg).catch((recoveryErr) => {
+      console.error(`[stuck-sweep] recoverBrokenDeploy failed for ${deploy.id} (${name}):`, recoveryErr);
+    });
     if (err instanceof RelayError) return c.json({ error: "relay_error", message: err.message }, err.status as any);
     throw err;
   } finally {

@@ -32,14 +32,17 @@ vi.mock("../src/lib/post-deploy-gate.js", () => ({
   verifyDeployHealth: vi.fn().mockResolvedValue({ healthy: true }),
 }));
 
-vi.mock("../src/lib/deploy-recovery.js", () => ({
-  recoverBrokenDeploy: vi.fn(),
-  // streamDeploy (real, in this file) registers/deregisters against this
-  // set; scheduler.ts also now imports startup.js, whose recoverStuckDeploys
-  // reads it too, so both need a real Set here plus readExistingSteps below.
-  activeDeployIds: new Set<string>(),
-  readExistingSteps: vi.fn().mockReturnValue([]),
-}));
+vi.mock("../src/lib/deploy-recovery.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/deploy-recovery.js")>();
+  return {
+    ...actual,
+    // Only recoverBrokenDeploy is stubbed; activeDeployIds and
+    // readExistingSteps are kept real (via spread). streamDeploy (real, in
+    // this file) registers/deregisters against activeDeployIds; scheduler.ts
+    // also now imports startup.js, whose recoverStuckDeploys reads it too.
+    recoverBrokenDeploy: vi.fn(),
+  };
+});
 
 import { prisma } from "../src/lib/prisma.js";
 import { provisionAndCheckAppSecrets } from "../src/lib/provision-secrets.js";

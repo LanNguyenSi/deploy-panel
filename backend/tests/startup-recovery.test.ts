@@ -74,7 +74,7 @@ describe("recoverStuckDeploys", () => {
     await recoverStuckDeploys();
 
     const writtenLog = lastCall(mUpdateMany).data.log;
-    // Must not throw — proves the write is valid JSON, not bare text, the
+    // Must not throw: proves the write is valid JSON, not bare text, the
     // exact shape routes/deploys.ts's JSON.parse(deploy.log) requires.
     const steps = JSON.parse(writtenLog);
     expect(steps[0]).toMatchObject({ name: "compose up", status: "success" });
@@ -100,6 +100,50 @@ describe("recoverStuckDeploys", () => {
     const queryArgs = mFindMany.mock.calls[0][0];
     expect(queryArgs.where.id).toBeUndefined();
     expect(queryArgs.where.status).toBe("running");
+  });
+
+  it("orders the stuck-deploy query oldest-first (createdAt asc)", async () => {
+    mFindMany.mockResolvedValue([]);
+
+    await recoverStuckDeploys();
+
+    const queryArgs = mFindMany.mock.calls[0][0];
+    expect(queryArgs.orderBy).toEqual({ createdAt: "asc" });
+  });
+
+  // Without orderBy, a single pass sweeping two orphaned deploys of the SAME
+  // app left the app.status verdict to whichever row the DB happened to
+  // return last, not necessarily the newer one. Oldest-first guarantees the
+  // for-loop processes the newer record last, so its verdict is the one
+  // that survives (each candidate's app.update, when written, overwrites
+  // the previous one's).
+  it("when two orphaned deploys of the same app are swept in one pass, the app.status write reflects whichever is processed last (oldest-first ordering makes that the newest)", async () => {
+    mFindMany.mockResolvedValue([
+      makeStuckDeploy({
+        id: "older",
+        appId: "a1",
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+        server: { id: "srv-a", relayUrl: null, relayToken: null },
+      }),
+      makeStuckDeploy({
+        id: "newer",
+        appId: "a1",
+        createdAt: new Date("2026-01-01T00:05:00Z"),
+        server: { id: "srv-a", relayUrl: "http://relay.example", relayToken: null },
+      }),
+    ]);
+    // Older record: relay unreachable -> interrupted/unknown. Newer record:
+    // relay preflight passes -> success/healthy. If the older record's
+    // verdict won, the final app.update would be "unknown"; asserting
+    // "healthy" pins that the newer (later-processed) verdict is the one
+    // left standing.
+    mRelay.mockResolvedValue({ app: "thd", passed: true });
+
+    await recoverStuckDeploys();
+
+    const appUpdateCalls = mAppUpdate.mock.calls.map((c) => c[0]);
+    expect(appUpdateCalls.length).toBeGreaterThan(0);
+    expect(appUpdateCalls.at(-1).data.status).toBe("healthy");
   });
 
   it("marks the deploy success/healthy when the relay preflight passes", async () => {

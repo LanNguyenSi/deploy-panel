@@ -19,7 +19,7 @@ vi.mock("../src/lib/post-deploy-gate.js", () => ({
 
 import { prisma } from "../src/lib/prisma.js";
 import { verifyDeployHealth } from "../src/lib/post-deploy-gate.js";
-import { recoverBrokenDeploy } from "../src/lib/deploy-recovery.js";
+import { recoverBrokenDeploy, activeDeployIds } from "../src/lib/deploy-recovery.js";
 
 const mDeployFindUnique = (prisma.deploy as any).findUnique as ReturnType<typeof vi.fn>;
 const mDeployUpdate = (prisma.deploy as any).update as ReturnType<typeof vi.fn>;
@@ -131,5 +131,71 @@ describe("recoverBrokenDeploy", () => {
         requireHealthyEvidence: true,
       }),
     );
+  });
+});
+
+// recoverBrokenDeploy self-registers in activeDeployIds (try/finally around
+// its own body) independently of whatever the caller already did, so ANY
+// caller gets the stuck-sweep exclusion for the full duration of its own
+// health-check polling, not just callers that remembered to register
+// beforehand. This is the REAL recoverBrokenDeploy (not a mock, unlike the
+// route-level "activeDeployIds registration" tests in
+// apps-rollback-route.test.ts / v1-api.test.ts, which stub recoverBrokenDeploy
+// entirely and so cannot exercise this self-registration at all): it pins
+// the add/finally-delete pair directly against a controllable
+// verifyDeployHealth, on both the resolve and the reject path. Deleting the
+// try/finally around recoverBrokenDeployBody entirely (a mutant that
+// survived the round-2 suite) would make the id vanish from
+// activeDeployIds the instant recoverBrokenDeploy is called, defeating the
+// stuck-sweep exclusion for its whole ~60s polling window; this test fails
+// immediately on that mutant since the id would never be present at all.
+describe("recoverBrokenDeploy: self-registration in activeDeployIds", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    activeDeployIds.clear();
+    mDeployFindUnique.mockResolvedValue({ log: null });
+  });
+
+  it("is present while the health check is pending and absent after it resolves", async () => {
+    let settleGate!: (v: { healthy: boolean }) => void;
+    mGate.mockReturnValue(
+      new Promise((resolve) => {
+        settleGate = resolve;
+      }),
+    );
+
+    const recoverPromise = recoverBrokenDeploy("d-resolve", "a1", "srv-a", "thd", "socket hang up");
+
+    await vi.waitFor(() => expect(mGate).toHaveBeenCalledOnce());
+    expect(activeDeployIds.has("d-resolve")).toBe(true);
+
+    settleGate({ healthy: true });
+    await recoverPromise;
+
+    expect(activeDeployIds.has("d-resolve")).toBe(false);
+  });
+
+  it("is present while the health check is pending and absent after it rejects (the finally still runs)", async () => {
+    let settleGate!: () => void;
+    mGate.mockReturnValue(
+      new Promise((_resolve, reject) => {
+        settleGate = () => reject(new Error("relay unreachable"));
+      }),
+    );
+
+    const recoverPromise = recoverBrokenDeploy("d-reject", "a1", "srv-a", "thd", "socket hang up");
+    // deploy-recovery.ts's own async body doesn't catch a verifyDeployHealth
+    // rejection, so recoverPromise itself rejects too; observe it here so
+    // that isn't a test artifact (the ordering assertions below are what
+    // this test actually pins).
+    recoverPromise.catch(() => {});
+
+    await vi.waitFor(() => expect(mGate).toHaveBeenCalledOnce());
+    expect(activeDeployIds.has("d-reject")).toBe(true);
+
+    settleGate();
+    await expect(recoverPromise).rejects.toThrow("relay unreachable");
+
+    expect(activeDeployIds.has("d-reject")).toBe(false);
   });
 });
