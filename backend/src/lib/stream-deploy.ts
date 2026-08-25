@@ -287,13 +287,15 @@ export async function streamDeploy(opts: {
     // Awaited (not fire-and-forget) with its own .catch: recoverBrokenDeploy
     // does its own internal error handling (each of its prisma calls already
     // has a trailing .catch), but if it throws before reaching any of those
-    // — e.g. verifyDeployHealth itself rejects — a bare fire-and-forget call
+    // (e.g. verifyDeployHealth itself rejects), a bare fire-and-forget call
     // here used to become an unhandled rejection AND leave the deploy record
     // on "running" forever. Now a rejection is logged and swallowed; the
     // record stays "running" only until the periodic stuck-sweep (see
     // deploy-recovery.ts's activeDeployIds, cleared in the finally below)
-    // reclaims it.
-    await Promise.resolve(recoverBrokenDeploy(deployId, appId, serverId, appName, errMsg)).catch((recoveryErr) => {
+    // reclaims it. recoverBrokenDeploy is a plain async function (never
+    // throws synchronously), so calling it directly always returns a real
+    // promise: no Promise.resolve() wrapper needed.
+    await recoverBrokenDeploy(deployId, appId, serverId, appName, errMsg).catch((recoveryErr) => {
       console.error(
         `[stream-deploy] recoverBrokenDeploy itself failed for ${deployId} (${appName}); the deploy record may stay "running" until the periodic stuck-sweep reclaims it:`,
         recoveryErr,

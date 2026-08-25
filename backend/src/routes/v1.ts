@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
-import { recoverBrokenDeploy } from "../lib/deploy-recovery.js";
+import { recoverBrokenDeploy, activeDeployIds } from "../lib/deploy-recovery.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
 import { audit, getActorUserId } from "../lib/audit.js";
 import {
@@ -285,6 +285,18 @@ v1Router.post("/rollback", async (c) => {
   // Fire and forget
   const deployId = deploy.id;
   (async () => {
+    // This handler drives the deploy record itself (relayRequest, then a
+    // direct prisma.deploy.update below) instead of going through
+    // streamDeploy, so it must register the id here too or the periodic
+    // stuck-sweep (startup.ts's recoverStuckDeploys) can finalize a
+    // rollback that is still genuinely in flight once it crosses the
+    // 2-minute threshold. `recovering` tracks whether the catch block
+    // below handed the id off to recoverBrokenDeploy, which manages its
+    // own add/delete for the duration of its (fire-and-forget) run: when
+    // it has, the delete in the finally is skipped so the id stays
+    // registered until recovery itself is done.
+    activeDeployIds.add(deployId);
+    let recovering = false;
     try {
       const raw = await relayRequest<
         { success?: boolean; commitBefore?: string; commitAfter?: string } & {
@@ -340,7 +352,10 @@ v1Router.post("/rollback", async (c) => {
       }
 
       const errMsg = err instanceof Error ? err.message : String(err);
+      recovering = true;
       recoverBrokenDeploy(deployId, appRecord.id, srv.id, appName, errMsg);
+    } finally {
+      if (!recovering) activeDeployIds.delete(deployId);
     }
   })().catch((e) => console.error("[v1 rollback] background task failed", e));
 

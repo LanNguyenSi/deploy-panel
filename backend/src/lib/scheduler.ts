@@ -19,7 +19,20 @@ export function startScheduler() {
   // startup.ts's 2-minute threshold without a second interval constant.
   // See deploy-recovery.ts's activeDeployIds for how this avoids touching a
   // deploy genuinely still streaming in this process.
-  setInterval(recoverStuckDeploys, CHECK_INTERVAL);
+  //
+  // recoverStuckDeploys is an async function passed straight to
+  // setInterval: a rejection from it would otherwise become an unhandled
+  // rejection on every tick. Node >=20 (this package's engines pin)
+  // defaults to --unhandled-rejections=throw, and prod runs as a single
+  // container under `restart: unless-stopped`, so an unguarded rejection
+  // here would crash and restart the process roughly once a minute on any
+  // DB blip. server.ts's own boot-time call already wraps this the same
+  // way; this closes the same gap for the periodic call.
+  setInterval(() => {
+    recoverStuckDeploys().catch((err) => {
+      console.error("[scheduler] periodic stuck-deploy sweep failed:", err);
+    });
+  }, CHECK_INTERVAL);
 }
 
 export async function checkScheduled() {

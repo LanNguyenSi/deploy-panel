@@ -90,6 +90,29 @@ export async function recoverBrokenDeploy(
   appName: string,
   error: string,
 ) {
+  // Registers itself (try/finally) independently of whatever the caller
+  // already did: streamDeploy adds deployId before this is ever reached,
+  // and both rollback routes (routes/apps.ts, routes/v1.ts) now add it
+  // before their relayRequest call too, for the window before this
+  // function is invoked. Owning the add/delete here as well means any
+  // caller of recoverBrokenDeploy gets the stuck-sweep exclusion for the
+  // full duration of the health-check polling below, not only callers that
+  // remembered to register beforehand.
+  activeDeployIds.add(deployId);
+  try {
+    await recoverBrokenDeployBody(deployId, appId, serverId, appName, error);
+  } finally {
+    activeDeployIds.delete(deployId);
+  }
+}
+
+async function recoverBrokenDeployBody(
+  deployId: string,
+  appId: string,
+  serverId: string,
+  appName: string,
+  error: string,
+) {
   console.log(`[deploy-recovery] Connection lost for deploy ${deployId} (${appName}). Verifying health...`);
 
   const app = await prisma.app

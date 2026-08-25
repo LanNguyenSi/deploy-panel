@@ -21,7 +21,12 @@ vi.mock("../src/lib/provision-secrets.js", () => ({
 }));
 
 vi.mock("../src/lib/deploy-recovery.js", () => ({
-  recoverBrokenDeploy: vi.fn(),
+  // recoverBrokenDeploy is a plain async function in production (never
+  // throws synchronously), so streamDeploy calls it directly without a
+  // Promise.resolve() wrapper. The mock must resolve a real promise to
+  // match: a bare vi.fn() returns undefined, and undefined.catch(...)
+  // would throw in streamDeploy's catch block.
+  recoverBrokenDeploy: vi.fn().mockResolvedValue(undefined),
   // streamDeploy now registers/deregisters the deploy id here for the
   // duration of its run (activeDeployIds); this file exercises the real
   // streamDeploy, so the mock needs a real Set for that to work against.

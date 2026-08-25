@@ -18,6 +18,8 @@ vi.mock("../src/lib/prisma.js", () => ({
       findMany: vi.fn(),
       count: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      findFirst: vi.fn().mockResolvedValue(null),
     },
     auditLog: {
       create: vi.fn().mockResolvedValue({}),
@@ -48,6 +50,11 @@ vi.mock("../src/lib/audit.js", () => ({
 
 vi.mock("../src/lib/deploy-recovery.js", () => ({
   recoverBrokenDeploy: vi.fn(),
+  // The v1 rollback handler now registers/deregisters against this set
+  // for the duration of its relayRequest call, so it needs a real Set
+  // here (not just a stub), matching every other file that exercises the
+  // real rollback route or streamDeploy.
+  activeDeployIds: new Set<string>(),
 }));
 
 vi.mock("../src/config/index.js", () => ({
@@ -64,7 +71,8 @@ vi.mock("../src/config/index.js", () => ({
 import { prisma } from "../src/lib/prisma.js";
 import { relayRequest, RelayError } from "../src/lib/relay.js";
 import { streamDeploy } from "../src/lib/stream-deploy.js";
-import { recoverBrokenDeploy } from "../src/lib/deploy-recovery.js";
+import { recoverBrokenDeploy, activeDeployIds } from "../src/lib/deploy-recovery.js";
+import { recoverStuckDeploys } from "../src/lib/startup.js";
 import { v1Router } from "../src/routes/v1.js";
 import { Hono } from "hono";
 
@@ -93,6 +101,8 @@ const mDeploy = prisma.deploy as unknown as {
   findMany: ReturnType<typeof vi.fn>;
   count: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
+  updateMany: ReturnType<typeof vi.fn>;
+  findFirst: ReturnType<typeof vi.fn>;
 };
 
 function appFor(actor: { userId: string | null; isAdmin: boolean }) {
@@ -776,5 +786,71 @@ describe("v1 POST /rollback: RelayError from the relay call itself", () => {
 
     expect(recoverBrokenDeploy).toHaveBeenCalledTimes(1);
     expect(mDeploy.update).not.toHaveBeenCalled();
+  });
+});
+
+// This route drives the deploy record itself (relayRequest, then a direct
+// prisma.deploy.update) instead of going through streamDeploy, so its id
+// used to never enter activeDeployIds: the periodic stuck-sweep
+// (recoverStuckDeploys, startup.ts) could finalize a rollback that was
+// still genuinely in flight once it aged past the 2-minute threshold. See
+// deploy-panel#130.
+describe("v1 POST /rollback: activeDeployIds registration", () => {
+  const deployRecord = { id: "rollback-guard-1", status: "running", serverId: "srv-a", appId: "app-a" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    activeDeployIds.clear();
+    mServer.findFirst.mockResolvedValue(ownedServer);
+    mApp.findUnique.mockResolvedValue(appRecord);
+    mDeploy.create.mockResolvedValue(deployRecord);
+    mDeploy.update.mockResolvedValue({});
+    mDeploy.updateMany.mockResolvedValue({ count: 1 });
+    mDeploy.findFirst.mockResolvedValue(null);
+  });
+
+  it("registers the deploy id while relayRequest is in flight, and a concurrent stuck-sweep pass does not finalize it", async () => {
+    let releaseRelay!: (v: unknown) => void;
+    vi.mocked(relayRequest).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseRelay = resolve;
+        }),
+    );
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: "my-app" }),
+    });
+    expect(res.status).toBe(202);
+
+    await vi.waitFor(() => expect(relayRequest).toHaveBeenCalledOnce());
+    expect(activeDeployIds.has("rollback-guard-1")).toBe(true);
+
+    // A concurrent stuck-sweep pass, run while the rollback is still
+    // in-flight: simulate the real `notIn` filter recoverStuckDeploys
+    // builds so the excluded id never even reaches the finalize step.
+    mDeploy.findMany.mockImplementation(async (args: any) => {
+      const excluded: string[] = args.where.id?.notIn ?? [];
+      const candidate = {
+        id: "rollback-guard-1",
+        appId: "app-a",
+        createdAt: new Date(0),
+        log: null,
+        app: { name: "my-app" },
+        server: { id: "srv-a", relayUrl: null, relayToken: null },
+      };
+      return excluded.includes(candidate.id) ? [] : [candidate];
+    });
+
+    await recoverStuckDeploys();
+
+    expect(mDeploy.updateMany).not.toHaveBeenCalled();
+
+    releaseRelay({ success: true, commitBefore: "a", commitAfter: "b" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(activeDeployIds.has("rollback-guard-1")).toBe(false);
   });
 });

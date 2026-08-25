@@ -4,7 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
 import { audit, getActor, getActorUserId } from "../lib/audit.js";
-import { recoverBrokenDeploy } from "../lib/deploy-recovery.js";
+import { recoverBrokenDeploy, activeDeployIds } from "../lib/deploy-recovery.js";
 import { findOwnedServer, getActorContext } from "../lib/ownership.js";
 import { isPrivateOrLoopbackHost } from "../services/probe-guard.js";
 import { listMaskedAppSecrets, setAppSecret, deleteAppSecret } from "../lib/app-secrets.js";
@@ -256,6 +256,19 @@ appsRouter.post("/:name/rollback", async (c) => {
 
   audit("rollback", `${name} on server ${serverId}`, `deployId: ${deploy.id}`, getActor(c), getActorUserId(c));
 
+  // This route drives the deploy record itself (relayRequest, then a
+  // direct prisma.deploy.update below) instead of going through
+  // streamDeploy, so it must register the id here too or the periodic
+  // stuck-sweep (startup.ts's recoverStuckDeploys) can finalize a rollback
+  // that is still genuinely in flight once it crosses the 2-minute
+  // threshold. `recovering` tracks whether the catch block below handed
+  // the id off to recoverBrokenDeploy, which manages its own add/delete
+  // for the duration of its (fire-and-forget) run: when it has, the delete
+  // in the finally is skipped so the id stays registered until recovery
+  // itself is done, not just until this handler returns its HTTP response.
+  activeDeployIds.add(deploy.id);
+  let recovering = false;
+
   try {
     const raw = await relayRequest<RollbackRelayPayload & { result?: RollbackRelayPayload }>({
       serverId,
@@ -329,9 +342,12 @@ appsRouter.post("/:name/rollback", async (c) => {
     // RelayError) or a non-4xx RelayError (e.g. a 5xx from the relay
     // itself), where a broken/degraded connection is still plausible.
     const errMsg = err instanceof Error ? err.message : String(err);
+    recovering = true;
     recoverBrokenDeploy(deploy.id, app.id, serverId, name, errMsg);
     if (err instanceof RelayError) return c.json({ error: "relay_error", message: err.message }, err.status as any);
     throw err;
+  } finally {
+    if (!recovering) activeDeployIds.delete(deploy.id);
   }
 });
 
