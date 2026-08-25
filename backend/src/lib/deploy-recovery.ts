@@ -17,19 +17,24 @@ export type LoggedStep = { name: string; status: string; durationMs?: number; [k
  * The refcount removes that Set hazard: a caller's own release can no
  * longer delete recoverBrokenDeploy's still-pending hold on the same id, so
  * both rollback routes can use a plain unconditional try/finally instead of
- * the `recovering` flag. It does NOT remove the ordering requirement the
- * flag depended on. A caller (apps.ts, v1.ts) hands deployId off to
- * recoverBrokenDeploy with a fire-and-forget call and releases its OWN hold
- * in the very same synchronous turn (its surrounding try/finally). If
- * recoverBrokenDeploy's own registerActiveDeploy call were not the FIRST
- * (synchronous) statement in its body — e.g. moved behind an await — the
- * caller's release could run before recoverBrokenDeploy's own registration
- * ever lands, and the id would briefly carry ZERO holds while recovery is
- * still genuinely in flight. So that call must stay the first statement,
- * before any await, exactly as it had to under the old flag; the refcount
- * changes how ordering violations are contained (one caller's release can
- * no longer race the OTHER caller's own registration out from under it),
- * not whether ordering still matters for recoverBrokenDeploy's own call.
+ * the `recovering` flag. But this same change is what MAKES ordering
+ * load-bearing for recoverBrokenDeploy's own call, it did not inherit an
+ * existing requirement. Under the old flag, both routes' finally read
+ * `if (!recovering) activeDeployIds.delete(deploy.id)`: on a hand-off the
+ * route skipped its delete entirely, so the id stayed in the Set for the
+ * whole hand-off and recoverBrokenDeploy's own add was a no-op on an
+ * already-present entry, safe behind any number of awaits, no window to
+ * open. Now that both routes always release their own hold unconditionally
+ * in the same synchronous turn as the hand-off (its surrounding
+ * try/finally), the id's only remaining cover during that window is
+ * recoverBrokenDeploy's own registerActiveDeploy call. If that call were
+ * not the FIRST (synchronous) statement in its body, e.g. moved behind an
+ * await, the caller's release could run before recoverBrokenDeploy's own
+ * registration ever lands, and the id would briefly carry ZERO holds while
+ * recovery is still genuinely in flight. So that call must stay the first
+ * statement, before any await, an invariant this refactor introduced by
+ * replacing the conditional delete with an unconditional release, not one
+ * carried over from the old flag.
  *
  * startup.ts's periodic stuck-sweep (recoverStuckDeploys, run on an
  * interval by scheduler.ts's startScheduler, not just once at boot)
@@ -95,11 +100,13 @@ export function getActiveDeployRefCount(deployId: string): number {
 }
 
 /**
- * Test-only isolation helper: drops every registration, regardless of
- * refcount. No production caller needs this — real code always releases
- * exactly as many times as it registered. Tests use it in beforeEach to
- * start each case from a clean registry, since the underlying map is
- * module-level (shared) state.
+ * `clearActiveDeploys` is a test-only isolation helper: it drops every
+ * registration, regardless of refcount. No production caller needs this,
+ * real code always releases exactly as many times as it registered. Tests
+ * use it in beforeEach to start each case from a clean registry, since the
+ * underlying map is module-level (shared) state. The comment-blind guard
+ * in backend/tests/deploy-recovery-clear-guard.test.ts enforces the
+ * production boundary, so writing the symbol name here does not trip it.
  */
 export function clearActiveDeploys(): void {
   activeDeployRefCounts.clear();
