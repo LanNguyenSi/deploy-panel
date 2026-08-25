@@ -27,6 +27,10 @@ vi.mock("../src/lib/provision-secrets.js", () => ({
 
 vi.mock("../src/lib/deploy-recovery.js", () => ({
   recoverBrokenDeploy: vi.fn(),
+  // streamDeploy now registers/deregisters the deploy id here for the
+  // duration of its run (activeDeployIds); this file exercises the real
+  // streamDeploy, so the mock needs a real Set for that to work against.
+  activeDeployIds: new Set<string>(),
 }));
 
 vi.mock("../src/lib/post-deploy-gate.js", () => ({

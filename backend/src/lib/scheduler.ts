@@ -1,5 +1,6 @@
 import { prisma } from "./prisma.js";
 import { streamDeploy } from "./stream-deploy.js";
+import { recoverStuckDeploys } from "./startup.js";
 
 const CHECK_INTERVAL = 60_000; // 1 minute
 
@@ -8,6 +9,17 @@ export function startScheduler() {
   setInterval(checkScheduled, CHECK_INTERVAL);
   // Also check immediately on startup
   setTimeout(checkScheduled, 5_000);
+
+  // Stuck-deploy sweep, periodic (not just the one-shot boot-time call in
+  // server.ts): a panel restart during a deploy that was still young at
+  // boot time (e.g. the self-deploy case, where the panel replaces its own
+  // container mid-deploy) used to never get swept once it aged past
+  // STUCK_THRESHOLD_MS, because nothing ran recoverStuckDeploys again after
+  // startup. Reusing CHECK_INTERVAL keeps it comfortably inside
+  // startup.ts's 2-minute threshold without a second interval constant.
+  // See deploy-recovery.ts's activeDeployIds for how this avoids touching a
+  // deploy genuinely still streaming in this process.
+  setInterval(recoverStuckDeploys, CHECK_INTERVAL);
 }
 
 export async function checkScheduled() {

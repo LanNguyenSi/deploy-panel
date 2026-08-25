@@ -34,6 +34,11 @@ vi.mock("../src/lib/post-deploy-gate.js", () => ({
 
 vi.mock("../src/lib/deploy-recovery.js", () => ({
   recoverBrokenDeploy: vi.fn(),
+  // streamDeploy (real, in this file) registers/deregisters against this
+  // set; scheduler.ts also now imports startup.js, whose recoverStuckDeploys
+  // reads it too, so both need a real Set here plus readExistingSteps below.
+  activeDeployIds: new Set<string>(),
+  readExistingSteps: vi.fn().mockReturnValue([]),
 }));
 
 import { prisma } from "../src/lib/prisma.js";
