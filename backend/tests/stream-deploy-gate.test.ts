@@ -20,9 +20,20 @@ vi.mock("../src/lib/provision-secrets.js", () => ({
   provisionAndCheckAppSecrets: vi.fn(),
 }));
 
-vi.mock("../src/lib/deploy-recovery.js", () => ({
-  recoverBrokenDeploy: vi.fn(),
-}));
+vi.mock("../src/lib/deploy-recovery.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/deploy-recovery.js")>();
+  return {
+    ...actual,
+    // Only recoverBrokenDeploy is stubbed; activeDeployIds and
+    // readExistingSteps are kept real (via spread). recoverBrokenDeploy is
+    // a plain async function in production (never throws synchronously),
+    // so streamDeploy calls it directly without a Promise.resolve()
+    // wrapper. The mock must resolve a real promise to match: a bare
+    // vi.fn() returns undefined, and undefined.catch(...) would throw in
+    // streamDeploy's catch block.
+    recoverBrokenDeploy: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 // finalizeDeploy (invoked once streamDeploy gets past the gate and the relay
 // deploy call succeeds) runs the post-deploy health gate — mock it out so

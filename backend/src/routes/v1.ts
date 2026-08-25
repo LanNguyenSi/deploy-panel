@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
-import { recoverBrokenDeploy } from "../lib/deploy-recovery.js";
+import { recoverBrokenDeploy, activeDeployIds } from "../lib/deploy-recovery.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
 import { audit, getActorUserId } from "../lib/audit.js";
 import {
@@ -285,6 +285,18 @@ v1Router.post("/rollback", async (c) => {
   // Fire and forget
   const deployId = deploy.id;
   (async () => {
+    // This handler drives the deploy record itself (relayRequest, then a
+    // direct prisma.deploy.update below) instead of going through
+    // streamDeploy, so it must register the id here too or the periodic
+    // stuck-sweep (startup.ts's recoverStuckDeploys) can finalize a
+    // rollback that is still genuinely in flight once it crosses the
+    // 2-minute threshold. `recovering` tracks whether the catch block
+    // below handed the id off to recoverBrokenDeploy, which manages its
+    // own add/delete for the duration of its (fire-and-forget) run: when
+    // it has, the delete in the finally is skipped so the id stays
+    // registered until recovery itself is done.
+    activeDeployIds.add(deployId);
+    let recovering = false;
     try {
       const raw = await relayRequest<
         { success?: boolean; commitBefore?: string; commitAfter?: string } & {
@@ -340,7 +352,20 @@ v1Router.post("/rollback", async (c) => {
       }
 
       const errMsg = err instanceof Error ? err.message : String(err);
-      recoverBrokenDeploy(deployId, appRecord.id, srv.id, appName, errMsg);
+      recovering = true;
+      // Fire-and-forget, but with its own .catch (mirrors stream-deploy.ts's
+      // guard on the same call): recoverBrokenDeploy's internal prisma
+      // calls already each carry a trailing .catch, but a throw before any
+      // of them (e.g. verifyDeployHealth itself rejecting) would otherwise
+      // become an unhandled rejection. The surrounding IIFE's own .catch at
+      // the bottom of this route does NOT cover it, since this call is
+      // neither awaited nor returned: the IIFE's promise settles once this
+      // function body finishes, not once this un-awaited promise does.
+      recoverBrokenDeploy(deployId, appRecord.id, srv.id, appName, errMsg).catch((recoveryErr) => {
+        console.error(`[stuck-sweep] recoverBrokenDeploy failed for ${deployId} (${appName}):`, recoveryErr);
+      });
+    } finally {
+      if (!recovering) activeDeployIds.delete(deployId);
     }
   })().catch((e) => console.error("[v1 rollback] background task failed", e));
 

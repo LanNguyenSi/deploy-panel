@@ -1,5 +1,5 @@
 import { prisma } from "./prisma.js";
-import { recoverBrokenDeploy } from "./deploy-recovery.js";
+import { recoverBrokenDeploy, activeDeployIds } from "./deploy-recovery.js";
 import { verifyDeployHealth } from "./post-deploy-gate.js";
 import { provisionAndCheckAppSecrets } from "./provision-secrets.js";
 
@@ -108,6 +108,12 @@ export async function streamDeploy(opts: {
 }) {
   const { serverId, deployId, appId, appName, relayUrl, relayToken, body } = opts;
   const steps: Array<{ name: string; status: string; durationMs: number; output?: string }> = [];
+
+  // Marks this deploy as owned by THIS process for as long as the try below
+  // runs (cleared in the finally regardless of outcome). startup.ts's
+  // periodic stuck-sweep reads this set to tell a genuinely long-running
+  // deploy apart from one orphaned by a process restart.
+  activeDeployIds.add(deployId);
 
   try {
     // Provision panel-managed secrets into the relay's .env BEFORE compose
@@ -278,7 +284,25 @@ export async function streamDeploy(opts: {
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     console.log(`[stream-deploy] Connection error for ${appName}: ${errMsg}`);
-    recoverBrokenDeploy(deployId, appId, serverId, appName, errMsg);
+    // Awaited (not fire-and-forget) with its own .catch: recoverBrokenDeploy
+    // does its own internal error handling (each of its prisma calls already
+    // has a trailing .catch), but if it throws before reaching any of those
+    // (e.g. verifyDeployHealth itself rejects), a bare fire-and-forget call
+    // here used to become an unhandled rejection AND leave the deploy record
+    // on "running" forever. Now a rejection is logged and swallowed; the
+    // record stays "running" only until the periodic stuck-sweep (see
+    // deploy-recovery.ts's activeDeployIds, cleared in the finally below)
+    // reclaims it. recoverBrokenDeploy is a plain async function (never
+    // throws synchronously), so calling it directly always returns a real
+    // promise: no Promise.resolve() wrapper needed.
+    await recoverBrokenDeploy(deployId, appId, serverId, appName, errMsg).catch((recoveryErr) => {
+      console.error(
+        `[stream-deploy] recoverBrokenDeploy itself failed for ${deployId} (${appName}); the deploy record may stay "running" until the periodic stuck-sweep reclaims it:`,
+        recoveryErr,
+      );
+    });
+  } finally {
+    activeDeployIds.delete(deployId);
   }
 }
 

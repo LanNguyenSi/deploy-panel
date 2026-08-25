@@ -1,7 +1,21 @@
 import { prisma } from "./prisma.js";
 import { verifyDeployHealth } from "./post-deploy-gate.js";
 
-type LoggedStep = { name: string; status: string; durationMs?: number; [k: string]: unknown };
+export type LoggedStep = { name: string; status: string; durationMs?: number; [k: string]: unknown };
+
+/**
+ * Deploy ids this PROCESS is currently streaming (added by streamDeploy at
+ * the start of a run, removed in its finally block once the run ends,
+ * success or failure). startup.ts's periodic stuck-sweep (recoverStuckDeploys,
+ * now run on an interval by scheduler.ts's startScheduler, not just once at
+ * boot) excludes ids in this set: a running record whose age crosses
+ * STUCK_THRESHOLD_MS is only "stuck" if no process is actually still
+ * driving it. Without this set, a periodic sweep would eventually finalize
+ * a real deploy that simply runs long (slow relay/compose step), which is
+ * exactly the false-positive the one-shot startup version avoided by only
+ * ever running before anything was in flight.
+ */
+export const activeDeployIds = new Set<string>();
 
 /**
  * Parses the deploy's existing `log` column (whatever streamDeploy's reader
@@ -12,7 +26,7 @@ type LoggedStep = { name: string; status: string; durationMs?: number; [k: strin
  * string log (see stream-deploy.ts's failureStepLog) is not JSON and
  * shouldn't be treated as data loss on recovery's part.
  */
-function readExistingSteps(rawLog: string | null | undefined): LoggedStep[] {
+export function readExistingSteps(rawLog: string | null | undefined): LoggedStep[] {
   if (!rawLog) return [];
   try {
     const parsed = JSON.parse(rawLog);
@@ -70,6 +84,29 @@ const RECOVERY_INTERVAL_MS = 12_000;
  * of the optimistic success verdict this function used to hand out.
  */
 export async function recoverBrokenDeploy(
+  deployId: string,
+  appId: string,
+  serverId: string,
+  appName: string,
+  error: string,
+) {
+  // Registers itself (try/finally) independently of whatever the caller
+  // already did: streamDeploy adds deployId before this is ever reached,
+  // and both rollback routes (routes/apps.ts, routes/v1.ts) now add it
+  // before their relayRequest call too, for the window before this
+  // function is invoked. Owning the add/delete here as well means any
+  // caller of recoverBrokenDeploy gets the stuck-sweep exclusion for the
+  // full duration of the health-check polling below, not only callers that
+  // remembered to register beforehand.
+  activeDeployIds.add(deployId);
+  try {
+    await recoverBrokenDeployBody(deployId, appId, serverId, appName, error);
+  } finally {
+    activeDeployIds.delete(deployId);
+  }
+}
+
+async function recoverBrokenDeployBody(
   deployId: string,
   appId: string,
   serverId: string,

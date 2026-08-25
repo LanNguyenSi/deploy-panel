@@ -18,6 +18,8 @@ vi.mock("../src/lib/prisma.js", () => ({
       findMany: vi.fn(),
       count: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      findFirst: vi.fn().mockResolvedValue(null),
     },
     auditLog: {
       create: vi.fn().mockResolvedValue({}),
@@ -46,9 +48,28 @@ vi.mock("../src/lib/audit.js", () => ({
   getActorUserId: vi.fn().mockReturnValue(null),
 }));
 
-vi.mock("../src/lib/deploy-recovery.js", () => ({
-  recoverBrokenDeploy: vi.fn(),
-}));
+vi.mock("../src/lib/deploy-recovery.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/deploy-recovery.js")>();
+  return {
+    ...actual,
+    // Only recoverBrokenDeploy is stubbed. activeDeployIds and
+    // readExistingSteps are kept real (via spread) rather than replaced by
+    // a partial factory: a partial factory used to leave readExistingSteps
+    // undefined here, which made startup.ts's recoverStuckDeploys throw
+    // (swallowed by its per-record try/catch) before ever reaching
+    // prisma.deploy.updateMany whenever a candidate row slipped past the
+    // activeDeployIds exclusion, masking exactly the registration mutants
+    // the "activeDeployIds registration" describe block below exists to
+    // catch, since the assertion `updateMany not called` then passed for
+    // the wrong reason.
+    //
+    // Resolves a real promise (not a bare vi.fn(), which returns
+    // undefined): the route now calls `.catch(...)` on recoverBrokenDeploy's
+    // return value (fire-and-forget with its own rejection guard), and
+    // undefined.catch(...) throws.
+    recoverBrokenDeploy: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 vi.mock("../src/config/index.js", () => ({
   config: {
@@ -64,7 +85,8 @@ vi.mock("../src/config/index.js", () => ({
 import { prisma } from "../src/lib/prisma.js";
 import { relayRequest, RelayError } from "../src/lib/relay.js";
 import { streamDeploy } from "../src/lib/stream-deploy.js";
-import { recoverBrokenDeploy } from "../src/lib/deploy-recovery.js";
+import { recoverBrokenDeploy, activeDeployIds } from "../src/lib/deploy-recovery.js";
+import { recoverStuckDeploys } from "../src/lib/startup.js";
 import { v1Router } from "../src/routes/v1.js";
 import { Hono } from "hono";
 
@@ -93,6 +115,8 @@ const mDeploy = prisma.deploy as unknown as {
   findMany: ReturnType<typeof vi.fn>;
   count: ReturnType<typeof vi.fn>;
   update: ReturnType<typeof vi.fn>;
+  updateMany: ReturnType<typeof vi.fn>;
+  findFirst: ReturnType<typeof vi.fn>;
 };
 
 function appFor(actor: { userId: string | null; isAdmin: boolean }) {
@@ -776,5 +800,161 @@ describe("v1 POST /rollback: RelayError from the relay call itself", () => {
 
     expect(recoverBrokenDeploy).toHaveBeenCalledTimes(1);
     expect(mDeploy.update).not.toHaveBeenCalled();
+  });
+});
+
+// This route drives the deploy record itself (relayRequest, then a direct
+// prisma.deploy.update) instead of going through streamDeploy, so its id
+// used to never enter activeDeployIds: the periodic stuck-sweep
+// (recoverStuckDeploys, startup.ts) could finalize a rollback that was
+// still genuinely in flight once it aged past the 2-minute threshold. See
+// deploy-panel#130.
+describe("v1 POST /rollback: activeDeployIds registration", () => {
+  const deployRecord = { id: "rollback-guard-1", status: "running", serverId: "srv-a", appId: "app-a" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    activeDeployIds.clear();
+    mServer.findFirst.mockResolvedValue(ownedServer);
+    mApp.findUnique.mockResolvedValue(appRecord);
+    mDeploy.create.mockResolvedValue(deployRecord);
+    mDeploy.update.mockResolvedValue({});
+    mDeploy.updateMany.mockResolvedValue({ count: 1 });
+    mDeploy.findFirst.mockResolvedValue(null);
+  });
+
+  it("registers the deploy id while relayRequest is in flight, and a concurrent stuck-sweep pass does not finalize it", async () => {
+    let releaseRelay!: (v: unknown) => void;
+    vi.mocked(relayRequest).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseRelay = resolve;
+        }),
+    );
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: "my-app" }),
+    });
+    expect(res.status).toBe(202);
+
+    await vi.waitFor(() => expect(relayRequest).toHaveBeenCalledOnce());
+    expect(activeDeployIds.has("rollback-guard-1")).toBe(true);
+
+    // A concurrent stuck-sweep pass, run while the rollback is still
+    // in-flight: simulate the real `notIn` filter recoverStuckDeploys
+    // builds so the excluded id never even reaches the finalize step.
+    mDeploy.findMany.mockImplementation(async (args: any) => {
+      const excluded: string[] = args.where.id?.notIn ?? [];
+      const candidate = {
+        id: "rollback-guard-1",
+        appId: "app-a",
+        createdAt: new Date(0),
+        log: null,
+        app: { name: "my-app" },
+        server: { id: "srv-a", relayUrl: null, relayToken: null },
+      };
+      return excluded.includes(candidate.id) ? [] : [candidate];
+    });
+
+    await recoverStuckDeploys();
+
+    expect(mDeploy.updateMany).not.toHaveBeenCalled();
+
+    releaseRelay({ success: true, commitBefore: "a", commitAfter: "b" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(activeDeployIds.has("rollback-guard-1")).toBe(false);
+  });
+
+  // Pins the actual hand-off HIGH-1 added: recoverBrokenDeploy polls health
+  // for up to ~60s after this handler has already returned its 202
+  // response, so the deploy id must stay in activeDeployIds for that whole
+  // window. Two mutants would survive without this test: making the
+  // route's `if (!recovering) activeDeployIds.delete(deployId)` guard in
+  // the background task's `finally` block unconditional, or deleting
+  // recoverBrokenDeploy's own self-registration entirely (covered
+  // separately, in deploy-recovery.test.ts, with the real function).
+  it("keeps the deploy id registered while recoverBrokenDeploy is still pending after a non-4xx error hand-off", async () => {
+    vi.mocked(relayRequest).mockRejectedValue(new RelayError("Relay error (500): boom", 500));
+
+    let settleRecover!: () => void;
+    const controlled = new Promise<void>((resolve) => {
+      settleRecover = resolve;
+    });
+    vi.mocked(recoverBrokenDeploy).mockReturnValue(controlled);
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: "my-app" }),
+    });
+    expect(res.status).toBe(202);
+
+    await vi.waitFor(() => expect(recoverBrokenDeploy).toHaveBeenCalledTimes(1));
+
+    // The 202 response (and the background task's hand-off) has already
+    // happened, but recoverBrokenDeploy's own promise has not settled: the
+    // id must still be registered. (The mock here stands in for
+    // recoverBrokenDeploy's own add/delete lifecycle, which is a separate
+    // concern pinned with the REAL function in deploy-recovery.test.ts's
+    // "self-registration" tests.)
+    expect(activeDeployIds.has("rollback-guard-1")).toBe(true);
+
+    settleRecover();
+    await controlled;
+  });
+});
+
+// The background task's `recoverBrokenDeploy(...)` call is fire-and-forget
+// (see the comment above the call site in v1.ts): the surrounding IIFE's
+// own .catch does NOT cover it, since the call is neither awaited nor
+// returned. recoverBrokenDeploy's internal prisma calls already each carry
+// a trailing .catch, but a throw before any of them (e.g. verifyDeployHealth
+// itself rejecting) used to become a genuinely separate unhandled rejection.
+describe("v1 POST /rollback: recoverBrokenDeploy rejection is caught, not left unhandled", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    activeDeployIds.clear();
+    mServer.findFirst.mockResolvedValue(ownedServer);
+    mApp.findUnique.mockResolvedValue(appRecord);
+    mDeploy.create.mockResolvedValue({ id: "guard-1", status: "running", serverId: "srv-a", appId: "app-a" });
+    mDeploy.update.mockResolvedValue({});
+  });
+
+  it("logs and swallows a recoverBrokenDeploy rejection via its own .catch, instead of letting it propagate unhandled", async () => {
+    vi.mocked(relayRequest).mockRejectedValue(new RelayError("Relay error (500): boom", 500));
+
+    let rejectRecover!: (err: Error) => void;
+    const controlled = new Promise<void>((_resolve, reject) => {
+      rejectRecover = reject;
+    });
+    vi.mocked(recoverBrokenDeploy).mockReturnValue(controlled);
+
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: "my-app" }),
+    });
+    expect(res.status).toBe(202);
+
+    await vi.waitFor(() => expect(recoverBrokenDeploy).toHaveBeenCalledTimes(1));
+
+    rejectRecover(new Error("verifyDeployHealth exploded"));
+    // Give the .catch handler's microtask a turn to run. If the call site
+    // has no .catch chained (the mutant this test exists to catch), this
+    // rejection is left with no handler attached in this same synchronous
+    // window, which is exactly what makes Node treat it as unhandled.
+    await new Promise((r) => setTimeout(r, 0));
+
+    const logged = consoleErrorSpy.mock.calls.some((args) =>
+      String(args[0]).includes("[stuck-sweep] recoverBrokenDeploy failed"),
+    );
+    expect(logged).toBe(true);
+
+    consoleErrorSpy.mockRestore();
   });
 });
