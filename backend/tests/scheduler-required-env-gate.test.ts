@@ -36,9 +36,9 @@ vi.mock("../src/lib/deploy-recovery.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/lib/deploy-recovery.js")>();
   return {
     ...actual,
-    // Only recoverBrokenDeploy is stubbed; activeDeployIds and
+    // Only recoverBrokenDeploy is stubbed; the active-deploy registry and
     // readExistingSteps are kept real (via spread). streamDeploy (real, in
-    // this file) registers/deregisters against activeDeployIds; scheduler.ts
+    // this file) registers/deregisters against the active-deploy registry; scheduler.ts
     // also now imports startup.js, whose recoverStuckDeploys reads it too.
     recoverBrokenDeploy: vi.fn(),
   };

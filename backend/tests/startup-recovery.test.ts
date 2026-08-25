@@ -5,8 +5,8 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 // hardening):
 //
 // 1. It must exclude deploy ids this process still has active
-//    (deploy-recovery.ts's activeDeployIds, populated by streamDeploy and
-//    by both rollback routes), so the now-periodic sweep (see scheduler.ts's
+//    (deploy-recovery.ts's active-deploy registry, populated by streamDeploy
+//    and by both rollback routes), so the now-periodic sweep (see scheduler.ts's
 //    startScheduler) does not eventually finalize a deploy that is simply
 //    running long, not actually stuck.
 // 2. The recovery note it writes into `log` must be a JSON step inside the
@@ -38,7 +38,7 @@ vi.mock("../src/lib/relay.js", () => ({
 import { prisma } from "../src/lib/prisma.js";
 import { relayRequest } from "../src/lib/relay.js";
 import { recoverStuckDeploys } from "../src/lib/startup.js";
-import { activeDeployIds } from "../src/lib/deploy-recovery.js";
+import { registerActiveDeploy, clearActiveDeploys } from "../src/lib/deploy-recovery.js";
 
 const mFindMany = (prisma.deploy as any).findMany as ReturnType<typeof vi.fn>;
 const mUpdateMany = (prisma.deploy as any).updateMany as ReturnType<typeof vi.fn>;
@@ -61,7 +61,7 @@ const makeStuckDeploy = (overrides: Partial<Record<string, unknown>> = {}) => ({
 describe("recoverStuckDeploys", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    activeDeployIds.clear();
+    clearActiveDeploys();
     mUpdateMany.mockResolvedValue({ count: 1 });
     mDeployFindFirst.mockResolvedValue(null);
   });
@@ -82,9 +82,9 @@ describe("recoverStuckDeploys", () => {
     expect(steps.at(-1).output).toContain("was stuck on running");
   });
 
-  it("excludes deploy ids this process still has active (activeDeployIds) from the stuck-sweep query", async () => {
+  it("excludes deploy ids this process still has active (the active-deploy registry) from the stuck-sweep query", async () => {
     mFindMany.mockResolvedValue([]);
-    activeDeployIds.add("still-active-1");
+    registerActiveDeploy("still-active-1");
 
     await recoverStuckDeploys();
 
@@ -92,7 +92,7 @@ describe("recoverStuckDeploys", () => {
     expect(queryArgs.where.id.notIn).toContain("still-active-1");
   });
 
-  it("omits the `id` filter entirely when activeDeployIds is empty, instead of passing notIn: []", async () => {
+  it("omits the `id` filter entirely when the active-deploy registry is empty, instead of passing notIn: []", async () => {
     mFindMany.mockResolvedValue([]);
 
     await recoverStuckDeploys();

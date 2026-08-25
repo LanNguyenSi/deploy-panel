@@ -6,8 +6,8 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 // .catch), that became an unhandled rejection AND left the deploy record on
 // "running" forever, since nothing ever finalized it. Now the call is
 // awaited with its own .catch, so a rejection there is logged and swallowed
-// instead of propagating, and the deploy id is still removed from
-// activeDeployIds (see the `finally` in stream-deploy.ts), so the periodic
+// instead of propagating, and the deploy id's registration is still released
+// (see the `finally` in stream-deploy.ts), so the periodic
 // stuck-sweep (scheduler-stuck-sweep.test.ts) can still reclaim the
 // now-orphaned record later. See deploy-panel#130.
 
@@ -34,14 +34,14 @@ vi.mock("../src/lib/provision-secrets.js", () => ({
 }));
 
 import { streamDeploy } from "../src/lib/stream-deploy.js";
-import { recoverBrokenDeploy, activeDeployIds } from "../src/lib/deploy-recovery.js";
+import { recoverBrokenDeploy, isActiveDeploy, clearActiveDeploys } from "../src/lib/deploy-recovery.js";
 
 const mRecover = recoverBrokenDeploy as unknown as ReturnType<typeof vi.fn>;
 
 describe("streamDeploy: recoverBrokenDeploy rejection in the catch block", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    activeDeployIds.clear();
+    clearActiveDeploys();
   });
 
   it("awaits recoverBrokenDeploy before resolving (not fire-and-forget): streamDeploy must not settle while recoverBrokenDeploy's promise is still pending", async () => {
@@ -85,7 +85,7 @@ describe("streamDeploy: recoverBrokenDeploy rejection in the catch block", () =>
     await Promise.resolve();
     await Promise.resolve();
     expect(streamSettled).toBe(false);
-    expect(activeDeployIds.has("d1")).toBe(true); // finally hasn't run yet either
+    expect(isActiveDeploy("d1")).toBe(true); // finally hasn't run yet either
 
     settleRecover();
     await streamPromise;
@@ -93,7 +93,7 @@ describe("streamDeploy: recoverBrokenDeploy rejection in the catch block", () =>
     expect(streamSettled).toBe(true);
     // Cleared once recovery has settled: otherwise a real deploy that hit
     // this path would be permanently excluded from the stuck-sweep too.
-    expect(activeDeployIds.has("d1")).toBe(false);
+    expect(isActiveDeploy("d1")).toBe(false);
 
     fetchSpy.mockRestore();
   });

@@ -24,7 +24,7 @@ vi.mock("../src/lib/deploy-recovery.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/lib/deploy-recovery.js")>();
   return {
     ...actual,
-    // Only recoverBrokenDeploy is stubbed; activeDeployIds and
+    // Only recoverBrokenDeploy is stubbed; the active-deploy registry and
     // readExistingSteps are kept real (via spread). recoverBrokenDeploy is
     // a plain async function in production (never throws synchronously),
     // so streamDeploy calls it directly without a Promise.resolve()
