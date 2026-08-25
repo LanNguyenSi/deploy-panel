@@ -17,7 +17,7 @@ export function startScheduler() {
   // STUCK_THRESHOLD_MS, because nothing ran recoverStuckDeploys again after
   // startup. Reusing CHECK_INTERVAL keeps it comfortably inside
   // startup.ts's 2-minute threshold without a second interval constant.
-  // See deploy-recovery.ts's activeDeployIds for how this avoids touching a
+  // See deploy-recovery.ts's active-deploy registry for how this avoids touching a
   // deploy genuinely still streaming in this process.
   //
   // recoverStuckDeploys is an async function passed straight to

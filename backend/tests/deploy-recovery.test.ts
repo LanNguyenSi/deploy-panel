@@ -146,7 +146,7 @@ describe("recoverBrokenDeploy", () => {
 // already did, so ANY caller gets the stuck-sweep exclusion for the full
 // duration of its own health-check polling, not just callers that
 // remembered to register beforehand. This is the REAL recoverBrokenDeploy
-// (not a mock, unlike the route-level "activeDeployIds registration" tests
+// (not a mock, unlike the route-level "active-deploy registration" tests
 // in apps-rollback-route.test.ts / v1-api.test.ts, which stub
 // recoverBrokenDeploy entirely and so cannot exercise this self-registration
 // at all): it pins the register/finally-release pair directly against a
@@ -234,8 +234,19 @@ describe("nested register/release: a caller's own hold and recoverBrokenDeploy's
     registerActiveDeploy("nested-1");
     expect(isActiveDeploy("nested-1")).toBe(true);
 
+    // Fire-and-forget, exactly like apps.ts/v1.ts: the caller does not
+    // await recoverBrokenDeploy before releasing its own hold, it releases
+    // in the SAME synchronous turn as the hand-off (its own finally running
+    // right after the call, not after any await). Asserting and releasing
+    // here — immediately after the call, before the vi.waitFor below —
+    // pins that real ordering. Moving this block after vi.waitFor would
+    // hide a regression where recoverBrokenDeploy's own registerActiveDeploy
+    // call stops being the first (synchronous) statement in its body: an
+    // await inserted ahead of it lets the caller's release run before
+    // recoverBrokenDeploy's own registration ever lands, so the id would
+    // briefly carry ZERO holds while recovery is still genuinely in flight
+    // — a window vi.waitFor's own awaiting would paper over.
     const recoverPromise = recoverBrokenDeploy("nested-1", "a1", "srv-a", "thd", "socket hang up");
-    await vi.waitFor(() => expect(mGate).toHaveBeenCalledOnce());
     // Both the caller's own registration and recoverBrokenDeploy's own are
     // held at this point.
     expect(getActiveDeployRefCount("nested-1")).toBe(2);
@@ -244,6 +255,8 @@ describe("nested register/release: a caller's own hold and recoverBrokenDeploy's
     // response) while recoverBrokenDeploy is still polling health.
     releaseActiveDeploy("nested-1");
     expect(isActiveDeploy("nested-1")).toBe(true); // recoverBrokenDeploy's own hold keeps it registered
+
+    await vi.waitFor(() => expect(mGate).toHaveBeenCalledOnce());
 
     settleGate({ healthy: true });
     await recoverPromise;

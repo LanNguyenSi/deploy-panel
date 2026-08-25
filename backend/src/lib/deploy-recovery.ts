@@ -12,18 +12,24 @@ export type LoggedStep = { name: string; status: string; durationMs?: number; [k
  * caller's unconditional cleanup would remove the id out from under the
  * other, which is exactly why the two rollback routes used to carry a
  * `recovering` boolean to skip their own delete when they'd handed off to
- * recoverBrokenDeploy. That flag's correctness was accidental: it happened
- * to work only because recoverBrokenDeploy's own registration is the FIRST
- * (synchronous) statement in its body, so it always lands before the
- * route's own cleanup runs. Move that add behind an await and a window
- * opens where the id is unregistered while recovery is still genuinely in
- * flight; delete the route's guard without the refcount and the id leaks
- * forever once `recovering` is never reset.
+ * recoverBrokenDeploy.
  *
- * A refcount removes both hazards: register/release nest safely regardless
- * of call order, an id stays "active" as long as at least one caller still
- * holds a registration, and every route can use a plain unconditional
- * try/finally.
+ * The refcount removes that Set hazard: a caller's own release can no
+ * longer delete recoverBrokenDeploy's still-pending hold on the same id, so
+ * both rollback routes can use a plain unconditional try/finally instead of
+ * the `recovering` flag. It does NOT remove the ordering requirement the
+ * flag depended on. A caller (apps.ts, v1.ts) hands deployId off to
+ * recoverBrokenDeploy with a fire-and-forget call and releases its OWN hold
+ * in the very same synchronous turn (its surrounding try/finally). If
+ * recoverBrokenDeploy's own registerActiveDeploy call were not the FIRST
+ * (synchronous) statement in its body — e.g. moved behind an await — the
+ * caller's release could run before recoverBrokenDeploy's own registration
+ * ever lands, and the id would briefly carry ZERO holds while recovery is
+ * still genuinely in flight. So that call must stay the first statement,
+ * before any await, exactly as it had to under the old flag; the refcount
+ * changes how ordering violations are contained (one caller's release can
+ * no longer race the OTHER caller's own registration out from under it),
+ * not whether ordering still matters for recoverBrokenDeploy's own call.
  *
  * startup.ts's periodic stuck-sweep (recoverStuckDeploys, run on an
  * interval by scheduler.ts's startScheduler, not just once at boot)
@@ -76,11 +82,6 @@ export function isActiveDeploy(deployId: string): boolean {
  */
 export function listActiveDeployIds(): string[] {
   return Array.from(activeDeployRefCounts.keys());
-}
-
-/** Number of distinct deploy ids currently registered (not the sum of refcounts). */
-export function activeDeployCount(): number {
-  return activeDeployRefCounts.size;
 }
 
 /**

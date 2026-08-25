@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Internal
 
-- `deploy-recovery.ts`'s `activeDeployIds` Set replaced with a refcounted registry (`registerActiveDeploy`/`releaseActiveDeploy`/`isActiveDeploy`/`listActiveDeployIds`): the two rollback routes (`apps.ts`, `v1.ts`) and `recoverBrokenDeploy` each register/release their own hold on a deployId independently now, so both routes can use a plain unconditional `try`/`finally` instead of the `recovering` boolean that used to skip the delete when a hand-off occurred. That flag's correctness previously depended on `recoverBrokenDeploy`'s self-registration always being its first (synchronous) statement — a fragile ordering assumption, not a structural guarantee.
+- `deploy-recovery.ts`'s `activeDeployIds` Set replaced with a refcounted registry (`registerActiveDeploy`/`releaseActiveDeploy`/`isActiveDeploy`/`listActiveDeployIds`): the two rollback routes (`apps.ts`, `v1.ts`) and `recoverBrokenDeploy` each register/release their own hold on a deployId independently now, so both routes can use a plain unconditional `try`/`finally` instead of the `recovering` boolean that used to skip the delete when a hand-off occurred. The refcount removes the Set's can't-represent-two-holds hazard, but the ordering invariant the old flag depended on is still load-bearing: callers release their own hold in the same synchronous turn as the hand-off, so `recoverBrokenDeploy`'s own `registerActiveDeploy` call must stay the first statement in its body, before any `await` — moving it behind one reopens the exact unregistered-while-in-flight window the old flag's ordering happened to avoid.
 
 ## [0.5.0] - 2026-08-20
 

@@ -60,7 +60,7 @@ vi.mock("../src/lib/deploy-recovery.js", async (importOriginal) => {
     // per-record try/catch) before ever reaching prisma.deploy.updateMany
     // whenever a candidate row slipped past the active-deploy-registry
     // exclusion, masking exactly the registration mutants the
-    // "activeDeployIds registration" describe block below exists to catch,
+    // "active-deploy registration" describe block below exists to catch,
     // since the assertion `updateMany not called` then passed for the
     // wrong reason.
     //
