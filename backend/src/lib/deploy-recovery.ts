@@ -4,18 +4,105 @@ import { verifyDeployHealth } from "./post-deploy-gate.js";
 export type LoggedStep = { name: string; status: string; durationMs?: number; [k: string]: unknown };
 
 /**
- * Deploy ids this PROCESS is currently streaming (added by streamDeploy at
- * the start of a run, removed in its finally block once the run ends,
- * success or failure). startup.ts's periodic stuck-sweep (recoverStuckDeploys,
- * now run on an interval by scheduler.ts's startScheduler, not just once at
- * boot) excludes ids in this set: a running record whose age crosses
+ * Deploy ids this PROCESS is currently driving, refcounted rather than a
+ * plain Set: recoverBrokenDeploy always self-registers (see below) on top
+ * of whatever the caller already registered, so a route that hands a
+ * deployId off to recoverBrokenDeploy has TWO independent registrations
+ * for the same id in flight at once. A Set can't represent that — either
+ * caller's unconditional cleanup would remove the id out from under the
+ * other, which is exactly why the two rollback routes used to carry a
+ * `recovering` boolean to skip their own delete when they'd handed off to
+ * recoverBrokenDeploy. That flag's correctness was accidental: it happened
+ * to work only because recoverBrokenDeploy's own registration is the FIRST
+ * (synchronous) statement in its body, so it always lands before the
+ * route's own cleanup runs. Move that add behind an await and a window
+ * opens where the id is unregistered while recovery is still genuinely in
+ * flight; delete the route's guard without the refcount and the id leaks
+ * forever once `recovering` is never reset.
+ *
+ * A refcount removes both hazards: register/release nest safely regardless
+ * of call order, an id stays "active" as long as at least one caller still
+ * holds a registration, and every route can use a plain unconditional
+ * try/finally.
+ *
+ * startup.ts's periodic stuck-sweep (recoverStuckDeploys, run on an
+ * interval by scheduler.ts's startScheduler, not just once at boot)
+ * excludes every id registered here: a running record whose age crosses
  * STUCK_THRESHOLD_MS is only "stuck" if no process is actually still
- * driving it. Without this set, a periodic sweep would eventually finalize
- * a real deploy that simply runs long (slow relay/compose step), which is
- * exactly the false-positive the one-shot startup version avoided by only
- * ever running before anything was in flight.
+ * driving it. Without this registry, a periodic sweep would eventually
+ * finalize a real deploy that simply runs long (slow relay/compose step),
+ * which is exactly the false-positive the one-shot startup version avoided
+ * by only ever running before anything was in flight.
  */
-export const activeDeployIds = new Set<string>();
+const activeDeployRefCounts = new Map<string, number>();
+
+/**
+ * Registers one "hold" on deployId. Safe to call more than once for the
+ * same id (e.g. a route registers, then hands the id to recoverBrokenDeploy
+ * which registers again) — the id stays active until every registration is
+ * released.
+ */
+export function registerActiveDeploy(deployId: string): void {
+  activeDeployRefCounts.set(deployId, (activeDeployRefCounts.get(deployId) ?? 0) + 1);
+}
+
+/**
+ * Releases one "hold" on deployId. A release with no matching registration
+ * (double release, or release without ever registering) is a no-op rather
+ * than going negative — a caller bug here must not corrupt the count for
+ * every OTHER caller still holding a legitimate registration on the same
+ * id.
+ */
+export function releaseActiveDeploy(deployId: string): void {
+  const count = activeDeployRefCounts.get(deployId);
+  if (count === undefined) return;
+  if (count <= 1) {
+    activeDeployRefCounts.delete(deployId);
+  } else {
+    activeDeployRefCounts.set(deployId, count - 1);
+  }
+}
+
+/** True while at least one caller still holds a registration on deployId. */
+export function isActiveDeploy(deployId: string): boolean {
+  return activeDeployRefCounts.has(deployId);
+}
+
+/**
+ * Snapshot of every currently-registered deploy id, for the stuck-sweep
+ * query (startup.ts) to build its `notIn`/`in` filters from. Returns a new
+ * array each call — never the live map's keys — so a caller can't mutate
+ * registration state by holding onto this.
+ */
+export function listActiveDeployIds(): string[] {
+  return Array.from(activeDeployRefCounts.keys());
+}
+
+/** Number of distinct deploy ids currently registered (not the sum of refcounts). */
+export function activeDeployCount(): number {
+  return activeDeployRefCounts.size;
+}
+
+/**
+ * The current refcount for deployId, or 0 if it holds no registration.
+ * Exists for tests to assert on leak/over-release behavior directly; no
+ * production caller needs the raw number (isActiveDeploy is the boolean
+ * every real caller wants).
+ */
+export function getActiveDeployRefCount(deployId: string): number {
+  return activeDeployRefCounts.get(deployId) ?? 0;
+}
+
+/**
+ * Test-only isolation helper: drops every registration, regardless of
+ * refcount. No production caller needs this — real code always releases
+ * exactly as many times as it registered. Tests use it in beforeEach to
+ * start each case from a clean registry, since the underlying map is
+ * module-level (shared) state.
+ */
+export function clearActiveDeploys(): void {
+  activeDeployRefCounts.clear();
+}
 
 /**
  * Parses the deploy's existing `log` column (whatever streamDeploy's reader
@@ -91,18 +178,21 @@ export async function recoverBrokenDeploy(
   error: string,
 ) {
   // Registers itself (try/finally) independently of whatever the caller
-  // already did: streamDeploy adds deployId before this is ever reached,
-  // and both rollback routes (routes/apps.ts, routes/v1.ts) now add it
-  // before their relayRequest call too, for the window before this
-  // function is invoked. Owning the add/delete here as well means any
+  // already did: streamDeploy registers deployId before this is ever
+  // reached, and both rollback routes (routes/apps.ts, routes/v1.ts) now
+  // register it before their relayRequest call too, for the window before
+  // this function is invoked. Since registration is refcounted, this
+  // nested register/release pair is safe regardless of whether the caller
+  // is still holding its own registration or has already released it: any
   // caller of recoverBrokenDeploy gets the stuck-sweep exclusion for the
   // full duration of the health-check polling below, not only callers that
-  // remembered to register beforehand.
-  activeDeployIds.add(deployId);
+  // remembered to register beforehand, and this function's own release
+  // never removes a hold some OTHER caller still needs.
+  registerActiveDeploy(deployId);
   try {
     await recoverBrokenDeployBody(deployId, appId, serverId, appName, error);
   } finally {
-    activeDeployIds.delete(deployId);
+    releaseActiveDeploy(deployId);
   }
 }
 

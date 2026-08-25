@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Internal
+
+- `deploy-recovery.ts`'s `activeDeployIds` Set replaced with a refcounted registry (`registerActiveDeploy`/`releaseActiveDeploy`/`isActiveDeploy`/`listActiveDeployIds`): the two rollback routes (`apps.ts`, `v1.ts`) and `recoverBrokenDeploy` each register/release their own hold on a deployId independently now, so both routes can use a plain unconditional `try`/`finally` instead of the `recovering` boolean that used to skip the delete when a hand-off occurred. That flag's correctness previously depended on `recoverBrokenDeploy`'s self-registration always being its first (synchronous) statement — a fragile ordering assumption, not a structural guarantee.
+
 ## [0.5.0] - 2026-08-20
 
 **Headline: secrets provisioning in the deploy flow, honest rollback and health-gate reporting, and a broad security + test-coverage hardening round.** The app is deployed from `main`; this tag is deploy provenance.

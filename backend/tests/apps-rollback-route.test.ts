@@ -53,16 +53,17 @@ vi.mock("../src/lib/deploy-recovery.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/lib/deploy-recovery.js")>();
   return {
     ...actual,
-    // Only recoverBrokenDeploy is stubbed. activeDeployIds and
-    // readExistingSteps are kept real (via spread) rather than replaced by
-    // a partial factory: a partial factory used to leave readExistingSteps
-    // undefined here, which made startup.ts's recoverStuckDeploys throw
-    // (swallowed by its per-record try/catch) before ever reaching
-    // prisma.deploy.updateMany whenever a candidate row slipped past the
-    // activeDeployIds exclusion, masking exactly the registration mutants
-    // the "activeDeployIds registration" describe block below exists to
-    // catch, since the assertion `updateMany not called` then passed for
-    // the wrong reason.
+    // Only recoverBrokenDeploy is stubbed. The registerActiveDeploy/
+    // releaseActiveDeploy/isActiveDeploy helpers and readExistingSteps are
+    // kept real (via spread) rather than replaced by a partial factory: a
+    // partial factory used to leave readExistingSteps undefined here, which
+    // made startup.ts's recoverStuckDeploys throw (swallowed by its
+    // per-record try/catch) before ever reaching prisma.deploy.updateMany
+    // whenever a candidate row slipped past the active-deploy-registry
+    // exclusion, masking exactly the registration mutants the
+    // "activeDeployIds registration" describe block below exists to catch,
+    // since the assertion `updateMany not called` then passed for the
+    // wrong reason.
     //
     // Resolves a real promise (not a bare vi.fn(), which returns
     // undefined): the route now calls `.catch(...)` on recoverBrokenDeploy's
@@ -76,7 +77,13 @@ vi.mock("../src/lib/stream-deploy.js", () => ({ streamDeploy: vi.fn() }));
 import { relayRequest, RelayError } from "../src/lib/relay.js";
 import { prisma } from "../src/lib/prisma.js";
 import { appsRouter } from "../src/routes/apps.js";
-import { recoverBrokenDeploy, activeDeployIds } from "../src/lib/deploy-recovery.js";
+import {
+  recoverBrokenDeploy,
+  registerActiveDeploy,
+  releaseActiveDeploy,
+  isActiveDeploy,
+  clearActiveDeploys,
+} from "../src/lib/deploy-recovery.js";
 import { recoverStuckDeploys } from "../src/lib/startup.js";
 import { Hono } from "hono";
 
@@ -248,14 +255,14 @@ describe("POST /:name/rollback — RelayError from the relay call itself", () =>
 
 // This route drives the deploy record itself (relayRequest, then a direct
 // prisma.deploy.update) instead of going through streamDeploy, so its id
-// used to never enter activeDeployIds: the periodic stuck-sweep
+// used to never enter the active-deploy registry: the periodic stuck-sweep
 // (recoverStuckDeploys, startup.ts) could finalize a rollback that was
 // still genuinely in flight once it aged past the 2-minute threshold. See
 // deploy-panel#130.
-describe("POST /:name/rollback: activeDeployIds registration", () => {
+describe("POST /:name/rollback: active-deploy registration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    activeDeployIds.clear();
+    clearActiveDeploys();
     mAppUpsert.mockResolvedValue({ id: "app-a", name: "my-app" });
     mDeployCreate.mockResolvedValue({ id: "rollback-guard-1", status: "running" });
     mDeployUpdate.mockResolvedValue({});
@@ -278,7 +285,7 @@ describe("POST /:name/rollback: activeDeployIds registration", () => {
     });
 
     await vi.waitFor(() => expect(mRelay).toHaveBeenCalledOnce());
-    expect(activeDeployIds.has("rollback-guard-1")).toBe(true);
+    expect(isActiveDeploy("rollback-guard-1")).toBe(true);
 
     // A concurrent stuck-sweep pass, run while the rollback is still
     // in-flight: simulate the real `notIn` filter recoverStuckDeploys
@@ -303,19 +310,27 @@ describe("POST /:name/rollback: activeDeployIds registration", () => {
     releaseRelay({ success: true, commitBefore: "a", commitAfter: "b" });
     await requestPromise;
 
-    expect(activeDeployIds.has("rollback-guard-1")).toBe(false);
+    expect(isActiveDeploy("rollback-guard-1")).toBe(false);
   });
 
   // Pins the actual hand-off HIGH-1 added: recoverBrokenDeploy polls health
   // for up to ~60s after this handler has already returned its HTTP
-  // response, so the deploy id must stay in activeDeployIds for that whole
-  // window, not just until the response settles. Two mutants would survive
-  // without this test: making the route's `if (!recovering)
-  // activeDeployIds.delete(deploy.id)` guard in the `finally` block
-  // unconditional (it would then delete the id the moment the response
-  // settles, regardless of recoverBrokenDeploy still running), or deleting
-  // recoverBrokenDeploy's own self-registration entirely (covered
-  // separately, in deploy-recovery.test.ts, with the real function).
+  // response, so the deploy id must stay registered for that whole window,
+  // not just until the response settles. The route now has NO `recovering`
+  // flag and a plain unconditional try/finally (registerActiveDeploy at the
+  // top, releaseActiveDeploy in finally): that is only safe because
+  // registration is refcounted AND recoverBrokenDeploy holds its own
+  // independent registration on the same id for the duration of its run.
+  // The mock below simulates that real contract (registers when invoked,
+  // releases when its work settles) rather than being a bare stub, since
+  // stubbing recoverBrokenDeploy away here would otherwise erase the very
+  // overlap this test exists to pin. A mutant that removes the route's own
+  // registerActiveDeploy at the top (relying solely on recoverBrokenDeploy's
+  // hold) would surface in the FIRST test in this describe block instead,
+  // whose success path has no recoverBrokenDeploy hand-off to cover for it.
+  // recoverBrokenDeploy's own self-registration is pinned separately, with
+  // the REAL function, in deploy-recovery.test.ts's "self-registration" and
+  // "nested register/release" tests.
   it("keeps the deploy id registered while recoverBrokenDeploy is still pending after a non-4xx error hand-off", async () => {
     mRelay.mockRejectedValueOnce(new Error("connect ECONNRESET"));
 
@@ -323,7 +338,10 @@ describe("POST /:name/rollback: activeDeployIds registration", () => {
     const controlled = new Promise<void>((resolve) => {
       settleRecover = resolve;
     });
-    mRecoverBrokenDeploy.mockReturnValue(controlled);
+    mRecoverBrokenDeploy.mockImplementation((deployId: string) => {
+      registerActiveDeploy(deployId);
+      return controlled.then(() => releaseActiveDeploy(deployId));
+    });
 
     const requestPromise = app().request("/servers/srv-a/apps/my-app/rollback", {
       method: "POST",
@@ -334,12 +352,10 @@ describe("POST /:name/rollback: activeDeployIds registration", () => {
     await requestPromise;
     expect(mRecoverBrokenDeploy).toHaveBeenCalledTimes(1);
 
-    // The HTTP response has already settled, but recoverBrokenDeploy's own
-    // hand-off promise has not: the id must still be registered. (The
-    // mock here stands in for recoverBrokenDeploy's own add/delete
-    // lifecycle, which is a separate concern pinned with the REAL function
-    // in deploy-recovery.test.ts's "self-registration" tests.)
-    expect(activeDeployIds.has("rollback-guard-1")).toBe(true);
+    // The HTTP response has already settled (the route's own finally has
+    // released its own hold), but recoverBrokenDeploy's own registration
+    // has not: the id must still be registered.
+    expect(isActiveDeploy("rollback-guard-1")).toBe(true);
 
     settleRecover();
     await controlled;
@@ -357,7 +373,7 @@ describe("POST /:name/rollback: activeDeployIds registration", () => {
 describe("POST /:name/rollback: recoverBrokenDeploy rejection is caught, not left unhandled", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    activeDeployIds.clear();
+    clearActiveDeploys();
     mAppUpsert.mockResolvedValue({ id: "app-a", name: "my-app" });
     mDeployCreate.mockResolvedValue({ id: "guard-1", status: "running" });
     mDeployUpdate.mockResolvedValue({});

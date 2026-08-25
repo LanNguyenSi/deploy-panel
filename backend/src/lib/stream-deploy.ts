@@ -1,5 +1,5 @@
 import { prisma } from "./prisma.js";
-import { recoverBrokenDeploy, activeDeployIds } from "./deploy-recovery.js";
+import { recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "./deploy-recovery.js";
 import { verifyDeployHealth } from "./post-deploy-gate.js";
 import { provisionAndCheckAppSecrets } from "./provision-secrets.js";
 
@@ -113,7 +113,7 @@ export async function streamDeploy(opts: {
   // runs (cleared in the finally regardless of outcome). startup.ts's
   // periodic stuck-sweep reads this set to tell a genuinely long-running
   // deploy apart from one orphaned by a process restart.
-  activeDeployIds.add(deployId);
+  registerActiveDeploy(deployId);
 
   try {
     // Provision panel-managed secrets into the relay's .env BEFORE compose
@@ -291,7 +291,7 @@ export async function streamDeploy(opts: {
     // here used to become an unhandled rejection AND leave the deploy record
     // on "running" forever. Now a rejection is logged and swallowed; the
     // record stays "running" only until the periodic stuck-sweep (see
-    // deploy-recovery.ts's activeDeployIds, cleared in the finally below)
+    // deploy-recovery.ts's active-deploy registry, released in the finally below)
     // reclaims it. recoverBrokenDeploy is a plain async function (never
     // throws synchronously), so calling it directly always returns a real
     // promise: no Promise.resolve() wrapper needed.
@@ -302,7 +302,7 @@ export async function streamDeploy(opts: {
       );
     });
   } finally {
-    activeDeployIds.delete(deployId);
+    releaseActiveDeploy(deployId);
   }
 }
 

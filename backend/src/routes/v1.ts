@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
-import { recoverBrokenDeploy, activeDeployIds } from "../lib/deploy-recovery.js";
+import { recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "../lib/deploy-recovery.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
 import { audit, getActorUserId } from "../lib/audit.js";
 import {
@@ -290,13 +290,13 @@ v1Router.post("/rollback", async (c) => {
     // streamDeploy, so it must register the id here too or the periodic
     // stuck-sweep (startup.ts's recoverStuckDeploys) can finalize a
     // rollback that is still genuinely in flight once it crosses the
-    // 2-minute threshold. `recovering` tracks whether the catch block
-    // below handed the id off to recoverBrokenDeploy, which manages its
-    // own add/delete for the duration of its (fire-and-forget) run: when
-    // it has, the delete in the finally is skipped so the id stays
-    // registered until recovery itself is done.
-    activeDeployIds.add(deployId);
-    let recovering = false;
+    // 2-minute threshold. Registration is refcounted (deploy-recovery.ts),
+    // so this plain unconditional try/finally is safe even when the catch
+    // block below hands the id off to recoverBrokenDeploy: recoverBrokenDeploy
+    // holds its OWN registration on the same id for the duration of its
+    // (fire-and-forget) run, independent of this one, so the id stays
+    // registered until recovery itself releases its hold.
+    registerActiveDeploy(deployId);
     try {
       const raw = await relayRequest<
         { success?: boolean; commitBefore?: string; commitAfter?: string } & {
@@ -352,7 +352,6 @@ v1Router.post("/rollback", async (c) => {
       }
 
       const errMsg = err instanceof Error ? err.message : String(err);
-      recovering = true;
       // Fire-and-forget, but with its own .catch (mirrors stream-deploy.ts's
       // guard on the same call): recoverBrokenDeploy's internal prisma
       // calls already each carry a trailing .catch, but a throw before any
@@ -365,7 +364,7 @@ v1Router.post("/rollback", async (c) => {
         console.error(`[stuck-sweep] recoverBrokenDeploy failed for ${deployId} (${appName}):`, recoveryErr);
       });
     } finally {
-      if (!recovering) activeDeployIds.delete(deployId);
+      releaseActiveDeploy(deployId);
     }
   })().catch((e) => console.error("[v1 rollback] background task failed", e));
 

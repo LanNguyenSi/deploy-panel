@@ -1,6 +1,6 @@
 import { prisma } from "./prisma.js";
 import { relayRequest } from "./relay.js";
-import { activeDeployIds, readExistingSteps } from "./deploy-recovery.js";
+import { listActiveDeployIds, readExistingSteps } from "./deploy-recovery.js";
 
 const STUCK_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes (reduced — deploy-recovery handles the immediate case)
 
@@ -28,7 +28,7 @@ let sweepInFlight = false;
  * genuinely still streaming in THIS process (started after the sweep's
  * previous pass) and must not touch them just because they've been running
  * a while: a slow relay/compose step is not "stuck". The `id: { notIn }`
- * clause below excludes every id in deploy-recovery.ts's activeDeployIds
+ * clause below excludes every id in deploy-recovery.ts's active-deploy registry
  * (populated by streamDeploy, and now also by both rollback routes and by
  * recoverBrokenDeploy itself, for the duration of their own run) for
  * exactly that reason: a running record NOT in that set is either orphaned
@@ -43,8 +43,8 @@ let sweepInFlight = false;
  * Each candidate is finalized with a compare-and-set (`updateMany` scoped
  * to `status: "running"`) instead of a plain `update`: a rollback route or
  * recoverBrokenDeploy may resolve this exact record between the query above
- * and this write without ever having been (or while no longer being) in
- * activeDeployIds for that whole window. The compare-and-set turns that
+ * and this write without ever having been (or while no longer being)
+ * registered in the active-deploy registry for that whole window. The compare-and-set turns that
  * race into a no-op here instead of a false finalization of a record
  * another path already resolved.
  */
@@ -66,7 +66,8 @@ async function sweepOnce(): Promise<void> {
   // production case (nothing currently streaming) now exercises the actual
   // shape of the constructed clause instead of only ever running against a
   // mocked Prisma with a non-empty exclusion set.
-  const idFilter = activeDeployIds.size > 0 ? { notIn: Array.from(activeDeployIds) } : undefined;
+  const activeIds = listActiveDeployIds();
+  const idFilter = activeIds.length > 0 ? { notIn: activeIds } : undefined;
 
   // orderBy createdAt asc: when a single pass sweeps two orphaned deploys
   // of the SAME app, each one that reaches the app-status write below
@@ -150,11 +151,11 @@ async function sweepOnce(): Promise<void> {
       // Skip the app-status write when another deploy for the SAME app is
       // still registered as active: this pass may be reclaiming an OLD
       // orphaned record for app X while a NEWER deploy for X is genuinely
-      // running (correctly excluded from the query above via
-      // activeDeployIds). Writing app.status here would clobber that live
+      // running (correctly excluded from the query above via the
+      // active-deploy registry). Writing app.status here would clobber that live
       // "deploying" state with this stale record's verdict.
       const liveSibling = await prisma.deploy.findFirst({
-        where: { appId: deploy.appId, status: "running", id: { in: Array.from(activeDeployIds) } },
+        where: { appId: deploy.appId, status: "running", id: { in: listActiveDeployIds() } },
         select: { id: true },
       });
 

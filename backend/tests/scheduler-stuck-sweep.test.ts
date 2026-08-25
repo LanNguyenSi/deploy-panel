@@ -29,7 +29,7 @@ vi.mock("../src/lib/stream-deploy.js", () => ({ streamDeploy: vi.fn() }));
 
 import { prisma } from "../src/lib/prisma.js";
 import { startScheduler } from "../src/lib/scheduler.js";
-import { activeDeployIds } from "../src/lib/deploy-recovery.js";
+import { registerActiveDeploy, clearActiveDeploys } from "../src/lib/deploy-recovery.js";
 
 const mDeployFindMany = (prisma.deploy as any).findMany as ReturnType<typeof vi.fn>;
 const mDeployUpdateMany = (prisma.deploy as any).updateMany as ReturnType<typeof vi.fn>;
@@ -48,14 +48,14 @@ const makeStuckDeploy = (id: string) => ({
 describe("startScheduler: periodic stuck-deploy sweep", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    activeDeployIds.clear();
+    clearActiveDeploys();
     mDeployUpdateMany.mockResolvedValue({ count: 1 });
     vi.useFakeTimers();
   });
 
   afterEach(() => {
     vi.useRealTimers();
-    activeDeployIds.clear();
+    clearActiveDeploys();
   });
 
   it("finalizes an orphaned running deploy after one sweep interval, and its query excludes a deploy id this process still has active", async () => {
@@ -66,7 +66,7 @@ describe("startScheduler: periodic stuck-deploy sweep", () => {
       return [makeStuckDeploy("orphan-1")].filter((d) => !excluded.includes(d.id));
     });
 
-    activeDeployIds.add("active-1");
+    registerActiveDeploy("active-1");
 
     startScheduler();
     // Nothing should have run synchronously.
