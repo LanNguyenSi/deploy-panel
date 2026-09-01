@@ -2,7 +2,11 @@ import type { Config } from "./config.js";
 
 // App.id is `String @id @default(uuid())` (backend/prisma/schema.prisma):
 // a standard RFC 4122 uuid, case-insensitively.
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Lowercase only: App.id comes from Prisma's uuid() default, which emits
+// lowercase hex, and the id/name lookups in listDeploys compare with strict
+// equality. A case-mismatched value must fall into the not-found branch
+// rather than being forwarded as an app_id the backend will never match.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function isAppId(value: string): boolean {
   return UUID_RE.test(value);

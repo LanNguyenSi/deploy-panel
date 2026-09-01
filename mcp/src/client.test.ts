@@ -147,6 +147,16 @@ describe("DeployPanelClient.listDeploys", () => {
     expect(new URL(deploysUrl as string).searchParams.get("app_id")).toBe(appId);
   });
 
+  it("does not forward a case-mismatched uuid-shaped app value (uppercase never matches a Prisma uuid() id)", async () => {
+    const client = new DeployPanelClient({ apiUrl: API_URL, apiKey: API_KEY });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ apps: [] }));
+
+    await expect(client.listDeploys({ app: "0F8FAD5B-D9CB-469F-A165-70867728950E" })).rejects.toThrow(
+      'App "0F8FAD5B-D9CB-469F-A165-70867728950E" not found (apps tagged "ignored" are not listed; pass the app id instead)',
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("defaults limit to 10 and omits app_id/server_id/status when no filters are given", async () => {
     const client = new DeployPanelClient({ apiUrl: API_URL, apiKey: API_KEY });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ deploys: [], total: 0 }));
