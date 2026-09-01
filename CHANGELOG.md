@@ -7,13 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-01
+
+**Headline: honest deploy state through failure and restart (health-fail diagnosis, a periodic stuck sweep, a refcounted active-deploy registry), stored deploy output surfaced in the panel UI, and MCP name-or-ID parity restored for rollback and list_apps, plus a `deploy_list` tool.**
+
 ### Added
 
+- **Stored deploy step output rendered in the panel UI** (PR #129): the failure reason a step stores (a relay 4xx rejection or an SSE error, per PR #128) is now shown on the `/deploys` and `/servers/[id]` pages instead of requiring an API call to read it; the output panel opens by default when a step's status is not "success".
 - MCP `deploy_list` tool wrapping `GET /api/v1/deploys` (optional `app`, `server`, `status`, `limit`) so an agent can find a `deploy_id` for `deploy_status`.
+
+### Fixed
+
+- **MCP `deploy_rollback` and `list_apps` resolve a server name again, not just an ID** (PR #127): `deploy_rollback` is repointed at `POST /api/v1/rollback`'s name-or-id resolution (replacing the ID-only panel-UI route it called before) and now polls to completion instead of returning the bare "running" placeholder the async v1 endpoint returns; `GET /api/v1/apps`'s `server_id` filter is resolved through the same helper server-side, fixing a raw-id-only Prisma filter that silently returned zero apps when a server name was passed.
+- **`GET /api/v1/deploys` resolves `server_id` by name or ID** (PR #128): it previously filtered straight into a raw Prisma equality check, so passing a server name silently matched zero deploys instead of the caller's own deploys; it now resolves through the same `findOwnedServerByIdOrName` helper as the other v1 routes and answers 404 when the identifier does not resolve or belongs to another owner.
+- **Relay 4xx deploy rejections no longer greenwashed** (PR #128): a blocked or rejected relay deploy call now surfaces as a failure carrying the relay's own JSON-encoded reason instead of being reported as a pass.
+- **Health-check failures persist their diagnosis and rollback outcome instead of leaving the deploy stuck on "running"** (PR #130): closes the 2026-08-18 incident shape where a health-check failure that triggers the relay's auto-rollback could leave the deploy record running forever if the SSE stream closed before a trailing `done` event arrived; the terminal status, rollback steps and health-check output are now preserved either way.
+- **A periodic guarded stuck sweep closes the remaining orphaned-"running" gaps** (PR #131): the stuck-deploy sweep previously ran once at process start, so a panel restart mid-deploy (including the self-deploy case) could leave a record running forever once it aged past the threshold; the sweep now also runs on an interval, guarded by a new active-deploy registry so it never touches a deploy genuinely still streaming in this process, and a `recoverBrokenDeploy` failure is now awaited and logged instead of producing an unhandled rejection.
 
 ### Internal
 
+- Docs-freshness fixes (PR #126): qualified the MCP `deploy_rollback` README claim (it calls the panel's non-v1 rollback route, which resolves the server by ID, not the name the tool's own input still advertises), corrected the README's Docker port claim (the db is additionally published on `127.0.0.1:5433` for host-run dev tooling, not just the frontend), and refreshed drifted line-range citations in `docs/okf/deploy-outcome-trust-chain.md`.
+- Automated env-loading guard test (PR #127): pins that `APP_SECRETS_KEY`, which has no fallback default in `docker-compose.yml` and is fail-closed unlike `SESSION_SECRET`, actually reaches the backend child process through the `make dev-backend` -> `npm run` -> `tsx watch` chain.
 - `deploy-recovery.ts`'s `activeDeployIds` Set replaced with a refcounted registry (`registerActiveDeploy`/`releaseActiveDeploy`/`isActiveDeploy`/`listActiveDeployIds`): the two rollback routes (`apps.ts`, `v1.ts`) and `recoverBrokenDeploy` each register/release their own hold on a deployId independently now, so both routes can use a plain unconditional `try`/`finally` instead of the `recovering` boolean that used to skip the delete when a hand-off occurred. Under the old flag, that skip meant the id stayed in the Set for the whole hand-off, so `recoverBrokenDeploy`'s own add was a no-op behind any number of awaits and ordering was not load-bearing. It is this refactor, replacing that conditional delete with an unconditional release, that makes ordering load-bearing for the first time: callers now release their own hold in the same synchronous turn as the hand-off, so `recoverBrokenDeploy`'s own `registerActiveDeploy` call must stay the first statement in its body, before any `await`, or the id briefly carries zero holds while recovery is still in flight.
+- Stuck-sweep and deploy-delegation test coverage strengthened (PR #133): the stuck-sweep's live-sibling lookup test now inspects its own Prisma query arguments (scoped to app id and status "running") instead of a blind mock that stayed green even with `listActiveDeployIds()` replaced by `[]`; new tests assert that the deploy and bulk-deploy endpoints in `apps.ts` actually call `streamDeploy` with the right `deployId`/`appId`/`appName`/`relayUrl`, mirroring the existing delegation assertions for the v1 `/deploy` route and the scheduler's stuck sweep.
 
 ## [0.5.0] - 2026-08-20
 
