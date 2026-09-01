@@ -53,6 +53,46 @@ export class DeployPanelClient {
     return this.request<{ deploy: DeployInfo }>("GET", `/api/v1/deploy/${deployId}`);
   }
 
+  async listDeploys(options?: { app?: string; server?: string; status?: string; limit?: number }) {
+    const params = new URLSearchParams();
+
+    // server_id accepts a name or an id: GET /api/v1/deploys resolves it on
+    // the backend via findOwnedServerByIdOrName (v1.ts), the same helper
+    // used by listApps/deploy/rollback, so the raw value is forwarded as-is.
+    if (options?.server) params.set("server_id", options.server);
+
+    // Unlike server_id, GET /api/v1/deploys' app_id is a raw Prisma filter
+    // that only ever matches an id (v1.ts's own comment: App.name is unique
+    // per server, not globally, so a name-based lookup would be ambiguous
+    // without also requiring server_id). Resolve an app name to its id here
+    // via listApps, scoped to the same server filter so the resolution and
+    // the final query agree on which app is meant.
+    if (options?.app) {
+      const { apps } = await this.listApps(options.server);
+      const match = apps.find((a) => a.id === options.app || a.name === options.app);
+      if (!match) throw new Error(`App "${options.app}" not found`);
+      params.set("app_id", match.id);
+    }
+
+    if (options?.status) params.set("status", options.status);
+    params.set("limit", String(options?.limit ?? 10));
+
+    return this.request<{
+      deploys: Array<{
+        id: string;
+        server: string;
+        app: string;
+        status: string;
+        commitBefore: string | null;
+        commitAfter: string | null;
+        duration: number | null;
+        triggeredBy: string;
+        createdAt: string;
+      }>;
+      total: number;
+    }>("GET", `/api/v1/deploys?${params.toString()}`);
+  }
+
   async preflight(server: string, app: string) {
     return this.request<{ passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> }>("POST", "/api/v1/preflight", { server, app });
   }

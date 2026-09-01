@@ -51,10 +51,11 @@ afterEach(() => {
 });
 
 describe("registerTools wiring", () => {
-  it("registers exactly the 6 expected tool names", () => {
+  it("registers exactly the 7 expected tool names", () => {
     expect(Object.keys(registered).sort()).toEqual(
       [
         "deploy_app",
+        "deploy_list",
         "deploy_list_apps",
         "deploy_list_servers",
         "deploy_preflight",
@@ -280,6 +281,49 @@ describe("deploy_status", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ message: "boom" }, 500));
 
     const result = await cb({ deploy_id: "d1" });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toEqual({ error: "boom" });
+  });
+});
+
+describe("deploy_list", () => {
+  const { schema, cb } = registered.deploy_list;
+
+  it("makes all params optional, validates the status enum, and rejects a wrong limit type", () => {
+    const shape = z.object(schema);
+    expect(shape.safeParse({}).success).toBe(true);
+    expect(shape.safeParse({ app: "a", server: "s", status: "failed", limit: 5 }).success).toBe(true);
+    expect(shape.safeParse({ status: "bogus" }).success).toBe(false);
+    expect(shape.safeParse({ limit: "5" }).success).toBe(false);
+  });
+
+  it("maps the client's listDeploys result to the id/app/server/status/commit/duration/createdAt shape", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({
+        deploys: [
+          {
+            id: "d1", server: "s", app: "a", status: "success",
+            commitBefore: "aaa", commitAfter: "bbb", duration: 42,
+            triggeredBy: "agent", createdAt: "now",
+          },
+        ],
+        total: 1,
+      }),
+    );
+
+    const result = await cb({});
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(textOf(result)).toEqual([
+      { id: "d1", app: "a", server: "s", status: "success", commitBefore: "aaa", commitAfter: "bbb", duration: 42, createdAt: "now" },
+    ]);
+  });
+
+  it("wraps a fetch failure into an isError result instead of throwing", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ message: "boom" }, 500));
+
+    const result = await cb({});
 
     expect(result.isError).toBe(true);
     expect(textOf(result)).toEqual({ error: "boom" });
