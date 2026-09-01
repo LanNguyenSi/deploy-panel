@@ -51,10 +51,11 @@ afterEach(() => {
 });
 
 describe("registerTools wiring", () => {
-  it("registers exactly the 6 expected tool names", () => {
+  it("registers exactly the 7 expected tool names", () => {
     expect(Object.keys(registered).sort()).toEqual(
       [
         "deploy_app",
+        "deploy_list",
         "deploy_list_apps",
         "deploy_list_servers",
         "deploy_preflight",
@@ -280,6 +281,80 @@ describe("deploy_status", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ message: "boom" }, 500));
 
     const result = await cb({ deploy_id: "d1" });
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toEqual({ error: "boom" });
+  });
+});
+
+describe("deploy_list", () => {
+  const { schema, cb } = registered.deploy_list;
+
+  it("makes all params optional, validates the status enum, and rejects a wrong limit type", () => {
+    const shape = z.object(schema);
+    expect(shape.safeParse({}).success).toBe(true);
+    expect(shape.safeParse({ app: "a", server: "s", status: "failed", limit: 5 }).success).toBe(true);
+    expect(shape.safeParse({ status: "bogus" }).success).toBe(false);
+    expect(shape.safeParse({ limit: "5" }).success).toBe(false);
+  });
+
+  it("accepts a limit of 200 and rejects a limit of 201", () => {
+    const shape = z.object(schema);
+    expect(shape.safeParse({ limit: 200 }).success).toBe(true);
+    expect(shape.safeParse({ limit: 201 }).success).toBe(false);
+  });
+
+  // Every other deploy_list test above calls cb({}), so a tool body that
+  // ignores its args entirely and always calls client.listDeploys() with no
+  // filters would still pass the suite. Assert the app/server/status/limit
+  // filters actually reach the outgoing deploys request, mirroring the
+  // client.test.ts assertions one layer up and the server_id-forwarding
+  // idiom used for deploy_list_apps above.
+  it("passes app/server/status/limit through to the outgoing deploys request", async () => {
+    const apps = [{ id: "a1", name: "my-app", status: "ok", tag: null, server: { id: "s1", name: "srv-1" } }];
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ apps }))
+      .mockResolvedValueOnce(jsonResponse({ deploys: [], total: 0 }));
+
+    await cb({ app: "my-app", server: "srv-1", status: "failed", limit: 5 });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const [deploysUrl] = fetchSpy.mock.calls[1];
+    const parsed = new URL(deploysUrl as string);
+    expect(parsed.pathname).toBe("/api/v1/deploys");
+    expect(parsed.searchParams.get("app_id")).toBe("a1");
+    expect(parsed.searchParams.get("server_id")).toBe("srv-1");
+    expect(parsed.searchParams.get("status")).toBe("failed");
+    expect(parsed.searchParams.get("limit")).toBe("5");
+  });
+
+  it("maps the client's listDeploys result to the id/app/server/status/commit/duration/createdAt shape", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({
+        deploys: [
+          {
+            id: "d1", server: "s", app: "a", status: "success",
+            commitBefore: "aaa", commitAfter: "bbb", duration: 42,
+            triggeredBy: "agent", createdAt: "now",
+          },
+        ],
+        total: 1,
+      }),
+    );
+
+    const result = await cb({});
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(textOf(result)).toEqual([
+      { id: "d1", app: "a", server: "s", status: "success", commitBefore: "aaa", commitAfter: "bbb", duration: 42, createdAt: "now" },
+    ]);
+  });
+
+  it("wraps a fetch failure into an isError result instead of throwing", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ message: "boom" }, 500));
+
+    const result = await cb({});
 
     expect(result.isError).toBe(true);
     expect(textOf(result)).toEqual({ error: "boom" });

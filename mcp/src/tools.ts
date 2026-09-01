@@ -86,6 +86,36 @@ export function registerTools(server: McpServer, client: DeployPanelClient) {
   );
 
   server.tool(
+    "deploy_list",
+    "List past deploys, most recent first, with optional filters. Use this to find a deploy_id for deploy_status when you don't already have one (for example, after an operator-triggered deploy failed).",
+    {
+      app: z.string().optional().describe("Filter by app name or ID"),
+      server: z.string().optional().describe("Filter by server name or ID"),
+      status: z.enum(["pending", "running", "success", "failed", "rolled_back"]).optional().describe("Filter by deploy status"),
+      limit: z.number().int().positive().max(200).optional().describe("Max number of deploys to return (default: 10, max 200)"),
+    },
+    async ({ app, server, status, limit }) => {
+      try {
+        const result = await client.listDeploys({ app, server, status, limit });
+        return text(
+          result.deploys.map((d) => ({
+            id: d.id,
+            app: d.app,
+            server: d.server,
+            status: d.status,
+            commitBefore: d.commitBefore,
+            commitAfter: d.commitAfter,
+            duration: d.duration,
+            createdAt: d.createdAt,
+          })),
+        );
+      } catch (e) {
+        return error(e);
+      }
+    },
+  );
+
+  server.tool(
     "deploy_preflight",
     "Run preflight checks for an app without deploying. Returns pass/fail status and individual check results.",
     {
