@@ -58,7 +58,7 @@ allowed to manage.
 | `deploy_list_apps`    | List apps across servers (optional `server` filter by name or ID). 404s if `server` doesn't resolve to a server you own. |
 | `deploy_app`          | Deploy an app (`server`, `app`, optional `force`, `ref`, `wait`); polls until completion unless `wait` is `false`. |
 | `deploy_status`       | Get the status of a deploy by `deploy_id`.                                           |
-| `deploy_list`         | List past deploys, most recent first (optional `app`, `server`, `status`, `limit`, default `limit` 10). Use this to find a `deploy_id` for `deploy_status`. |
+| `deploy_list`         | List past deploys, most recent first (optional `app`, `server`, `status`, `limit`, default `limit` 10, max `limit` 200). Use this to find a `deploy_id` for `deploy_status`. |
 | `deploy_preflight`    | Run preflight checks for an app without deploying.                                   |
 | `deploy_rollback`     | Roll an app back to its previous version (`server`, `app`, optional `wait`); polls until completion unless `wait` is `false`. |
 
@@ -66,13 +66,20 @@ allowed to manage.
 
 Unlike `server` (name or ID, resolved on the backend for every tool that
 takes it), `deploy_list`'s `app` filter is resolved by the MCP server itself:
-it calls `deploy_list_apps` under the hood (scoped to `server` when given)
-and matches on `app`'s name or ID before querying `GET /api/v1/deploys`.
-That backend route's own `app_id` query parameter only ever matches an app
-ID (`backend/src/routes/v1.ts`): app names are unique per server, not
-globally, so a name-based match there would be ambiguous without also
-requiring `server`. An `app` that matches no app returns a "not found"
-error, the same as an unresolvable `server`.
+it queries `GET /api/v1/apps` directly (the same endpoint `deploy_list_apps`
+wraps, scoped to `server` when given) and matches on `app`'s name or ID
+before querying `GET /api/v1/deploys`. That backend route's own `app_id`
+query parameter only ever matches an app ID (`backend/src/routes/v1.ts`):
+app names are unique per server, not globally, so a name-based match there
+would be ambiguous without also requiring `server`. If `app` matches more
+than one app by name (no `server` given to narrow it), `deploy_list` throws
+an error naming the servers instead of picking one silently; pass `server`
+to disambiguate. `GET /api/v1/apps` also drops apps tagged `ignored`, so an
+app id for an ignored app never turns up in that lookup even though
+`GET /api/v1/deploys` would accept it; when `app` matches no listed app but
+looks like an app ID (a uuid), `deploy_list` forwards it as `app_id` anyway
+instead of erroring. A non-ID `app` that matches nothing returns a "not
+found" error, the same as an unresolvable `server`.
 
 ### `deploy_rollback`: blocked-rollback shape
 

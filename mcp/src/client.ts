@@ -1,5 +1,13 @@
 import type { Config } from "./config.js";
 
+// App.id is `String @id @default(uuid())` (backend/prisma/schema.prisma):
+// a standard RFC 4122 uuid, case-insensitively.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isAppId(value: string): boolean {
+  return UUID_RE.test(value);
+}
+
 export interface DeployInfo {
   id: string; status: string; server: string; app: string;
   commitBefore?: string; commitAfter?: string; duration?: number;
@@ -69,9 +77,27 @@ export class DeployPanelClient {
     // the final query agree on which app is meant.
     if (options?.app) {
       const { apps } = await this.listApps(options.server);
-      const match = apps.find((a) => a.id === options.app || a.name === options.app);
-      if (!match) throw new Error(`App "${options.app}" not found`);
-      params.set("app_id", match.id);
+      const idMatch = apps.find((a) => a.id === options.app);
+      const nameMatches = apps.filter((a) => a.name === options.app);
+
+      if (idMatch) {
+        params.set("app_id", idMatch.id);
+      } else if (nameMatches.length === 1) {
+        params.set("app_id", nameMatches[0].id);
+      } else if (nameMatches.length > 1) {
+        const servers = nameMatches.map((a) => a.server.name).join(", ");
+        throw new Error(`App "${options.app}" is ambiguous: it exists on ${servers}. Pass server to disambiguate.`);
+      } else if (isAppId(options.app)) {
+        // GET /api/v1/apps drops apps tagged "ignored" (v1.ts), so an
+        // existing app that happens to be ignored never shows up in the
+        // listApps() call above even though the backend's own /deploys
+        // route would accept its id just fine. If the unmatched value is
+        // shaped like an App.id (uuid, see schema.prisma), forward it as
+        // app_id instead of erroring.
+        params.set("app_id", options.app);
+      } else {
+        throw new Error(`App "${options.app}" not found (apps tagged "ignored" are not listed; pass the app id instead)`);
+      }
     }
 
     if (options?.status) params.set("status", options.status);
@@ -86,7 +112,7 @@ export class DeployPanelClient {
         commitBefore: string | null;
         commitAfter: string | null;
         duration: number | null;
-        triggeredBy: string;
+        triggeredBy: string | null;
         createdAt: string;
       }>;
       total: number;

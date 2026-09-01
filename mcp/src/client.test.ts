@@ -115,7 +115,36 @@ describe("DeployPanelClient.listDeploys", () => {
     const client = new DeployPanelClient({ apiUrl: API_URL, apiKey: API_KEY });
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ apps: [] }));
 
-    await expect(client.listDeploys({ app: "nope" })).rejects.toThrow('App "nope" not found');
+    await expect(client.listDeploys({ app: "nope" })).rejects.toThrow(
+      'App "nope" not found (apps tagged "ignored" are not listed; pass the app id instead)',
+    );
+  });
+
+  it("throws an ambiguity error naming the servers when an app name matches more than one app and no server was given", async () => {
+    const client = new DeployPanelClient({ apiUrl: API_URL, apiKey: API_KEY });
+    const apps = [
+      { id: "a1", name: "my-app", status: "ok", tag: null, server: { id: "s1", name: "srv-1" } },
+      { id: "a2", name: "my-app", status: "ok", tag: null, server: { id: "s2", name: "srv-2" } },
+    ];
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ apps }));
+
+    await expect(client.listDeploys({ app: "my-app" })).rejects.toThrow(
+      'App "my-app" is ambiguous: it exists on srv-1, srv-2. Pass server to disambiguate.',
+    );
+  });
+
+  it("forwards an unmatched but uuid-shaped app value as app_id instead of erroring (an ignored app is dropped from listApps but still a valid id)", async () => {
+    const client = new DeployPanelClient({ apiUrl: API_URL, apiKey: API_KEY });
+    const appId = "0f8fad5b-d9cb-469f-a165-70867728950e";
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ apps: [] }))
+      .mockResolvedValueOnce(jsonResponse({ deploys: [], total: 0 }));
+
+    await client.listDeploys({ app: appId });
+
+    const [deploysUrl] = fetchSpy.mock.calls[1];
+    expect(new URL(deploysUrl as string).searchParams.get("app_id")).toBe(appId);
   });
 
   it("defaults limit to 10 and omits app_id/server_id/status when no filters are given", async () => {

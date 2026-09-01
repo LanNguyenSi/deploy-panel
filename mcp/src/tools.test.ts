@@ -298,6 +298,37 @@ describe("deploy_list", () => {
     expect(shape.safeParse({ limit: "5" }).success).toBe(false);
   });
 
+  it("accepts a limit of 200 and rejects a limit of 201", () => {
+    const shape = z.object(schema);
+    expect(shape.safeParse({ limit: 200 }).success).toBe(true);
+    expect(shape.safeParse({ limit: 201 }).success).toBe(false);
+  });
+
+  // Every other deploy_list test above calls cb({}), so a tool body that
+  // ignores its args entirely and always calls client.listDeploys() with no
+  // filters would still pass the suite. Assert the app/server/status/limit
+  // filters actually reach the outgoing deploys request, mirroring the
+  // client.test.ts assertions one layer up and the server_id-forwarding
+  // idiom used for deploy_list_apps above.
+  it("passes app/server/status/limit through to the outgoing deploys request", async () => {
+    const apps = [{ id: "a1", name: "my-app", status: "ok", tag: null, server: { id: "s1", name: "srv-1" } }];
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ apps }))
+      .mockResolvedValueOnce(jsonResponse({ deploys: [], total: 0 }));
+
+    await cb({ app: "my-app", server: "srv-1", status: "failed", limit: 5 });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const [deploysUrl] = fetchSpy.mock.calls[1];
+    const parsed = new URL(deploysUrl as string);
+    expect(parsed.pathname).toBe("/api/v1/deploys");
+    expect(parsed.searchParams.get("app_id")).toBe("a1");
+    expect(parsed.searchParams.get("server_id")).toBe("srv-1");
+    expect(parsed.searchParams.get("status")).toBe("failed");
+    expect(parsed.searchParams.get("limit")).toBe("5");
+  });
+
   it("maps the client's listDeploys result to the id/app/server/status/commit/duration/createdAt shape", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       jsonResponse({
