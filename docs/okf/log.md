@@ -19,13 +19,13 @@
   doc's own auth.ts citations against backend/src/middleware/auth.ts at
   HEAD (33-104, 51-68, 71-76, 79-88, 90-101, 34-43, 40-42, 36-39) plus
   backend/src/lib/ownership.ts (29-36, 42-53, 60-98) — all still accurate,
-  re-stamped. Three bare `auth.ts:` citations (110-116, 40-42, 36-39) were
-  ambiguous between backend/src/middleware/auth.ts and
-  backend/src/routes/auth.ts (both in `sources:`); re-pointed to the full
-  path backend/src/middleware/auth.ts (the correct target, content
-  verified) to resolve the ambiguity: bare auth.ts:110-116 became
-  `backend/src/middleware/auth.ts:110-116`, bare auth.ts:40-42 became
-  `backend/src/middleware/auth.ts:40-42`, bare auth.ts:36-39 became
+  re-stamped. Three bare "auth.ts" citations, at lines 110 through 116,
+  40 through 42, and 36 through 39, were ambiguous between
+  backend/src/middleware/auth.ts and backend/src/routes/auth.ts (both in
+  `sources:`); re-pointed to the full path backend/src/middleware/auth.ts
+  (the correct target, content verified) to resolve the ambiguity, giving
+  `backend/src/middleware/auth.ts:110-116`,
+  `backend/src/middleware/auth.ts:40-42`, and
   `backend/src/middleware/auth.ts:36-39`. realtime-update-strategy.md:
   backend/src/lib/stream-deploy.ts changed after the doc's timestamp
   (activeDeployIds refcounted-registry refactor, #132, and the stuck-sweep
