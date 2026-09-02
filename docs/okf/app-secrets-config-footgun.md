@@ -3,7 +3,7 @@ type: overview
 title: App secrets config footgun — why secret-crypto.ts reads process.env directly
 description: Pointer doc — docs/configuration.md#app-secrets and docs/api.md are the authoritative, current references for the app-secrets feature; this entry only adds why lib/secret-crypto.ts deliberately reads process.env directly instead of importing config/index.ts, which neither doc states.
 tags: [secrets, config, pointer]
-timestamp: 2026-07-16T05:46:15Z
+timestamp: 2026-09-02T04:49:13Z
 sources:
   - docs/configuration.md
   - docs/api.md
