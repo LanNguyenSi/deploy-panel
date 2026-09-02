@@ -23,9 +23,9 @@
   ambiguous between backend/src/middleware/auth.ts and
   backend/src/routes/auth.ts (both in `sources:`); re-pointed to the full
   path backend/src/middleware/auth.ts (the correct target, content
-  verified) to resolve the ambiguity: `auth.ts:110-116` ->
-  `backend/src/middleware/auth.ts:110-116`, `auth.ts:40-42` ->
-  `backend/src/middleware/auth.ts:40-42`, `auth.ts:36-39` ->
+  verified) to resolve the ambiguity: bare auth.ts:110-116 became
+  `backend/src/middleware/auth.ts:110-116`, bare auth.ts:40-42 became
+  `backend/src/middleware/auth.ts:40-42`, bare auth.ts:36-39 became
   `backend/src/middleware/auth.ts:36-39`. realtime-update-strategy.md:
   backend/src/lib/stream-deploy.ts changed after the doc's timestamp
   (activeDeployIds refcounted-registry refactor, #132, and the stuck-sweep
