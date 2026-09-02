@@ -3,7 +3,7 @@
 <!-- Add new entries at the top, newest first. -->
 
 - 2026-09-02T04:49:13Z, okf-staleness CI pin bumped from okf-kit@0.3.1 to
-  okf-kit@0.9.0 (fleet parity, orchestrator decision D-004: 0.8.0 and 0.9.0
+  okf-kit@0.9.0 (fleet parity, measured: 0.8.0 and 0.9.0
   report identical findings on this bundle). Cleared the STALE findings the
   bump surfaced (`okf-kit check --json docs/okf`: errors 0, warnings 4,
   notices 3 before this entry's fixes; errors 0, warnings 0, notices 0
@@ -12,13 +12,13 @@
   docs' "App secrets" sections and secret-crypto.ts:34-53 /
   config/index.ts:35-39 (the cited spans) against the doc's claims
   (write-only storage, required-env hard-fail gate, rollback exemption,
-  process.env read instead of config/index.ts import) — all still
+  process.env read instead of config/index.ts import): all still
   accurate, re-stamped only. auth-and-ownership-model.md:
   docs/configuration.md changed after the doc's timestamp; re-read its
   "App secrets"/auth sections, unaffected by this doc's claims, and the
   doc's own auth.ts citations against backend/src/middleware/auth.ts at
   HEAD (33-104, 51-68, 71-76, 79-88, 90-101, 34-43, 40-42, 36-39) plus
-  backend/src/lib/ownership.ts (29-36, 42-53, 60-98) — all still accurate,
+  backend/src/lib/ownership.ts (29-36, 42-53, 60-98): all still accurate,
   re-stamped. Three bare "auth.ts" citations, at lines 110 through 116,
   40 through 42, and 36 through 39, were ambiguous between
   backend/src/middleware/auth.ts and backend/src/routes/auth.ts (both in
