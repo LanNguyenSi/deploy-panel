@@ -16,7 +16,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
       - run: npx prisma generate --schema=backend/prisma/schema.prisma
       - run: npm run typecheck --workspace=backend
 
@@ -33,7 +33,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
       # The suite imports the generated Prisma client; generate it first
       # (mirrors backend-typecheck) so the run does not fail on a missing
       # @prisma/client.
@@ -55,7 +55,7 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: mcp/package-lock.json
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
         working-directory: mcp
       - run: npm test
         working-directory: mcp
@@ -68,7 +68,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
       - run: npm run typecheck --workspace=frontend
 
   frontend-test:
@@ -94,7 +94,7 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
       - run: npm run test --workspace=frontend
 
   frontend-build:
@@ -105,7 +105,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --no-audit --no-fund
       - run: npm run build --workspace=frontend
 
   docker:
