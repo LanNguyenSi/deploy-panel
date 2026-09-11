@@ -6,12 +6,12 @@
     "frontend"
   ],
   "overrides": {
-    "postcss": "^8.5.18",
+    "postcss": "^8.5.23",
     "esbuild": "^0.28.1",
     "tsx": "^4.22.4",
     "nanoid": "3.3.18",
     "next": {
-      "postcss": "^8.5.18"
+      "postcss": "^8.5.23"
     },
     "sharp": "^0.35.4"
   }
