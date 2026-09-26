@@ -12,7 +12,7 @@ deploy-panel is a Next.js + Hono app that drives a fleet of VPS servers running 
 
 - Web dashboard for a fleet of VPS servers: per-app health badges and Deploy, Rollback, Logs, Preflight, Schedule, and Env actions.
 - `/api/v1` REST API for CI/CD (deploy, rollback), authenticated with a `PANEL_TOKEN` or a `dp_` API key.
-- Deploy and rollback history recorded in PostgreSQL via Prisma, with an audit trail per server.
+- Deploy and rollback history recorded in PostgreSQL via Prisma, per server, plus a panel-wide audit log (deploys, rollbacks, server/app changes, logins, API key issuance/revocation).
 - Per-app secrets stored encrypted in the panel's own database (not in an untracked `.env` on the VPS), gated by a required-env check that hard-fails a deploy if a declared key is still unset.
 - GitHub OAuth login, plus an identity-broker flow for provisioning users from a trusted upstream (e.g. [project-pilot](https://github.com/LanNguyenSi/project-pilot)).
 - MCP server so an AI agent can drive deploys directly; see [mcp/README.md](mcp/README.md).
@@ -29,10 +29,14 @@ cp .env.example .env
 
 npm install
 docker compose up -d db                          # Postgres only, published on 127.0.0.1:5433
-cd backend && npx prisma generate && npx prisma db push && cd ..
+npx prisma generate --schema backend/prisma/schema.prisma
+set -a; . ./.env; set +a                         # host-run processes below don't load .env themselves (direnv is an alternative)
+npx prisma db push --schema backend/prisma/schema.prisma   # run from the repo root, after exporting .env, so DATABASE_URL resolves
 
 make dev                                          # backend on :3001, frontend on :3000, both hot reload
 ```
+
+Neither the backend (Prisma CLI, `tsx watch`) nor `make dev` load `.env` on their own: `cd backend && npx prisma db push` fails with `P1012 Environment variable not found: DATABASE_URL` (Prisma 5.22 looks for `.env` next to `backend/package.json` and the schema, not at the repo root), and `make dev` fails with `Invalid config: SESSION_SECRET Required` unless the shell already has these variables exported (see `backend/tests/env-loading-guard.test.ts`). Running `npx prisma ...` from the repo root with `--schema backend/prisma/schema.prisma` does pick up the root `.env` automatically; `make dev` still needs the `set -a; . ./.env; set +a` export (or direnv) before it, since neither `make` nor `tsx watch` read `.env` for you.
 
 Open http://localhost:3000, add a server (host + `relayUrl` + optional `relayToken`), hit "Test connection", then deploy from the app list.
 
@@ -74,9 +78,9 @@ curl -X POST https://panel.example.com/api/v1/deploy \
 ## Development
 
 ```bash
-make setup          # one-time: deps, DB, Prisma client
-make dev            # backend + frontend, hot reload
+make dev            # backend + frontend, hot reload (see Quick start above for one-time setup)
 make build          # build both workspaces
+make setup          # full Docker stack instead of make dev: needs APP_SECRETS_KEY in .env, and its frontend container conflicts with make dev on port 3000
 make docker-up      # bring up the full Docker stack (db + backend + frontend)
 make docker-down    # stop the Docker stack
 make db-generate    # prisma generate
