@@ -73,6 +73,7 @@ curl -X POST https://panel.example.com/api/v1/deploy \
 | Enable GitHub OAuth or the identity-broker registration flow | [docs/configuration.md#authentication](docs/configuration.md#authentication) |
 | Call the REST API (panel UI endpoints + `/api/v1` for CI/CD) | [docs/api.md](docs/api.md) |
 | Drive deploys from an AI agent (MCP server) | [mcp/README.md](mcp/README.md) |
+| Deploy from a GitHub Actions workflow | [action/README.md](action/README.md) |
 | See the VPS daemon deploy-panel talks to | [agent-relay](https://github.com/LanNguyenSi/agent-relay) |
 
 ## Development
