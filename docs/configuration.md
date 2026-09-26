@@ -1,6 +1,6 @@
 # Configuration
 
-deploy-panel is configured entirely via environment variables. The backend and frontend each load their own values; in local dev, both pick up `.env` at the repo root (see `.env.example`).
+deploy-panel is configured entirely via environment variables. Neither the backend nor the frontend load `.env` themselves when run on the host (`make dev`, `npm run dev`, or the bare Prisma CLI from inside `backend/`): the shell running them needs the repo-root `.env` (see `.env.example`) already exported, for example `set -a; . ./.env; set +a`, or a tool like direnv. Running the Prisma CLI from the repo root with `--schema backend/prisma/schema.prisma` is the one exception: Prisma's own dotenv loading then picks up the root `.env` file directly, without a shell export (see "Local development" below). `docker compose` loads the repo-root `.env` into containers on its own, no export needed.
 
 ## Prerequisites
 
@@ -49,11 +49,17 @@ The `.env.example` already wires everything to the docker-compose defaults; for 
 
 ```bash
 cp .env.example .env
-make setup       # installs deps, brings up the Docker stack, prisma generate + db push
-make dev         # backend on :3001, frontend on :3000
+npm install
+docker compose up -d db                          # Postgres only, published on 127.0.0.1:5433
+npx prisma generate --schema backend/prisma/schema.prisma
+set -a; . ./.env; set +a                         # export .env into the shell; make dev below doesn't load it itself
+npx prisma db push --schema backend/prisma/schema.prisma   # run from the repo root so it picks up the exported DATABASE_URL
+make dev                                          # backend on :3001, frontend on :3000
 ```
 
-`make setup` is idempotent: rerunning it is the way to pick up a fresh schema after pulling. For a deeper reset, `make clean && make setup` wipes `node_modules` and `dist` first.
+Running `cd backend && npx prisma db push` instead fails with `P1012 Environment variable not found: DATABASE_URL`: Prisma 5.22 looks for `.env` next to `backend/package.json` and the schema, not at the repo root. Run it from the repo root with `--schema backend/prisma/schema.prisma` as shown above. `make dev` exits with an `Invalid config` error for `SESSION_SECRET` unless `.env` was exported into the shell first (see `backend/tests/env-loading-guard.test.ts`); neither `make` nor the `tsx watch` process it starts read `.env` on their own.
+
+`make setup` also exists (install, then `make docker-up` for the full db + backend + frontend Docker stack, then Prisma generate/push), but its Docker stack fails to start the backend container without `APP_SECRETS_KEY` set in `.env` (commented out in `.env.example`; see the "App secrets" section and the `APP_SECRETS_KEY` row above), and once that is set, its frontend container occupies host port 3000, the same port `make dev` binds on the host. Bring up only `db` as shown above for host-run dev with hot reload; use `make setup` / `make docker-up` only when you want the full stack running in containers (see "Docker deployment" below). After pulling a schema change, rerun the two `npx prisma ... --schema backend/prisma/schema.prisma` lines above (or `make db-generate` / `make db-push` after exporting `.env`). For a deeper reset, `make clean` wipes `node_modules` and build output (`backend/dist`, `frontend/.next`) first, then rerun `npm install`.
 
 ## Docker deployment
 
