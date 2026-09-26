@@ -2,6 +2,8 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-09-26T05:10:56Z, docs/configuration.md Local development wording: the `Invalid config` error for `SESSION_SECRET` is paraphrased instead of misquoted, and the schema-change step names the root `--schema` Prisma commands (or the make targets after exporting `.env`). Re-verified `app-secrets-config-footgun.md` and `auth-and-ownership-model.md`; neither cites the edited sentences, both still hold. Re-stamped both.
+
 - 2026-09-26T05:02:48Z, review fix round: corrected docs/configuration.md's
   intro claim that the backend and frontend "pick up .env at the repo root"
   in local dev (verified false: neither loads .env on its own when run on
