@@ -31,12 +31,12 @@ npm install
 docker compose up -d db                          # Postgres only, published on 127.0.0.1:5433
 npx prisma generate --schema backend/prisma/schema.prisma
 set -a; . ./.env; set +a                         # host-run processes below don't load .env themselves (direnv is an alternative)
-npx prisma db push --schema backend/prisma/schema.prisma   # run from the repo root, after exporting .env, so DATABASE_URL resolves
+npx prisma db push --schema backend/prisma/schema.prisma   # run from the repo root
 
 make dev                                          # backend on :3001, frontend on :3000, both hot reload
 ```
 
-Neither the backend (Prisma CLI, `tsx watch`) nor `make dev` load `.env` on their own: `cd backend && npx prisma db push` fails with `P1012 Environment variable not found: DATABASE_URL` (Prisma 5.22 looks for `.env` next to `backend/package.json` and the schema, not at the repo root), and `make dev` fails with `Invalid config: SESSION_SECRET Required` unless the shell already has these variables exported (see `backend/tests/env-loading-guard.test.ts`). Running `npx prisma ...` from the repo root with `--schema backend/prisma/schema.prisma` does pick up the root `.env` automatically; `make dev` still needs the `set -a; . ./.env; set +a` export (or direnv) before it, since neither `make` nor `tsx watch` read `.env` for you.
+`make dev`, `make db-push` and `cd backend && npx prisma ...` do not read `.env`; export it first as above. Details: [docs/configuration.md](docs/configuration.md#local-development).
 
 Open http://localhost:3000, add a server (host + `relayUrl` + optional `relayToken`), hit "Test connection", then deploy from the app list.
 
@@ -81,11 +81,11 @@ curl -X POST https://panel.example.com/api/v1/deploy \
 ```bash
 make dev            # backend + frontend, hot reload (see Quick start above for one-time setup)
 make build          # build both workspaces
-make setup          # full Docker stack instead of make dev: needs APP_SECRETS_KEY in .env, and its frontend container conflicts with make dev on port 3000
+make setup          # full Docker stack instead of make dev: needs APP_SECRETS_KEY in .env and .env exported; its frontend container conflicts with make dev on port 3000
 make docker-up      # bring up the full Docker stack (db + backend + frontend)
 make docker-down    # stop the Docker stack
 make db-generate    # prisma generate
-make db-push        # prisma db push (apply schema)
+make db-push        # prisma db push (apply schema); export .env first
 make clean          # remove dist + node_modules
 ```
 
