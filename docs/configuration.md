@@ -49,11 +49,13 @@ The `.env.example` already wires everything to the docker-compose defaults; for 
 
 ```bash
 cp .env.example .env
-make setup       # installs deps, brings up the Docker stack, prisma generate + db push
-make dev         # backend on :3001, frontend on :3000
+npm install
+docker compose up -d db                          # Postgres only, published on 127.0.0.1:5433
+cd backend && npx prisma generate && npx prisma db push && cd ..
+make dev                                          # backend on :3001, frontend on :3000
 ```
 
-`make setup` is idempotent: rerunning it is the way to pick up a fresh schema after pulling. For a deeper reset, `make clean && make setup` wipes `node_modules` and `dist` first.
+`make setup` also exists (install, then `make docker-up` for the full db + backend + frontend Docker stack, then Prisma generate/push), but its Docker stack fails to start the backend container without `APP_SECRETS_KEY` set in `.env` (commented out in `.env.example`; see the "App secrets" section and the `APP_SECRETS_KEY` row above), and once that is set, its frontend container occupies host port 3000, the same port `make dev` binds on the host. Bring up only `db` as shown above for host-run dev with hot reload; use `make setup` / `make docker-up` only when you want the full stack running in containers (see "Docker deployment" below). For a deeper reset, `make clean` wipes `node_modules` and `dist` first.
 
 ## Docker deployment
 

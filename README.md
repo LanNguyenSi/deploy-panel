@@ -8,23 +8,37 @@ deploy-panel is a Next.js + Hono app that drives a fleet of VPS servers running 
 
 ![deploy-panel Servers view: a VPS's registered apps, each with a health badge and Deploy, Rollback, Logs, Preflight, Schedule, and Env actions.](docs/img/servers.png)
 
-## Try it in 60 seconds
+## Key features
+
+- Web dashboard for a fleet of VPS servers: per-app health badges and Deploy, Rollback, Logs, Preflight, Schedule, and Env actions.
+- `/api/v1` REST API for CI/CD (deploy, rollback), authenticated with a `PANEL_TOKEN` or a `dp_` API key.
+- Deploy and rollback history recorded in PostgreSQL via Prisma, with an audit trail per server.
+- Per-app secrets stored encrypted in the panel's own database (not in an untracked `.env` on the VPS), gated by a required-env check that hard-fails a deploy if a declared key is still unset.
+- GitHub OAuth login, plus an identity-broker flow for provisioning users from a trusted upstream (e.g. [project-pilot](https://github.com/LanNguyenSi/project-pilot)).
+- MCP server so an AI agent can drive deploys directly; see [mcp/README.md](mcp/README.md).
+- `scripts/smoke-check.sh` to verify auth, DB-backed queries, and fleet reachability against a live instance.
+
+## Quick start
+
+Prerequisites: Node.js 20+ (`backend/package.json` engines), Docker with the Compose v2 CLI plugin (`docker compose`), and `make`.
 
 ```bash
 git clone https://github.com/LanNguyenSi/deploy-panel.git
 cd deploy-panel
 cp .env.example .env
 
-# installs deps, brings up the Docker stack, runs prisma generate + db push
-make setup
+npm install
+docker compose up -d db                          # Postgres only, published on 127.0.0.1:5433
+cd backend && npx prisma generate && npx prisma db push && cd ..
 
-# starts backend on :3001 and frontend on :3000
-make dev
+make dev                                          # backend on :3001, frontend on :3000, both hot reload
 ```
 
 Open http://localhost:3000, add a server (host + `relayUrl` + optional `relayToken`), hit "Test connection", then deploy from the app list.
 
-## What it looks like
+`make setup` (install, then `make docker-up` for the full db + backend + frontend Docker stack, then Prisma generate/push) exists as an alternative, but its Docker stack is not what `make dev` above needs: the containerized backend requires `APP_SECRETS_KEY` set in `.env` to pass its startup validation (commented out in `.env.example`, so `make setup` fails there on a fresh clone), and if that is fixed, the containerized frontend then occupies host port 3000, the same port `make dev` binds on the host. Use `docker compose up -d db` for local dev as shown above, or see [docs/configuration.md](docs/configuration.md#docker-deployment) to run the full stack in containers instead of on the host.
+
+## Usage
 
 Dashboard, fleet overview:
 
@@ -46,7 +60,7 @@ curl -X POST https://panel.example.com/api/v1/deploy \
   -d '{"server": "srv_abc", "app": "web-prod"}'
 ```
 
-## Next steps
+## Documentation
 
 | If you want to... | Read |
 |------|------|
@@ -55,6 +69,7 @@ curl -X POST https://panel.example.com/api/v1/deploy \
 | Enable GitHub OAuth or the identity-broker registration flow | [docs/configuration.md#authentication](docs/configuration.md#authentication) |
 | Call the REST API (panel UI endpoints + `/api/v1` for CI/CD) | [docs/api.md](docs/api.md) |
 | Drive deploys from an AI agent (MCP server) | [mcp/README.md](mcp/README.md) |
+| See the VPS daemon deploy-panel talks to | [agent-relay](https://github.com/LanNguyenSi/agent-relay) |
 
 ## Development
 
@@ -80,25 +95,6 @@ PANEL_TOKEN=... \
 ```
 
 Exits 0 on success. Unlike `/api/health` (which only proves the Hono process is up), this script exercises real DB queries, so schema drift surfaces immediately. Requires `curl` and `jq`.
-
-## Docker deployment
-
-The repo ships a full `docker-compose.yml` for db + backend + frontend:
-
-```bash
-cp .env.example .env
-# edit .env: set SESSION_SECRET to a real value, set APP_SECRETS_KEY to a
-# generated value (openssl rand -hex 32, REQUIRED: docker-compose.yml has no
-# fallback for it, so the backend refuses to start without it), and point
-# NEXT_PUBLIC_API_URL at the public URL where the backend will be reachable
-docker compose up -d --build
-```
-
-The backend waits for the db health check before starting, the frontend waits for the backend, and only the frontend is published beyond loopback; the db is additionally published on 127.0.0.1:5433 for host-run dev tooling. See [docs/configuration.md](docs/configuration.md) for the full env var matrix and production notes.
-
-## Related
-
-- [agent-relay](https://github.com/LanNguyenSi/agent-relay), the VPS daemon that actually runs deploys; deploy-panel is the UI in front of it.
 
 ## License
 
