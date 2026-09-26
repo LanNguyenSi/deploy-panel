@@ -2,6 +2,25 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-09-26T05:02:48Z, review fix round: corrected docs/configuration.md's
+  intro claim that the backend and frontend "pick up .env at the repo root"
+  in local dev (verified false: neither loads .env on its own when run on
+  the host; confirmed by running `cd backend && npx prisma db push`, which
+  fails P1012 DATABASE_URL not found, versus running the same command from
+  the repo root with `--schema backend/prisma/schema.prisma`, which loads
+  the root .env and gets past config validation). Documented exporting
+  .env (`set -a; . ./.env; set +a`) before `make dev` in both README.md and
+  docs/configuration.md's "Local development" sections, relabeled README's
+  Development-block `make setup` entry (was captioned as one-time setup,
+  contradicting the documented failure), fixed the Key features claim of
+  an audit trail per server (AuditLog has no serverId field), and restored
+  the dangling `make clean` sentence in docs/configuration.md.
+  docs/configuration.md is a source of app-secrets-config-footgun.md and
+  auth-and-ownership-model.md; re-read both against the edited intro and
+  "Local development" text: neither doc's claims reference that text
+  (they cite "App secrets"/"Authentication" and secret-crypto.ts/auth
+  middleware, both unchanged), both remain accurate, re-stamped only.
+
 - 2026-09-26T04:50:40Z, README refresh moved README.md's "Docker deployment"
   section content into docs/configuration.md (already the fuller,
   authoritative version; no unique content merged) and corrected the
