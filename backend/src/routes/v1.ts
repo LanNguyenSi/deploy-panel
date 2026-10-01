@@ -3,6 +3,7 @@ import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
 import { recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "../lib/deploy-recovery.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
+import { setAppStatusAfterRollback } from "../lib/rollback-app-status.js";
 import { audit, getActorUserId } from "../lib/audit.js";
 import {
   findOwnedServerByIdOrName,
@@ -251,6 +252,21 @@ v1Router.get("/deploys", async (c) => {
 
 // ── Rollback ────────────────────────────────────────────────────────────────
 
+// POST /rollback answers 202 with `deploy.status: "running"` and finishes
+// asynchronously. The terminal outcome is only readable by polling
+// GET /api/v1/deploy/:id until `status` leaves `running`: `rolled_back` or
+// `failed` (written from the relay's answer, with the commits and the relay
+// payload in `steps`), or `success`/`failed` when the 5xx recovery path
+// finalized the row. The 202 status code is part of the contract: do not
+// turn this into a synchronous response.
+// App.status: blocked-by-preflight and relay-reported success:false set
+// `unhealthy`; a relay-reported success writes `healthy` only after the
+// post-deploy health gate passes (the same gate finalizeDeploy applies),
+// `unhealthy` otherwise. That write lands just after the row turns terminal,
+// so the app card can lag the polled row by the length of the gate. A relay
+// 4xx marks the row failed directly and leaves App.status untouched; a 5xx or
+// a transport failure is handed to recoverBrokenDeploy, which decides the
+// final row and app status from a post-rollback health check.
 v1Router.post("/rollback", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const { server, app: appName, to_commit } = body as {
@@ -325,6 +341,19 @@ v1Router.post("/rollback", async (c) => {
           commitAfter: payload.commitAfter,
           log: JSON.stringify(raw),
         },
+      });
+
+      // App card: relay-reported failure -> unhealthy; relay-reported success
+      // goes through the same post-deploy health gate as finalizeDeploy
+      // (healthy only on a passing verdict, unhealthy otherwise). The helper
+      // never throws, so a failed write cannot fall into the catch block
+      // below and hand an already-finalized row to recoverBrokenDeploy.
+      await setAppStatusAfterRollback({
+        appId: appRecord.id,
+        serverId: srv.id,
+        appName,
+        relaySuccess: !!payload.success,
+        tag: "v1 rollback",
       });
     } catch (err) {
       // A RelayError with a 4xx status means agent-relay (or our own relay

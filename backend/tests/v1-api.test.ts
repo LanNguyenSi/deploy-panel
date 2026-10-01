@@ -43,6 +43,10 @@ vi.mock("../src/lib/stream-deploy.js", () => ({
   streamDeploy: vi.fn(),
 }));
 
+vi.mock("../src/lib/post-deploy-gate.js", () => ({
+  verifyDeployHealth: vi.fn().mockResolvedValue({ healthy: true }),
+}));
+
 vi.mock("../src/lib/audit.js", () => ({
   audit: vi.fn(),
   getActorUserId: vi.fn().mockReturnValue(null),
@@ -86,6 +90,7 @@ vi.mock("../src/config/index.js", () => ({
 import { prisma } from "../src/lib/prisma.js";
 import { relayRequest, RelayError } from "../src/lib/relay.js";
 import { streamDeploy } from "../src/lib/stream-deploy.js";
+import { verifyDeployHealth } from "../src/lib/post-deploy-gate.js";
 import {
   recoverBrokenDeploy,
   registerActiveDeploy,
@@ -807,6 +812,146 @@ describe("v1 POST /rollback: RelayError from the relay call itself", () => {
 
     expect(recoverBrokenDeploy).toHaveBeenCalledTimes(1);
     expect(mDeploy.update).not.toHaveBeenCalled();
+  });
+});
+
+// A blocked or failed rollback must leave the app card consistent with the
+// deploy path (stream-deploy.ts finalizeDeploy: unhealthy on failure,
+// healthy plus lastDeployAt on a passing health gate) instead of the stale
+// value from before the attempt. A 5xx is handed to recoverBrokenDeploy, which owns
+// the app status for that path: the route itself must not write it.
+describe("v1 POST /rollback: App.status follows the rollback outcome", () => {
+  const deployRecord = { id: "rollback-1", status: "running", serverId: "srv-a", appId: "app-a" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mServer.findFirst.mockResolvedValue(ownedServer);
+    mApp.findUnique.mockResolvedValue(appRecord);
+    mApp.update.mockResolvedValue({});
+    mDeploy.create.mockResolvedValue(deployRecord);
+    mDeploy.update.mockResolvedValue({});
+    vi.mocked(verifyDeployHealth).mockResolvedValue({ healthy: true });
+  });
+
+  async function postRollback() {
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: "my-app" }),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    return res;
+  }
+
+  it("blocked by preflight: App.status is set to unhealthy", async () => {
+    vi.mocked(relayRequest).mockResolvedValue({
+      result: { success: false, blocked: true, preflight: { passed: false, checks: [] }, commitBefore: "a", commitAfter: "a" },
+    });
+    await postRollback();
+    expect(mApp.update).toHaveBeenCalledTimes(1);
+    expect(mApp.update).toHaveBeenCalledWith({ where: { id: "app-a" }, data: { status: "unhealthy" } });
+  });
+
+  it("relay-reported success:false: App.status is set to unhealthy", async () => {
+    vi.mocked(relayRequest).mockResolvedValue({ success: false, commitBefore: "a", commitAfter: "b" });
+    await postRollback();
+    expect(mApp.update).toHaveBeenCalledTimes(1);
+    expect(mApp.update).toHaveBeenCalledWith({ where: { id: "app-a" }, data: { status: "unhealthy" } });
+  });
+
+  it("success with a passing health gate: App.status is set to healthy with lastDeployAt", async () => {
+    vi.mocked(relayRequest).mockResolvedValue({ success: true, commitBefore: "a", commitAfter: "b" });
+    await postRollback();
+    expect(verifyDeployHealth).toHaveBeenCalledTimes(1);
+    expect(mApp.update).toHaveBeenCalledTimes(1);
+    const arg = mApp.update.mock.calls[0][0];
+    expect(arg.where).toEqual({ id: "app-a" });
+    expect(arg.data.status).toBe("healthy");
+    expect(arg.data.lastDeployAt).toBeInstanceOf(Date);
+  });
+
+  it("success: the health gate is called with the app's server, name and live URL", async () => {
+    mApp.findUnique.mockResolvedValue({ ...appRecord, liveUrl: "https://my-app.example" });
+    vi.mocked(relayRequest).mockResolvedValue({ success: true, commitBefore: "a", commitAfter: "b" });
+    await postRollback();
+    expect(verifyDeployHealth).toHaveBeenCalledTimes(1);
+    expect(verifyDeployHealth).toHaveBeenCalledWith({ serverId: "srv-a", appName: "my-app", liveUrl: "https://my-app.example" });
+  });
+
+  it("success reported by the relay but the health gate fails: App.status is set to unhealthy", async () => {
+    vi.mocked(relayRequest).mockResolvedValue({ success: true, commitBefore: "a", commitAfter: "b" });
+    vi.mocked(verifyDeployHealth).mockResolvedValue({ healthy: false, reason: "service web is restarting" });
+    await postRollback();
+    expect(verifyDeployHealth).toHaveBeenCalledTimes(1);
+    expect(mApp.update).toHaveBeenCalledTimes(1);
+    expect(mApp.update).toHaveBeenCalledWith({ where: { id: "app-a" }, data: { status: "unhealthy" } });
+  });
+
+  it("relay-reported failure never consults the health gate", async () => {
+    vi.mocked(relayRequest).mockResolvedValue({ success: false });
+    await postRollback();
+    expect(verifyDeployHealth).not.toHaveBeenCalled();
+  });
+
+  it("a failing App.status write does not hand the finalized row to recoverBrokenDeploy and is logged with the app name", async () => {
+    vi.mocked(relayRequest).mockResolvedValue({ success: false });
+    mApp.update.mockRejectedValue(new Error("db down"));
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await postRollback();
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+    expect(mDeploy.update).toHaveBeenCalledTimes(1);
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("my-app"), expect.any(Error));
+    errSpy.mockRestore();
+  });
+
+  it("5xx RelayError: the route writes no App.status itself (recoverBrokenDeploy owns it)", async () => {
+    vi.mocked(relayRequest).mockRejectedValue(new RelayError("Relay error (503): unavailable", 503));
+    await postRollback();
+    expect(recoverBrokenDeploy).toHaveBeenCalledTimes(1);
+    expect(mApp.update).not.toHaveBeenCalled();
+    expect(mDeploy.update).not.toHaveBeenCalled();
+  });
+
+  it("202 stays async: the body reports running and the row reaches its terminal state, readable via GET /deploy/:id", async () => {
+    let finishRelay!: (v: unknown) => void;
+    vi.mocked(relayRequest).mockImplementation(
+      () => new Promise((resolve) => { finishRelay = resolve; }),
+    );
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: "my-app" }),
+    });
+    expect(res.status).toBe(202);
+    const body = (await res.json()) as { deploy: { id: string; status: string } };
+    expect(body.deploy.status).toBe("running");
+    // The relay call is still pending: no terminal write has happened yet.
+    await vi.waitFor(() => expect(relayRequest).toHaveBeenCalledOnce());
+    expect(mDeploy.update).not.toHaveBeenCalled();
+
+    finishRelay({ success: true, commitBefore: "a", commitAfter: "b" });
+    await vi.waitFor(() => expect(mDeploy.update).toHaveBeenCalledTimes(1));
+    const updateData = mDeploy.update.mock.calls[0][0].data;
+    expect(updateData.status).toBe("rolled_back");
+
+    mDeploy.findUnique.mockResolvedValue({
+      id: body.deploy.id,
+      status: updateData.status,
+      serverId: "srv-a",
+      appId: "app-a",
+      commitBefore: updateData.commitBefore,
+      commitAfter: updateData.commitAfter,
+      duration: null,
+      log: updateData.log,
+      triggeredBy: "panel",
+      createdAt: new Date(),
+      app: { name: "my-app" },
+      server: { name: "my-server", userId: "user-a" },
+    });
+    const getRes = await appFor({ userId: "user-a", isAdmin: false }).request(`/deploy/${body.deploy.id}`);
+    const polled = (await getRes.json()) as { deploy: { status: string } };
+    expect(polled.deploy.status).toBe("rolled_back");
   });
 });
 

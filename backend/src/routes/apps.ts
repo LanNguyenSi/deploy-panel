@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
+import { setAppStatusAfterRollback } from "../lib/rollback-app-status.js";
 import { audit, getActor, getActorUserId } from "../lib/audit.js";
 import { recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "../lib/deploy-recovery.js";
 import { findOwnedServer, getActorContext } from "../lib/ownership.js";
@@ -304,6 +305,21 @@ appsRouter.post("/:name/rollback", async (c) => {
         commitAfter: payload.commitAfter,
         log: JSON.stringify(raw),
       },
+    });
+
+    // App card: relay-reported failure -> unhealthy; relay-reported success
+    // goes through the same post-deploy health gate as finalizeDeploy
+    // (healthy only on a passing verdict, unhealthy otherwise). The gate can
+    // take up to about a minute, so it runs after this response is sent
+    // (fire and forget; the response contract is unchanged). The helper never
+    // throws, so nothing here can fall into the catch block below and hand an
+    // already-finalized row to recoverBrokenDeploy.
+    void setAppStatusAfterRollback({
+      appId: app.id,
+      serverId,
+      appName: name,
+      relaySuccess: success,
+      tag: "apps rollback",
     });
 
     return c.json({ deploy: { id: deploy.id, ...payload } });

@@ -71,7 +71,7 @@ All v1 endpoints are prefixed with `/api/v1` and authenticated with a Bearer cre
 | POST   | `/api/v1/deploy`      | Trigger a deploy for a given app                                   |
 | GET    | `/api/v1/deploy/:id`  | Get status of a specific deploy                                    |
 | GET    | `/api/v1/deploys`     | List deploys with `offset` / `total` pagination, optionally filtered by `server_id` (accepts a server name or id), `app_id`, `status`. `server_id` set to a server you don't own, or that doesn't resolve, answers 404 rather than an empty list. `app_id` is an app id only (app names are unique per server, not globally) |
-| POST   | `/api/v1/rollback`    | Trigger a rollback for a given app                                 |
+| POST   | `/api/v1/rollback`    | Trigger a rollback for a given app. Answers `202` with `deploy.status: "running"` and finishes asynchronously: poll `GET /api/v1/deploy/:id` until `status` leaves `running` (`rolled_back`, `failed`, or `success`/`failed` when the 5xx recovery path finalized the row). App status: blocked by preflight or a relay-reported `success: false` sets `unhealthy`; a relay-reported success sets `healthy` only after the post-deploy health gate passes, `unhealthy` otherwise (the app status can lag the polled row by the length of the gate). A relay 4xx marks the row `failed` and leaves the app status untouched |
 | GET    | `/api/v1/logs`        | Fetch logs for a given app                                         |
 | POST   | `/api/v1/preflight`   | Run preflight checks for a given app                               |
 
