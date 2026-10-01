@@ -2,6 +2,8 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-10-01T06:42:25Z, deploy-outcome-trust-chain.md: documented that both rollback routes set App.status (unhealthy on blocked or failed, healthy plus lastDeployAt on success), that the relay 5xx path stays with recoverBrokenDeploy, and the async 202 poll contract of POST /api/v1/rollback. Sources re-verified against routes/apps.ts and routes/v1.ts.
+
 - 2026-09-26T05:10:56Z, docs/configuration.md Local development wording: the `Invalid config` error for `SESSION_SECRET` is paraphrased instead of misquoted, and the schema-change step names the root `--schema` Prisma commands (or the make targets after exporting `.env`). Re-verified `app-secrets-config-footgun.md` and `auth-and-ownership-model.md`; neither cites the edited sentences, both still hold. Re-stamped both.
 
 - 2026-09-26T05:02:48Z, local development docs: corrected docs/configuration.md's

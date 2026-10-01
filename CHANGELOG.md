@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A blocked or failed rollback (v1 `POST /rollback` and the apps rollback route) now sets the app's status to `unhealthy` instead of leaving the stale value, and a successful rollback sets `healthy` plus `lastDeployAt`, matching the deploy path. The 202 poll contract of `POST /api/v1/rollback` is documented in `docs/api.md`; its status code is unchanged.
+
 ### Security
 
 - Lockfile-only CVE remediation, no source changes: `next` 15.5.21 -> 15.5.25 (GHSA-2xp9-vwfh-vxw4 critical RCE, GHSA-p293-qw3h-jr36), `sharp` override 0.35.3 -> 0.35.4 (GHSA-rgj7-g3m4-5g8c), `hono` 4.13.0 -> 4.13.7 in `backend/` (manifest floor ^4.12.23 -> ^4.13.7) and the `overrides.hono` floor in `mcp/` (GHSA-gqvv-2mrq-wpjv, GHSA-g6gw-c38x-mqfc, GHSA-crvj-82cr-hjcx), `vitest`/`@vitest/mocker`/`@vitest/coverage-v8` 4.1.9/4.1.10 -> 4.1.11 in the root tree and `mcp/` (GHSA-82fw-gwwq-j7x9).
