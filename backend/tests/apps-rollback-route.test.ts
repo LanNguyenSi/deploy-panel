@@ -314,6 +314,14 @@ describe("POST /:name/rollback: App.status follows the rollback outcome", () => 
     expect(arg.data.lastDeployAt).toBeInstanceOf(Date);
   });
 
+  it("success: the health gate is called with the app's server, name and live URL", async () => {
+    vi.mocked(prisma.app.findUnique).mockResolvedValueOnce({ liveUrl: "https://my-app.example" } as never);
+    mRelay.mockResolvedValueOnce({ success: true, commitBefore: "a", commitAfter: "b" });
+    await postRollback();
+    expect(verifyDeployHealth).toHaveBeenCalledTimes(1);
+    expect(verifyDeployHealth).toHaveBeenCalledWith({ serverId: "srv-a", appName: "my-app", liveUrl: "https://my-app.example" });
+  });
+
   it("success reported by the relay but the health gate fails: App.status is set to unhealthy", async () => {
     mRelay.mockResolvedValueOnce({ success: true, commitBefore: "a", commitAfter: "b" });
     vi.mocked(verifyDeployHealth).mockResolvedValue({ healthy: false, reason: "service web is restarting" });
