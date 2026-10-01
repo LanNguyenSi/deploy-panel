@@ -43,6 +43,10 @@ vi.mock("../src/lib/stream-deploy.js", () => ({
   streamDeploy: vi.fn(),
 }));
 
+vi.mock("../src/lib/post-deploy-gate.js", () => ({
+  verifyDeployHealth: vi.fn().mockResolvedValue({ healthy: true }),
+}));
+
 vi.mock("../src/lib/audit.js", () => ({
   audit: vi.fn(),
   getActorUserId: vi.fn().mockReturnValue(null),
@@ -86,6 +90,7 @@ vi.mock("../src/config/index.js", () => ({
 import { prisma } from "../src/lib/prisma.js";
 import { relayRequest, RelayError } from "../src/lib/relay.js";
 import { streamDeploy } from "../src/lib/stream-deploy.js";
+import { verifyDeployHealth } from "../src/lib/post-deploy-gate.js";
 import {
   recoverBrokenDeploy,
   registerActiveDeploy,
@@ -812,8 +817,8 @@ describe("v1 POST /rollback: RelayError from the relay call itself", () => {
 
 // A blocked or failed rollback must leave the app card consistent with the
 // deploy path (stream-deploy.ts finalizeDeploy: unhealthy on failure,
-// healthy plus lastDeployAt on success) instead of the stale value from
-// before the attempt. A 5xx is handed to recoverBrokenDeploy, which owns
+// healthy plus lastDeployAt on a passing health gate) instead of the stale
+// value from before the attempt. A 5xx is handed to recoverBrokenDeploy, which owns
 // the app status for that path: the route itself must not write it.
 describe("v1 POST /rollback: App.status follows the rollback outcome", () => {
   const deployRecord = { id: "rollback-1", status: "running", serverId: "srv-a", appId: "app-a" };
@@ -825,6 +830,7 @@ describe("v1 POST /rollback: App.status follows the rollback outcome", () => {
     mApp.update.mockResolvedValue({});
     mDeploy.create.mockResolvedValue(deployRecord);
     mDeploy.update.mockResolvedValue({});
+    vi.mocked(verifyDeployHealth).mockResolvedValue({ healthy: true });
   });
 
   async function postRollback() {
@@ -853,9 +859,10 @@ describe("v1 POST /rollback: App.status follows the rollback outcome", () => {
     expect(mApp.update).toHaveBeenCalledWith({ where: { id: "app-a" }, data: { status: "unhealthy" } });
   });
 
-  it("success: App.status is set to healthy with lastDeployAt, matching the deploy path", async () => {
+  it("success with a passing health gate: App.status is set to healthy with lastDeployAt", async () => {
     vi.mocked(relayRequest).mockResolvedValue({ success: true, commitBefore: "a", commitAfter: "b" });
     await postRollback();
+    expect(verifyDeployHealth).toHaveBeenCalledTimes(1);
     expect(mApp.update).toHaveBeenCalledTimes(1);
     const arg = mApp.update.mock.calls[0][0];
     expect(arg.where).toEqual({ id: "app-a" });
@@ -863,13 +870,29 @@ describe("v1 POST /rollback: App.status follows the rollback outcome", () => {
     expect(arg.data.lastDeployAt).toBeInstanceOf(Date);
   });
 
-  it("a failing App.status write does not hand the finalized row to recoverBrokenDeploy", async () => {
+  it("success reported by the relay but the health gate fails: App.status is set to unhealthy", async () => {
+    vi.mocked(relayRequest).mockResolvedValue({ success: true, commitBefore: "a", commitAfter: "b" });
+    vi.mocked(verifyDeployHealth).mockResolvedValue({ healthy: false, reason: "service web is restarting" });
+    await postRollback();
+    expect(verifyDeployHealth).toHaveBeenCalledTimes(1);
+    expect(mApp.update).toHaveBeenCalledTimes(1);
+    expect(mApp.update).toHaveBeenCalledWith({ where: { id: "app-a" }, data: { status: "unhealthy" } });
+  });
+
+  it("relay-reported failure never consults the health gate", async () => {
+    vi.mocked(relayRequest).mockResolvedValue({ success: false });
+    await postRollback();
+    expect(verifyDeployHealth).not.toHaveBeenCalled();
+  });
+
+  it("a failing App.status write does not hand the finalized row to recoverBrokenDeploy and is logged with the app name", async () => {
     vi.mocked(relayRequest).mockResolvedValue({ success: false });
     mApp.update.mockRejectedValue(new Error("db down"));
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     await postRollback();
     expect(recoverBrokenDeploy).not.toHaveBeenCalled();
     expect(mDeploy.update).toHaveBeenCalledTimes(1);
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("my-app"), expect.any(Error));
     errSpy.mockRestore();
   });
 

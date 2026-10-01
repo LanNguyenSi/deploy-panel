@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
+import { setAppStatusAfterRollback } from "../lib/rollback-app-status.js";
 import { audit, getActor, getActorUserId } from "../lib/audit.js";
 import { recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "../lib/deploy-recovery.js";
 import { findOwnedServer, getActorContext } from "../lib/ownership.js";
@@ -306,22 +307,20 @@ appsRouter.post("/:name/rollback", async (c) => {
       },
     });
 
-    // Keep the app card consistent with the deploy path (finalizeDeploy in
-    // stream-deploy.ts): a rollback that completed marks the app healthy, a
-    // blocked or failed one marks it unhealthy instead of leaving the stale
-    // value from before the rollback attempt. Guarded separately so a failed
-    // write cannot fall into the catch block below and hand an
+    // App card: relay-reported failure -> unhealthy; relay-reported success
+    // goes through the same post-deploy health gate as finalizeDeploy
+    // (healthy only on a passing verdict, unhealthy otherwise). The gate can
+    // take up to about a minute, so it runs after this response is sent
+    // (fire and forget; the response contract is unchanged). The helper never
+    // throws, so nothing here can fall into the catch block below and hand an
     // already-finalized row to recoverBrokenDeploy.
-    try {
-      await prisma.app.update({
-        where: { id: app.id },
-        data: success
-          ? { status: "healthy", lastDeployAt: new Date() }
-          : { status: "unhealthy" },
-      });
-    } catch (e) {
-      console.error(`[apps rollback] app status update failed for ${name}`, e);
-    }
+    void setAppStatusAfterRollback({
+      appId: app.id,
+      serverId,
+      appName: name,
+      relaySuccess: success,
+      tag: "apps rollback",
+    });
 
     return c.json({ deploy: { id: deploy.id, ...payload } });
   } catch (err) {
