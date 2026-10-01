@@ -306,6 +306,23 @@ appsRouter.post("/:name/rollback", async (c) => {
       },
     });
 
+    // Keep the app card consistent with the deploy path (finalizeDeploy in
+    // stream-deploy.ts): a rollback that completed marks the app healthy, a
+    // blocked or failed one marks it unhealthy instead of leaving the stale
+    // value from before the rollback attempt. Guarded separately so a failed
+    // write cannot fall into the catch block below and hand an
+    // already-finalized row to recoverBrokenDeploy.
+    try {
+      await prisma.app.update({
+        where: { id: app.id },
+        data: success
+          ? { status: "healthy", lastDeployAt: new Date() }
+          : { status: "unhealthy" },
+      });
+    } catch (e) {
+      console.error(`[apps rollback] app status update failed for ${name}`, e);
+    }
+
     return c.json({ deploy: { id: deploy.id, ...payload } });
   } catch (err) {
     // A RelayError with a 4xx status means agent-relay (or our own relay

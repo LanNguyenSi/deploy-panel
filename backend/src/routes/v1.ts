@@ -251,6 +251,14 @@ v1Router.get("/deploys", async (c) => {
 
 // ── Rollback ────────────────────────────────────────────────────────────────
 
+// POST /rollback answers 202 with `deploy.status: "running"` and finishes
+// asynchronously. The terminal outcome (`rolled_back` or `failed`, plus the
+// commits and the relay payload in `steps`) is only readable by polling
+// GET /api/v1/deploy/:id until `status` leaves `running`. The 202 status code
+// is part of the contract: do not turn this into a synchronous response.
+// A relay 4xx marks the row failed directly; a 5xx or a transport failure is
+// handed to recoverBrokenDeploy, which decides the final status (and the app
+// status) from a post-rollback health check.
 v1Router.post("/rollback", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const { server, app: appName, to_commit } = body as {
@@ -326,6 +334,23 @@ v1Router.post("/rollback", async (c) => {
           log: JSON.stringify(raw),
         },
       });
+
+      // Keep the app card consistent with the deploy path (finalizeDeploy in
+      // stream-deploy.ts): a rollback that completed marks the app healthy,
+      // a blocked or failed one marks it unhealthy instead of leaving the
+      // stale value from before the rollback attempt. Guarded separately so
+      // a failed write cannot fall into the catch block below and hand an
+      // already-finalized row to recoverBrokenDeploy.
+      try {
+        await prisma.app.update({
+          where: { id: appRecord.id },
+          data: payload.success
+            ? { status: "healthy", lastDeployAt: new Date() }
+            : { status: "unhealthy" },
+        });
+      } catch (e) {
+        console.error(`[v1 rollback] app status update failed for ${appName}`, e);
+      }
     } catch (err) {
       // A RelayError with a 4xx status means agent-relay (or our own relay
       // lookup) already gave a definite answer: the request was received

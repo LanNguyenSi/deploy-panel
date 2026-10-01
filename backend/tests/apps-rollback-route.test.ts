@@ -253,6 +253,77 @@ describe("POST /:name/rollback — RelayError from the relay call itself", () =>
   });
 });
 
+// A blocked or failed rollback must leave the app card consistent with the
+// deploy path (stream-deploy.ts finalizeDeploy: unhealthy on failure, healthy
+// plus lastDeployAt on success) instead of the stale value from before the
+// attempt. A 5xx is handed to recoverBrokenDeploy, which owns the app status
+// for that path: the route itself must not write it.
+describe("POST /:name/rollback: App.status follows the rollback outcome", () => {
+  const mAppUpdate = prisma.app.update as unknown as ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mAppUpsert.mockResolvedValue({ id: "app-a", name: "my-app" });
+    mAppUpdate.mockResolvedValue({});
+    mDeployCreate.mockResolvedValue({ id: "deploy-1", status: "running" });
+    mDeployUpdate.mockResolvedValue({});
+  });
+
+  async function postRollback() {
+    return app().request("/servers/srv-a/apps/my-app/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+  }
+
+  it("blocked by preflight: App.status is set to unhealthy", async () => {
+    mRelay.mockResolvedValueOnce({
+      result: { success: false, blocked: true, preflight: PREFLIGHT_BLOCKED, commitBefore: "a", commitAfter: "a" },
+    });
+    const res = await postRollback();
+    expect(res.status).toBe(200);
+    expect(mAppUpdate).toHaveBeenCalledTimes(1);
+    expect(mAppUpdate).toHaveBeenCalledWith({ where: { id: "app-a" }, data: { status: "unhealthy" } });
+  });
+
+  it("relay-reported success:false: App.status is set to unhealthy", async () => {
+    mRelay.mockResolvedValueOnce({ success: false, commitBefore: "a", commitAfter: "b" });
+    await postRollback();
+    expect(mAppUpdate).toHaveBeenCalledTimes(1);
+    expect(mAppUpdate).toHaveBeenCalledWith({ where: { id: "app-a" }, data: { status: "unhealthy" } });
+  });
+
+  it("success: App.status is set to healthy with lastDeployAt, matching the deploy path", async () => {
+    mRelay.mockResolvedValueOnce({ success: true, commitBefore: "a", commitAfter: "b" });
+    await postRollback();
+    expect(mAppUpdate).toHaveBeenCalledTimes(1);
+    const arg = mAppUpdate.mock.calls[0][0];
+    expect(arg.where).toEqual({ id: "app-a" });
+    expect(arg.data.status).toBe("healthy");
+    expect(arg.data.lastDeployAt).toBeInstanceOf(Date);
+  });
+
+  it("a failing App.status write does not hand the finalized row to recoverBrokenDeploy", async () => {
+    mRelay.mockResolvedValueOnce({ success: false });
+    mAppUpdate.mockRejectedValueOnce(new Error("db down"));
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const res = await postRollback();
+    expect(res.status).toBe(200);
+    expect(mRecoverBrokenDeploy).not.toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it("5xx RelayError: the route writes no App.status itself (recoverBrokenDeploy owns it)", async () => {
+    mRelay.mockRejectedValueOnce(new RelayError("Relay error (503): unavailable", 503));
+    const res = await postRollback();
+    expect(res.status).toBe(503);
+    expect(mRecoverBrokenDeploy).toHaveBeenCalledTimes(1);
+    expect(mAppUpdate).not.toHaveBeenCalled();
+    expect(mDeployUpdate).not.toHaveBeenCalled();
+  });
+});
+
 // This route drives the deploy record itself (relayRequest, then a direct
 // prisma.deploy.update) instead of going through streamDeploy, so its id
 // used to never enter the active-deploy registry: the periodic stuck-sweep
