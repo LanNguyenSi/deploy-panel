@@ -2,6 +2,20 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-10-03T12:12:29Z, okf-staleness workflow re-synced from the okf-kit
+  workflow template (fleet convergence ticket fdc01728): the workflow header
+  now names the template as its source instead of calling the file a pattern
+  to keep in sync, the pin moved from okf-kit@0.10.0 to okf-kit@0.16.0,
+  `--require-anchors` joined the invocation, and the job stays warn-only.
+  Measured on the tree before the change with `okf-kit check --json <bundle>`:
+  at okf-kit@0.10.0, 0 errors, 0 warnings, 0 notices (exit 0) plain and 0
+  errors, 71 warnings, 0 notices (exit 0) with `--require-anchors`; at
+  okf-kit@0.16.0, 0 errors, 0 warnings, 0 notices (exit 0) plain and 0 errors,
+  71 warnings, 0 notices (exit 0) with `--require-anchors`. Of the
+  anchored-run warnings, 71 are anchor-required findings (full citations
+  without an anchor); anchoring them is separate work and none of them blocks
+  anything.
+
 - 2026-10-01T06:51:18Z, deploy-outcome-trust-chain.md: corrected the rollback section: a relay-reported rollback success now goes through verifyDeployHealth (shared helper lib/rollback-app-status.ts, added to sources) and only a passing verdict writes healthy plus lastDeployAt, a failing one writes unhealthy; blocked and success:false write unhealthy; 4xx leaves the status untouched; the 5xx path stays with recoverBrokenDeploy and a never-ran rollback can still end as success; the poll contract lists rolled_back, failed and success. Sources re-verified against routes/apps.ts, routes/v1.ts and the new helper. docs/api.md is a source of app-secrets-config-footgun.md: its claims are unaffected by the POST /api/v1/rollback row edit, so that doc was only re-stamped.
 
 - 2026-09-26T05:10:56Z, docs/configuration.md Local development wording: the `Invalid config` error for `SESSION_SECRET` is paraphrased instead of misquoted, and the schema-change step names the root `--schema` Prisma commands (or the make targets after exporting `.env`). Re-verified `app-secrets-config-footgun.md` and `auth-and-ownership-model.md`; neither cites the edited sentences, both still hold. Re-stamped both.
