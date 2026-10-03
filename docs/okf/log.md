@@ -2,6 +2,8 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-10-03T12:32:53Z, task 994f6c81 comment-only follow-up: the `after_reset` comments in lib/rollback-app-status.ts and both rollback routes now say the relay attempted the reset (tree moved or partly rewritten). deploy-outcome-trust-chain.md already states that meaning and has no line citations into these files; re-stamped only.
+
 - 2026-10-03T12:18:46Z, task 994f6c81 review fix: `RelayError` now carries the raw relay response text as `body` and `rollbackFailurePhase` parses it first, falling back to the message. deploy-outcome-trust-chain.md re-verified against the changed `lib/relay.ts`, `lib/rollback-app-status.ts` and both rollback routes (no line citations to them; `relay.ts` added to its sources; `after_reset` reworded to a reset attempted, `before_reset` to HEAD not moved). Re-stamped it and app-secrets-config-footgun.md (sourced on docs/api.md; only the rollback row changed, so re-stamp only). `okf-kit check docs/okf` was run after the source commit.
 
 - 2026-10-03T12:08:10Z, task 994f6c81 rollback error phase: deploy-outcome-trust-chain.md rollback section now describes the relay's additive `phase` (`before_reset`/`after_reset`) on a rollback 4xx, the new `rollbackFailurePhase` and `setAppStatusAfterRollbackRejection` helpers in lib/rollback-app-status.ts, and the missing-phase-is-before_reset rule; the old claim that a 4xx leaves the app status untouched is narrowed to before_reset. docs/api.md rollback row updated the same way. Re-stamped app-secrets-config-footgun.md (sourced on docs/api.md): its claims are unaffected by the rollback row edit, so it was only re-stamped.
