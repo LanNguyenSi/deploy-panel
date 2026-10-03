@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- A rollback that fails after the relay's `git reset --hard` (the relay answers HTTP 400, e.g. "Rebuild failed") now sets the app's status to `unhealthy` in both the v1 and the apps rollback routes. agent-relay tags its rollback error body with an additive `phase` (`before_reset` or `after_reset`); a before-reset 4xx (bad ref, unknown app) still leaves the status untouched, and so does a missing or unknown phase, so this is safe against a relay that has not been updated yet. Needs the matching agent-relay change to take effect.
 - A rollback that the relay reports as blocked by preflight or `success: false` (v1 `POST /rollback` and the apps rollback route) now sets the app's status to `unhealthy` instead of leaving the stale value. A relay-reported rollback success now runs the same post-deploy health gate as a deploy and sets `healthy` plus `lastDeployAt` only when it passes, `unhealthy` otherwise; the apps route runs the gate after it has responded. A relay 4xx rollback failure still leaves the app status untouched. The 202 poll contract of `POST /api/v1/rollback` (poll `GET /api/v1/deploy/:id` until `status` leaves `running`) is documented in `docs/api.md`; its status code is unchanged.
 
 ### Security
