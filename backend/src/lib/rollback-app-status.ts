@@ -48,3 +48,51 @@ export async function setAppStatusAfterRollback(opts: RollbackAppStatusOpts): Pr
     console.error(`[${tag}] app status update failed for ${appName}`, e);
   }
 }
+
+/**
+ * Reads the `phase` agent-relay attaches to a rollback error body
+ * (`{ error, phase: "before_reset" | "after_reset" }`). relayRequest() folds
+ * the response body into the RelayError message as `Relay error (<status>):
+ * <body text>`, so the JSON is recovered from the message. Anything else (an
+ * older relay that sends no phase, a non-JSON body, an unknown value) yields
+ * `undefined`, which callers must treat as "before reset", the conservative
+ * answer that leaves App.status as it was.
+ */
+export function rollbackFailurePhase(message: string): "before_reset" | "after_reset" | undefined {
+  const start = message.indexOf("{");
+  if (start === -1) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(message.slice(start));
+    const phase = (parsed as { phase?: unknown } | null)?.phase;
+    return phase === "before_reset" || phase === "after_reset" ? phase : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Called for a relay 4xx rollback failure (the route has already marked the
+ * deploy row failed). When the relay says the failure happened after
+ * `git reset --hard`, the working tree already moved to the target and the
+ * running app may be broken, so the app card is set to unhealthy. A failure
+ * before the reset (bad ref, unknown app) left the tree untouched, so
+ * App.status stays as it was; a missing or unknown phase is treated the same.
+ *
+ * Never throws, like setAppStatusAfterRollback. Returns whether it wrote.
+ */
+export async function setAppStatusAfterRollbackRejection(opts: {
+  appId: string;
+  appName: string;
+  relayMessage: string;
+  tag: string;
+}): Promise<boolean> {
+  const { appId, appName, relayMessage, tag } = opts;
+  if (rollbackFailurePhase(relayMessage) !== "after_reset") return false;
+  try {
+    await prisma.app.update({ where: { id: appId }, data: { status: "unhealthy" } });
+    return true;
+  } catch (e) {
+    console.error(`[${tag}] app status update failed for ${appName}`, e);
+    return false;
+  }
+}
