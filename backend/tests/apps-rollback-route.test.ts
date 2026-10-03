@@ -365,6 +365,35 @@ describe("POST /:name/rollback: App.status follows the rollback outcome", () => 
     errSpy.mockRestore();
   });
 
+  it("4xx RelayError tagged phase after_reset: row failed AND App.status is set to unhealthy", async () => {
+    mRelay.mockRejectedValueOnce(
+      new RelayError('Relay error (400): {"error":"Rebuild failed: boom","phase":"after_reset"}', 400),
+    );
+    const res = await postRollback();
+    expect(res.status).toBe(400);
+    expect(mDeployUpdate.mock.calls[0][0].data.status).toBe("failed");
+    expect(mAppUpdate).toHaveBeenCalledTimes(1);
+    expect(mAppUpdate).toHaveBeenCalledWith({ where: { id: "app-a" }, data: { status: "unhealthy" } });
+    expect(mRecoverBrokenDeploy).not.toHaveBeenCalled();
+  });
+
+  it("4xx RelayError tagged phase before_reset: row failed, App.status is left unchanged", async () => {
+    mRelay.mockRejectedValueOnce(
+      new RelayError('Relay error (400): {"error":"Rollback failed: bad ref","phase":"before_reset"}', 400),
+    );
+    const res = await postRollback();
+    expect(res.status).toBe(400);
+    expect(mDeployUpdate.mock.calls[0][0].data.status).toBe("failed");
+    expect(mAppUpdate).not.toHaveBeenCalled();
+  });
+
+  it("4xx RelayError with no phase (older relay): App.status is left unchanged", async () => {
+    mRelay.mockRejectedValueOnce(new RelayError('Relay error (400): {"error":"Rebuild failed: boom"}', 400));
+    await postRollback();
+    expect(mDeployUpdate).toHaveBeenCalledTimes(1);
+    expect(mAppUpdate).not.toHaveBeenCalled();
+  });
+
   it("5xx RelayError: the route writes no App.status itself (recoverBrokenDeploy owns it)", async () => {
     mRelay.mockRejectedValueOnce(new RelayError("Relay error (503): unavailable", 503));
     const res = await postRollback();

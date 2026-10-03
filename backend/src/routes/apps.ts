@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
-import { setAppStatusAfterRollback } from "../lib/rollback-app-status.js";
+import { setAppStatusAfterRollback, setAppStatusAfterRollbackRejection } from "../lib/rollback-app-status.js";
 import { audit, getActor, getActorUserId } from "../lib/audit.js";
 import { recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "../lib/deploy-recovery.js";
 import { findOwnedServer, getActorContext } from "../lib/ownership.js";
@@ -337,6 +337,16 @@ appsRouter.post("/:name/rollback", async (c) => {
       await prisma.deploy.update({
         where: { id: deploy.id },
         data: { status: "failed", log: err.message },
+      });
+      // A 4xx the relay tags after_reset means it attempted `git reset --hard`
+      // (the tree may have moved or be partly rewritten): mark it unhealthy. A before-reset
+      // (or untagged) 4xx leaves App.status as it was.
+      await setAppStatusAfterRollbackRejection({
+        appId: app.id,
+        appName: name,
+        relayMessage: err.message,
+        relayBody: err.body,
+        tag: "apps rollback",
       });
       return c.json({ error: "relay_error", message: err.message }, err.status as any);
     }
