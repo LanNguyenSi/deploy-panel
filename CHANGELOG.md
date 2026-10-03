@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Lockfile-only CVE remediation, no source changes: `next` 15.5.21 -> 15.5.25 (GHSA-2xp9-vwfh-vxw4 critical RCE, GHSA-p293-qw3h-jr36), `sharp` override 0.35.3 -> 0.35.4 (GHSA-rgj7-g3m4-5g8c), `hono` 4.13.0 -> 4.13.7 in `backend/` (manifest floor ^4.12.23 -> ^4.13.7) and the `overrides.hono` floor in `mcp/` (GHSA-gqvv-2mrq-wpjv, GHSA-g6gw-c38x-mqfc, GHSA-crvj-82cr-hjcx), `vitest`/`@vitest/mocker`/`@vitest/coverage-v8` 4.1.9/4.1.10 -> 4.1.11 in the root tree and `mcp/` (GHSA-82fw-gwwq-j7x9).
 - Manifest-only `postcss` floor bump `^8.5.18` -> `^8.5.23` in root `package.json` (`overrides.postcss` and `overrides.next.postcss`) and `frontend/package.json` (GHSA-fxqj-rqcc-2cmp); the root lockfile already resolved `postcss@8.5.23`, so no lockfile version moved.
 
+### Changed
+
+- CI: `release.yml` now passes step values into `run:` scripts through `env:` and shell variables instead of interpolating `${{ }}` expressions into the script text. The composite deploy action (`action/action.yml`) likewise reads `inputs.force` from `env:` in its preflight step, so a `force` value can no longer inject shell code. No behavior change for normal tags, versions and `force` values.
+
 ## [0.6.0] - 2026-09-01
 
 **Headline: honest deploy state through failure and restart (health-fail diagnosis, a periodic stuck sweep, a refcounted active-deploy registry), stored deploy output surfaced in the panel UI, and MCP name-or-ID parity restored for rollback and list_apps, plus a `deploy_list` tool.**

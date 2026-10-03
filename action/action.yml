@@ -54,6 +54,7 @@ runs:
         API_KEY: ${{ inputs.api-key }}
         SERVER: ${{ inputs.server }}
         APP: ${{ inputs.app }}
+        FORCE: ${{ inputs.force }}
       run: |
         echo "::group::Preflight checks"
         RESULT=$(curl -sf -X POST "$PANEL_URL/api/v1/preflight" \
@@ -64,7 +65,7 @@ runs:
         echo "$RESULT" | jq -r '.checks[]? | "\(if .passed then "✅" else "❌" end) \(.name): \(.message)"' 2>/dev/null || echo "$RESULT"
 
         PASSED=$(echo "$RESULT" | jq -r '.passed // false')
-        if [ "$PASSED" != "true" ] && [ "${{ inputs.force }}" != "true" ]; then
+        if [ "$PASSED" != "true" ] && [ "$FORCE" != "true" ]; then
           echo "::error::Preflight checks failed. Use force: true to deploy anyway."
           exit 1
         fi
