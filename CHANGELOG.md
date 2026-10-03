@@ -9,12 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- A rollback that the relay reports as blocked by preflight or `success: false` (v1 `POST /rollback` and the apps rollback route) now sets the app's status to `unhealthy` instead of leaving the stale value. A relay-reported rollback success now runs the same post-deploy health gate as a deploy and sets `healthy` plus `lastDeployAt` only when it passes, `unhealthy` otherwise; the apps route runs the gate after it has responded. A relay 4xx rollback failure still leaves the app status untouched. The 202 poll contract of `POST /api/v1/rollback` (poll `GET /api/v1/deploy/:id` until `status` leaves `running`) is documented in `docs/api.md`; its status code is unchanged.
+- A rollback that fails after the relay's `git reset --hard` (the relay answers HTTP 400, e.g. "Rebuild failed") now sets the app's status to `unhealthy` in both the v1 and the apps rollback routes. agent-relay tags its rollback error body with an additive `phase` (`before_reset` or `after_reset`); a before-reset 4xx (bad ref, unknown app) still leaves the status untouched, and so does a missing or unknown phase, so this is safe against a relay that has not been updated yet. Needs the matching agent-relay change to take effect.
+- A rollback that the relay reports as blocked by preflight or `success: false` (v1 `POST /rollback` and the apps rollback route) now sets the app's status to `unhealthy` instead of leaving the stale value. A relay-reported rollback success now runs the same post-deploy health gate as a deploy and sets `healthy` plus `lastDeployAt` only when it passes, `unhealthy` otherwise; the apps route runs the gate after it has responded. A relay 4xx rollback failure that is tagged before-reset, or untagged (an older relay), still leaves the app status untouched. The 202 poll contract of `POST /api/v1/rollback` (poll `GET /api/v1/deploy/:id` until `status` leaves `running`) is documented in `docs/api.md`; its status code is unchanged.
 
 ### Security
 
 - Lockfile-only CVE remediation, no source changes: `next` 15.5.21 -> 15.5.25 (GHSA-2xp9-vwfh-vxw4 critical RCE, GHSA-p293-qw3h-jr36), `sharp` override 0.35.3 -> 0.35.4 (GHSA-rgj7-g3m4-5g8c), `hono` 4.13.0 -> 4.13.7 in `backend/` (manifest floor ^4.12.23 -> ^4.13.7) and the `overrides.hono` floor in `mcp/` (GHSA-gqvv-2mrq-wpjv, GHSA-g6gw-c38x-mqfc, GHSA-crvj-82cr-hjcx), `vitest`/`@vitest/mocker`/`@vitest/coverage-v8` 4.1.9/4.1.10 -> 4.1.11 in the root tree and `mcp/` (GHSA-82fw-gwwq-j7x9).
 - Manifest-only `postcss` floor bump `^8.5.18` -> `^8.5.23` in root `package.json` (`overrides.postcss` and `overrides.next.postcss`) and `frontend/package.json` (GHSA-fxqj-rqcc-2cmp); the root lockfile already resolved `postcss@8.5.23`, so no lockfile version moved.
+
+### Changed
+
+- CI: `release.yml` now passes step values into `run:` scripts through `env:` and shell variables instead of interpolating `${{ }}` expressions into the script text. The composite deploy action (`action/action.yml`) likewise reads `inputs.force` from `env:` in its preflight step, so a `force` value can no longer inject shell code. No behavior change for normal tags, versions and `force` values.
 
 ## [0.6.0] - 2026-09-01
 

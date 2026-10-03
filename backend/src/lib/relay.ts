@@ -28,7 +28,7 @@ export async function relayRequest<T>(options: RelayRequestOptions): Promise<T> 
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new RelayError(`Relay error (${response.status}): ${text}`, response.status);
+    throw new RelayError(`Relay error (${response.status}): ${text}`, response.status, text);
   }
 
   return response.json() as Promise<T>;
@@ -36,9 +36,12 @@ export async function relayRequest<T>(options: RelayRequestOptions): Promise<T> 
 
 export class RelayError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /** Raw response body text, when the error came from a relay HTTP response. */
+  body?: string;
+  constructor(message: string, status: number, body?: string) {
     super(message);
     this.name = "RelayError";
     this.status = status;
+    this.body = body;
   }
 }

@@ -852,6 +852,45 @@ describe("v1 POST /rollback: App.status follows the rollback outcome", () => {
     expect(mApp.update).toHaveBeenCalledWith({ where: { id: "app-a" }, data: { status: "unhealthy" } });
   });
 
+  it("4xx RelayError tagged phase after_reset: row failed AND App.status is set to unhealthy", async () => {
+    vi.mocked(relayRequest).mockRejectedValue(
+      new RelayError('Relay error (400): {"error":"Rebuild failed: boom","phase":"after_reset"}', 400),
+    );
+    await postRollback();
+    expect(mDeploy.update).toHaveBeenCalledTimes(1);
+    expect(mDeploy.update.mock.calls[0][0].data.status).toBe("failed");
+    expect(mApp.update).toHaveBeenCalledTimes(1);
+    expect(mApp.update).toHaveBeenCalledWith({ where: { id: "app-a" }, data: { status: "unhealthy" } });
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+  });
+
+  it("4xx RelayError tagged phase before_reset: row failed, App.status is left unchanged", async () => {
+    vi.mocked(relayRequest).mockRejectedValue(
+      new RelayError('Relay error (400): {"error":"Rollback failed: bad ref","phase":"before_reset"}', 400),
+    );
+    await postRollback();
+    expect(mDeploy.update).toHaveBeenCalledTimes(1);
+    expect(mDeploy.update.mock.calls[0][0].data.status).toBe("failed");
+    expect(mApp.update).not.toHaveBeenCalled();
+  });
+
+  it("4xx RelayError with no phase (older relay): App.status is left unchanged", async () => {
+    vi.mocked(relayRequest).mockRejectedValue(
+      new RelayError('Relay error (400): {"error":"Rebuild failed: boom"}', 400),
+    );
+    await postRollback();
+    expect(mDeploy.update).toHaveBeenCalledTimes(1);
+    expect(mApp.update).not.toHaveBeenCalled();
+  });
+
+  it("4xx RelayError tagged phase after_reset (404 .relay.yml error at the target): App.status is set to unhealthy", async () => {
+    vi.mocked(relayRequest).mockRejectedValue(
+      new RelayError('Relay error (404): {"error":"No .relay.yml found","phase":"after_reset"}', 404),
+    );
+    await postRollback();
+    expect(mApp.update).toHaveBeenCalledWith({ where: { id: "app-a" }, data: { status: "unhealthy" } });
+  });
+
   it("relay-reported success:false: App.status is set to unhealthy", async () => {
     vi.mocked(relayRequest).mockResolvedValue({ success: false, commitBefore: "a", commitAfter: "b" });
     await postRollback();
