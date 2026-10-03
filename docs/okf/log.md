@@ -2,6 +2,19 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-10-03T12:12:29Z, okf-staleness workflow re-synced from the okf-kit
+  workflow template (fleet convergence ticket fdc01728): the workflow header
+  now names the template as its source instead of calling the file a pattern
+  to keep in sync, the pin moved from okf-kit@0.10.0 to okf-kit@0.16.0,
+  `--require-anchors` joined the invocation, and the job stays warn-only.
+  Measured on the tree before the change with `okf-kit check --json <bundle>`:
+  at okf-kit@0.10.0, 0 errors, 0 warnings, 0 notices (exit 0) plain and 0
+  errors, 71 warnings, 0 notices (exit 0) with `--require-anchors`; at
+  okf-kit@0.16.0, 0 errors, 0 warnings, 0 notices (exit 0) plain and 0 errors,
+  71 warnings, 0 notices (exit 0) with `--require-anchors`. Of the
+  anchored-run warnings, 71 are anchor-required findings (full citations
+  without an anchor); anchoring them is separate work and none of them blocks
+  anything.
 - 2026-10-03T12:32:53Z, task 994f6c81 comment-only follow-up: the `after_reset` comments in lib/rollback-app-status.ts and both rollback routes now say the relay attempted the reset (tree moved or partly rewritten). deploy-outcome-trust-chain.md already states that meaning and has no line citations into these files; re-stamped only.
 
 - 2026-10-03T12:18:46Z, task 994f6c81 review fix: `RelayError` now carries the raw relay response text as `body` and `rollbackFailurePhase` parses it first, falling back to the message. deploy-outcome-trust-chain.md re-verified against the changed `lib/relay.ts`, `lib/rollback-app-status.ts` and both rollback routes (no line citations to them; `relay.ts` added to its sources; `after_reset` reworded to a reset attempted, `before_reset` to HEAD not moved). Re-stamped it and app-secrets-config-footgun.md (sourced on docs/api.md; only the rollback row changed, so re-stamp only). `okf-kit check docs/okf` was run after the source commit.
