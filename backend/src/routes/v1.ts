@@ -384,6 +384,7 @@ v1Router.post("/rollback", async (c) => {
           appId: appRecord.id,
           appName,
           relayMessage: err.message,
+          relayBody: err.body,
           tag: "v1 rollback",
         });
         return;

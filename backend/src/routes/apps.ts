@@ -345,6 +345,7 @@ appsRouter.post("/:name/rollback", async (c) => {
         appId: app.id,
         appName: name,
         relayMessage: err.message,
+        relayBody: err.body,
         tag: "apps rollback",
       });
       return c.json({ error: "relay_error", message: err.message }, err.status as any);

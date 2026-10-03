@@ -51,18 +51,25 @@ export async function setAppStatusAfterRollback(opts: RollbackAppStatusOpts): Pr
 
 /**
  * Reads the `phase` agent-relay attaches to a rollback error body
- * (`{ error, phase: "before_reset" | "after_reset" }`). relayRequest() folds
- * the response body into the RelayError message as `Relay error (<status>):
- * <body text>`, so the JSON is recovered from the message. Anything else (an
- * older relay that sends no phase, a non-JSON body, an unknown value) yields
- * `undefined`, which callers must treat as "before reset", the conservative
- * answer that leaves App.status as it was.
+ * (`{ error, phase: "before_reset" | "after_reset" }`). The raw response text
+ * (RelayError.body) is parsed first; when it is absent, the JSON is recovered
+ * from the RelayError message, which relayRequest() builds as `Relay error
+ * (<status>): <body text>`. Anything else (an older relay that sends no phase,
+ * a non-JSON body, an unknown value) yields `undefined`, which callers must
+ * treat as "before reset", the conservative answer that leaves App.status as
+ * it was.
  */
-export function rollbackFailurePhase(message: string): "before_reset" | "after_reset" | undefined {
+export function rollbackFailurePhase(message: string, body?: string): "before_reset" | "after_reset" | undefined {
+  const fromBody = body === undefined ? undefined : parsePhase(body);
+  if (fromBody) return fromBody;
   const start = message.indexOf("{");
   if (start === -1) return undefined;
+  return parsePhase(message.slice(start));
+}
+
+function parsePhase(json: string): "before_reset" | "after_reset" | undefined {
   try {
-    const parsed: unknown = JSON.parse(message.slice(start));
+    const parsed: unknown = JSON.parse(json);
     const phase = (parsed as { phase?: unknown } | null)?.phase;
     return phase === "before_reset" || phase === "after_reset" ? phase : undefined;
   } catch {
@@ -84,10 +91,12 @@ export async function setAppStatusAfterRollbackRejection(opts: {
   appId: string;
   appName: string;
   relayMessage: string;
+  /** Raw relay response text (RelayError.body); preferred over the message. */
+  relayBody?: string;
   tag: string;
 }): Promise<boolean> {
-  const { appId, appName, relayMessage, tag } = opts;
-  if (rollbackFailurePhase(relayMessage) !== "after_reset") return false;
+  const { appId, appName, relayMessage, relayBody, tag } = opts;
+  if (rollbackFailurePhase(relayMessage, relayBody) !== "after_reset") return false;
   try {
     await prisma.app.update({ where: { id: appId }, data: { status: "unhealthy" } });
     return true;
