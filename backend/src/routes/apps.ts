@@ -338,8 +338,8 @@ appsRouter.post("/:name/rollback", async (c) => {
         where: { id: deploy.id },
         data: { status: "failed", log: err.message },
       });
-      // A 4xx the relay tags after_reset means `git reset --hard` already
-      // ran: the app may now be broken, so mark it unhealthy. A before-reset
+      // A 4xx the relay tags after_reset means it attempted `git reset --hard`
+      // (the tree may have moved or be partly rewritten): mark it unhealthy. A before-reset
       // (or untagged) 4xx leaves App.status as it was.
       await setAppStatusAfterRollbackRejection({
         appId: app.id,

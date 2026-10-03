@@ -79,11 +79,12 @@ function parsePhase(json: string): "before_reset" | "after_reset" | undefined {
 
 /**
  * Called for a relay 4xx rollback failure (the route has already marked the
- * deploy row failed). When the relay says the failure happened after
- * `git reset --hard`, the working tree already moved to the target and the
- * running app may be broken, so the app card is set to unhealthy. A failure
- * before the reset (bad ref, unknown app) left the tree untouched, so
- * App.status stays as it was; a missing or unknown phase is treated the same.
+ * deploy row failed). When the relay tags the failure after_reset, it had
+ * attempted `git reset --hard`, so the working tree may have moved or been
+ * partly rewritten and the running app may be broken: the app card is set to
+ * unhealthy. A before_reset failure (bad ref, unknown app) means HEAD did not
+ * move, so App.status stays as it was; a missing or unknown phase is treated
+ * the same.
  *
  * Never throws, like setAppStatusAfterRollback. Returns whether it wrote.
  */
