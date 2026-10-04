@@ -127,7 +127,7 @@ export default function AppSecretsPanel({ serverId, appName, onError }: AppSecre
           <tbody>
             {secrets.map((s) => (
               <tr key={s.key}>
-                <td style={{ padding: "var(--space-1) var(--space-2) var(--space-1) 0", fontFamily: "var(--font-mono, monospace)" }}>
+                <td style={{ padding: "var(--space-1) var(--space-2) var(--space-1) 0", fontFamily: "var(--font-mono-stack, monospace)" }}>
                   {s.key}
                 </td>
                 <td style={{ padding: "var(--space-1) var(--space-2) var(--space-1) 0" }}>
@@ -157,7 +157,7 @@ export default function AppSecretsPanel({ serverId, appName, onError }: AppSecre
           onChange={(e) => setNewKey(e.target.value)}
           placeholder="KEY (e.g. METRICS_API_TOKEN)"
           className="input-native"
-          style={{ fontFamily: "var(--font-mono, monospace)" }}
+          style={{ fontFamily: "var(--font-mono-stack, monospace)" }}
         />
         <input
           type="password"
@@ -165,7 +165,7 @@ export default function AppSecretsPanel({ serverId, appName, onError }: AppSecre
           onChange={(e) => setNewValue(e.target.value)}
           placeholder="value"
           className="input-native"
-          style={{ fontFamily: "var(--font-mono, monospace)" }}
+          style={{ fontFamily: "var(--font-mono-stack, monospace)" }}
         />
         <button
           type="button"
@@ -188,7 +188,7 @@ export default function AppSecretsPanel({ serverId, appName, onError }: AppSecre
             onChange={(e) => setRequiredInput(e.target.value)}
             placeholder="METRICS_API_TOKEN, DB_PASSWORD"
             className="input-native"
-            style={{ flex: 1, fontFamily: "var(--font-mono, monospace)" }}
+            style={{ flex: 1, fontFamily: "var(--font-mono-stack, monospace)" }}
           />
           <button
             type="button"

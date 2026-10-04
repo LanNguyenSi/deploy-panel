@@ -284,7 +284,7 @@ export default function ScheduledPage() {
               {filtered.map((item) => (
                 <tr key={item.id}>
                   <td>
-                    <div style={{ fontFamily: "var(--font-mono, monospace)" }}>
+                    <div style={{ fontFamily: "var(--font-mono-stack, monospace)" }}>
                       {new Date(item.scheduledFor).toLocaleString()}
                     </div>
                     <div style={{ fontSize: "var(--text-xs)", color: "var(--muted)" }}>
@@ -292,7 +292,7 @@ export default function ScheduledPage() {
                     </div>
                   </td>
                   <td style={{ fontWeight: 500 }}>{item.server.name}</td>
-                  <td style={{ fontFamily: "var(--font-mono, monospace)" }}>
+                  <td style={{ fontFamily: "var(--font-mono-stack, monospace)" }}>
                     {item.appName}
                   </td>
                   <td>

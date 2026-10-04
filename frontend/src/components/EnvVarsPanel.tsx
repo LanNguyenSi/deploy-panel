@@ -223,7 +223,7 @@ export default function EnvVarsPanel({
                       className="input-native"
                       style={{
                         width: "100%",
-                        fontFamily: "var(--font-mono, monospace)",
+                        fontFamily: "var(--font-mono-stack, monospace)",
                         borderColor: dup || invalid ? "var(--danger)" : undefined,
                       }}
                     />
@@ -235,7 +235,7 @@ export default function EnvVarsPanel({
                       onChange={(ev) => updateValue(idx, ev.target.value)}
                       placeholder="value"
                       className="input-native"
-                      style={{ width: "100%", fontFamily: "var(--font-mono, monospace)" }}
+                      style={{ width: "100%", fontFamily: "var(--font-mono-stack, monospace)" }}
                     />
                   </td>
                   <td style={{ padding: "var(--space-1) 0", whiteSpace: "nowrap" }}>
