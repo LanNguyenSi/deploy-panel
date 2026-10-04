@@ -2,6 +2,7 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-10-04T14:09:07Z, app-secrets-config-footgun.md re-stamped after the env PUT row in docs/api.md was narrowed (audit-log entry only when something changed). The secrets routes this doc points to are unchanged.
 - 2026-10-04T14:04:17Z, app-secrets-config-footgun.md re-stamped after docs/api.md gained the install-relay row and reworded the env update and deploy lookup rows; its claims about secrets are unaffected. `okf-kit check --require-anchors docs/okf` was run after the source commit.
 - 2026-10-04T13:57:32Z, app-secrets-config-footgun.md re-stamped after docs/api.md gained rows for the app tag, live-url, hide, deploy lookup, bulk-deploy and env routes; its claims about secrets are unaffected. `okf-kit check docs/okf` was run after the source commit.
 - 2026-10-03T12:12:29Z, okf-staleness workflow re-synced from the okf-kit
