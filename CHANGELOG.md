@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The frontend now self-hosts its fonts: `next/font/google` (Sora 500/700, Inter 400/500/600, JetBrains Mono 400/500) is replaced by `next/font/local` with vendored latin variable woff2 files and their OFL licenses in `frontend/src/fonts/`. `next build` no longer contacts fonts.googleapis.com or fonts.gstatic.com, so a malformed or throttled Google response can no longer fail CI or a deploy. The `--font-display`, `--font-sans` and `--font-mono` variables and `display: swap` are unchanged. Only the latin subset is vendored. `subsets: ['latin']` used to control preloading only: the Google CSS also served latin-ext faces for all three families and Cyrillic, Greek and Vietnamese faces for Inter and JetBrains Mono, so those glyphs (for example in server or app names and log output) now render in the fallback font. The UI's own strings use none of them. CI gains a guard that fails when `next/font/google` is imported again.
+
 ### Fixed
 
 - A rollback that fails after the relay's `git reset --hard` (the relay answers HTTP 400, e.g. "Rebuild failed") now sets the app's status to `unhealthy` in both the v1 and the apps rollback routes. agent-relay tags its rollback error body with an additive `phase` (`before_reset` or `after_reset`); a before-reset 4xx (bad ref, unknown app) still leaves the status untouched, and so does a missing or unknown phase, so this is safe against a relay that has not been updated yet. Needs the matching agent-relay change to take effect.

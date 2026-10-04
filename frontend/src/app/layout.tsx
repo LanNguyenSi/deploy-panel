@@ -1,26 +1,33 @@
 import type { Metadata } from "next";
-import { Sora, Inter, JetBrains_Mono } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 import AppShell from "@/components/AppShell";
 import { Providers } from "@/components/Providers";
 
-const sora = Sora({
-  subsets: ["latin"],
-  weight: ["500", "700"],
+const sora = localFont({
+  src: [
+    { path: "../fonts/sora-latin-wght-normal.woff2", weight: "500", style: "normal" },
+    { path: "../fonts/sora-latin-wght-normal.woff2", weight: "700", style: "normal" },
+  ],
   display: "swap",
   variable: "--font-display",
 });
 
-const inter = Inter({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
+const inter = localFont({
+  src: [
+    { path: "../fonts/inter-latin-wght-normal.woff2", weight: "400", style: "normal" },
+    { path: "../fonts/inter-latin-wght-normal.woff2", weight: "500", style: "normal" },
+    { path: "../fonts/inter-latin-wght-normal.woff2", weight: "600", style: "normal" },
+  ],
   display: "swap",
   variable: "--font-sans",
 });
 
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ["latin"],
-  weight: ["400", "500"],
+const jetbrainsMono = localFont({
+  src: [
+    { path: "../fonts/jetbrains-mono-latin-wght-normal.woff2", weight: "400", style: "normal" },
+    { path: "../fonts/jetbrains-mono-latin-wght-normal.woff2", weight: "500", style: "normal" },
+  ],
   display: "swap",
   variable: "--font-mono",
 });

@@ -106,6 +106,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
+      - name: Forbid next/font/google
+        # Fonts are vendored in frontend/src/fonts and loaded via
+        # next/font/local; next/font/google makes `next build` depend on
+        # fonts.googleapis.com being reachable and well-formed.
+        run: |
+          if grep -rn --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' --include='*.mjs' --exclude-dir=node_modules --exclude-dir=.next 'next/font/google' frontend; then
+            echo "next/font/google is forbidden, vendor the font and use next/font/local" >&2
+            exit 1
+          fi
       - run: npm run build --workspace=frontend
 
   docker:
