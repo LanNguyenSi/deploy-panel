@@ -33,10 +33,13 @@ Thanks for your interest. deploy-panel is a web-based control panel for managing
 ```bash
 git clone https://github.com/LanNguyenSi/deploy-panel.git
 cd deploy-panel
+cp .env.example .env
 npm install
-npm run build
-docker compose up
+make build        # build both workspaces
+make dev          # backend on :3001, frontend on :3000, hot reload
 ```
+
+`make dev` needs Postgres and a generated Prisma client first, and does not read `.env` itself (export it before running). Follow the README [Quick start](README.md#quick-start) for the full one-time setup. The full Docker stack (`make docker-up` / `make setup`) additionally requires `APP_SECRETS_KEY` in `.env`.
 
 ## Style
 

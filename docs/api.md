@@ -39,12 +39,21 @@ All app endpoints are nested under a server: `/api/servers/:serverId/apps`.
 | PUT    | `/api/servers/:serverId/apps/:name/secrets/:key`| Set (create or update) one secret; body `{ value }`. Write-only — the value is never echoed back |
 | DELETE | `/api/servers/:serverId/apps/:name/secrets/:key`| Delete one secret |
 | PUT    | `/api/servers/:serverId/apps/:name/required-env-keys` | Declare which env keys the app requires; body `{ keys: string[] }` (replace-all). Drives the preflight/deploy hard-fail gate — see docs/configuration.md#app-secrets |
+| PATCH  | `/api/servers/:serverId/apps/:name/tag`         | Set the app tag; body `{ tag }` where tag is `production`, `development`, `ignored` or `null` (clears) |
+| PATCH  | `/api/servers/:serverId/apps/:name/live-url`    | Set or clear the app's live URL; body `{ liveUrl }` (http/https URL, empty string or null clears) |
+| DELETE | `/api/servers/:serverId/apps/:name`             | Hide the app from the panel (sets tag `ignored`; the row is not deleted). Returns `{ hidden: true }` |
+| GET    | `/api/servers/:serverId/apps/:name/deploys/:deployId` | Get one deploy of this app on this server (404 if it does not belong to the server) |
+| POST   | `/api/servers/:serverId/apps/bulk-deploy`       | Deploy several apps in one call; body `{ apps: string[], force?: boolean }` (deduplicated, at most 50 per call) |
+| GET    | `/api/servers/:serverId/apps/:name/env`         | Read the app's env entries from the relay; each entry carries a `sensitive` flag derived from the key name |
+| PUT    | `/api/servers/:serverId/apps/:name/env`         | Replace the app's env set; body `{ entries: [{ key, value }] }` (max 500 entries). One audit row per changed key |
+| GET    | `/api/servers/:serverId/apps/:name/env/history` | List the latest 100 recorded env-var changes for the app |
 
 ## Deploys
 
 | Method | Path           | Description                                                        |
 |--------|----------------|--------------------------------------------------------------------|
 | GET    | `/api/deploys` | List deploys with optional filters: `serverId`, `appId`, `status`, `limit`, `offset`. Response includes `total` for pagination. |
+| GET    | `/api/deploys/:id` | Get one deploy with its app and server summary. Non-admins only see deploys on servers they own (404 otherwise). |
 
 ## Audit
 
