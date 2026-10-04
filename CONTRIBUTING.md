@@ -14,8 +14,10 @@ Thanks for your interest. deploy-panel is a web-based control panel for managing
 3. Run the local checks scoped to the affected surface:
 
    ```bash
-   # backend or frontend (npm workspaces)
+   # backend or frontend (npm workspaces); run in a shell without an exported
+   # NODE_ENV (see Dev Setup), the backend needs the generated Prisma client
    npm install
+   npx prisma generate --schema backend/prisma/schema.prisma
    npm run build --workspace=<backend|frontend>
    npm run test  --workspace=<backend|frontend>
 

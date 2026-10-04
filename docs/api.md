@@ -46,7 +46,7 @@ All app endpoints are nested under a server: `/api/servers/:serverId/apps`.
 | GET    | `/api/servers/:serverId/apps/:name/deploys/:deployId` | Get one deploy by id, scoped to this server (404 if it belongs to another server); the `:name` segment is not checked |
 | POST   | `/api/servers/:serverId/apps/bulk-deploy`       | Deploy several apps in one call; body `{ apps: string[], force?: boolean }` (deduplicated, at most 50 per call) |
 | GET    | `/api/servers/:serverId/apps/:name/env`         | Read the app's env entries from the relay; each entry carries a `sensitive` flag derived from the key name |
-| PUT    | `/api/servers/:serverId/apps/:name/env`         | Replace the app's env set; body `{ entries: [{ key, value }] }` (max 500 entries). Records one env-history row per changed key (see `/env/history`) plus one `app.env.updated` audit-log entry; the response includes `changes` (count of changed keys) and `needsRedeploy` |
+| PUT    | `/api/servers/:serverId/apps/:name/env`         | Replace the app's env set; body `{ entries: [{ key, value }] }` (max 500 entries). Records one env-history row per changed key (see `/env/history`) plus one `app.env.updated` audit-log entry when anything changed; the response includes `changes` (count of changed keys) and `needsRedeploy` |
 | GET    | `/api/servers/:serverId/apps/:name/env/history` | List the latest 100 recorded env-var changes for the app |
 
 ## Deploys
