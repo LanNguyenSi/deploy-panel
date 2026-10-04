@@ -60,7 +60,7 @@ Relay calls use per-operation timeouts: 5 seconds for connectivity and system-in
 | `/scheduled`       | Scheduled Deploys| Fleet-wide overview of upcoming scheduled (cron-like) deploys; cancel or reschedule |
 | `/login`           | Login            | Authentication page                                                          |
 | `/settings`        | Settings         | Panel configuration and user preferences                                     |
-| `/styleguide`      | Styleguide       | Design-token and component reference; an unlinked dev route (not in the navigation), dark-only palette |
+| `/styleguide`      | Styleguide       | Design-token and component reference; an unlinked dev route (not in the navigation), dark-only palette; not gated: it is a static page served in production builds too, and needs no login |
 
 ## Why proxy instead of direct browser-to-relay?
 

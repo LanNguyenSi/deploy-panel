@@ -34,12 +34,17 @@ Thanks for your interest. deploy-panel is a web-based control panel for managing
 git clone https://github.com/LanNguyenSi/deploy-panel.git
 cd deploy-panel
 cp .env.example .env
+
 npm install
-make build        # build both workspaces
-make dev          # backend on :3001, frontend on :3000, hot reload
+docker compose up -d db                          # Postgres only, published on 127.0.0.1:5433
+npx prisma generate --schema backend/prisma/schema.prisma
+set -a; . ./.env; set +a                         # host-run processes below don't load .env themselves
+npx prisma db push --schema backend/prisma/schema.prisma   # run from the repo root
+
+make dev                                          # backend on :3001, frontend on :3000, hot reload
 ```
 
-`make dev` needs Postgres and a generated Prisma client first, and does not read `.env` itself (export it before running). Follow the README [Quick start](README.md#quick-start) for the full one-time setup. The full Docker stack (`make docker-up` / `make setup`) additionally requires `APP_SECRETS_KEY` in `.env`.
+`make build` (build both workspaces) also needs the generated Prisma client: run it after the `prisma generate` step, otherwise the backend `tsc` build fails. Run it in a shell that has not exported `.env`, or prefix it with `env -u NODE_ENV`: `.env.example` sets `NODE_ENV=development`, which makes `next build` fail. `make dev` additionally needs Postgres and an exported `.env`; neither `make dev` nor `make db-push` reads `.env` itself. This block mirrors the README [Quick start](README.md#quick-start). The full Docker stack (`make docker-up` / `make setup`) additionally requires `APP_SECRETS_KEY` in `.env`.
 
 ## Style
 
