@@ -29,15 +29,13 @@ describe("non-latin font subsets", () => {
   });
 
   it("font-family declarations use the -stack variables so extras precede the metric fallback", () => {
-    const files = [
-      ...readdirSync(join(srcDir, "app"), { recursive: true, encoding: "utf8" }),
-      ...readdirSync(join(srcDir, "components"), { recursive: true, encoding: "utf8" }),
-    ].filter((f) => /\.(css|tsx)$/.test(f));
+    const files = readdirSync(srcDir, { recursive: true, encoding: "utf8" }).filter(
+      (f) => /\.(css|tsx|ts)$/.test(f) && !/\.test\.tsx?$/.test(f),
+    );
     expect(files.length).toBeGreaterThan(0);
     for (const rel of files) {
-      const path = existsSync(join(srcDir, "app", rel)) ? join(srcDir, "app", rel) : join(srcDir, "components", rel);
-      const text = readFileSync(path, "utf8");
-      const raw = text.match(/[fF]ont-?[fF]amily"?:\s*"?var\(--font-(display|sans|mono)[,)]/g);
+      const text = readFileSync(join(srcDir, rel), "utf8");
+      const raw = text.match(/(?:[fF]ont-?[fF]amily|\bfont)["']?\s*:\s*["']?var\(--font-(display|sans|mono)[,)]/g);
       expect(raw, `${rel} uses a raw next/font variable in font-family`).toBeNull();
     }
   });

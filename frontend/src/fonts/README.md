@@ -42,6 +42,12 @@ to come first: the next/font variable ends in a metric-matched local fallback
 face is consulted. Use the `-stack` variables in `font-family` declarations
 (`src/fonts/fonts.test.ts` fails on a raw `var(--font-sans|display|mono)`).
 
+Because the extra family comes first, the few combining marks that fontsource
+lists in both the latin range and an extra range (U+0301, U+0304, U+0308,
+U+0329) resolve to the extra face, so decomposed (NFD) latin text with such a
+mark loads that subset file. Base glyph and mark come from the same font, so
+rendering is unaffected; the ranges are kept verbatim to stay regenerable.
+
 All three are variable fonts (wght axis, normal style). Source: the
 `@fontsource-variable/sora`, `@fontsource-variable/inter` and
 `@fontsource-variable/jetbrains-mono` npm packages, version 5.3.0 each, files
