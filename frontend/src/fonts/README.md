@@ -14,7 +14,8 @@ All three are variable fonts (wght axis, normal style). Source: the
 `@fontsource-variable/sora`, `@fontsource-variable/inter` and
 `@fontsource-variable/jetbrains-mono` npm packages, version 5.3.0 each, files
 under `files/<family>-latin-wght-normal.woff2` (fontsource repackages the
-upstream OFL fonts, the same latin variable files Google Fonts serves).
+upstream OFL fonts: the same font versions and latin glyph coverage as
+Google Fonts, though not byte-identical files).
 
 ## Licenses
 
