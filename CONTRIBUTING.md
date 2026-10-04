@@ -14,8 +14,10 @@ Thanks for your interest. deploy-panel is a web-based control panel for managing
 3. Run the local checks scoped to the affected surface:
 
    ```bash
-   # backend or frontend (npm workspaces)
+   # backend or frontend (npm workspaces); run in a shell without an exported
+   # NODE_ENV (see Dev Setup), the backend needs the generated Prisma client
    npm install
+   npx prisma generate --schema backend/prisma/schema.prisma
    npm run build --workspace=<backend|frontend>
    npm run test  --workspace=<backend|frontend>
 
@@ -33,10 +35,18 @@ Thanks for your interest. deploy-panel is a web-based control panel for managing
 ```bash
 git clone https://github.com/LanNguyenSi/deploy-panel.git
 cd deploy-panel
+cp .env.example .env
+
 npm install
-npm run build
-docker compose up
+docker compose up -d db                          # Postgres only, published on 127.0.0.1:5433
+npx prisma generate --schema backend/prisma/schema.prisma
+set -a; . ./.env; set +a                         # host-run processes below don't load .env themselves
+npx prisma db push --schema backend/prisma/schema.prisma   # run from the repo root
+
+make dev                                          # backend on :3001, frontend on :3000, hot reload
 ```
+
+`make build` (build both workspaces) also needs the generated Prisma client: run it after the `prisma generate` step, otherwise the backend `tsc` build fails. Run it in a shell that has not exported `.env`, or prefix it with `env -u NODE_ENV`: `.env.example` sets `NODE_ENV=development`, which makes `next build` fail. `make dev` additionally needs Postgres and an exported `.env`; neither `make dev` nor `make db-push` reads `.env` itself. This block mirrors the README [Quick start](README.md#quick-start). The full Docker stack (`make docker-up` / `make setup`) additionally requires `APP_SECRETS_KEY` in `.env`.
 
 ## Style
 
