@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Characters outside the latin subset render in the brand fonts again (7ad79c03). The self-hosted fonts now also vendor the subsets the old `next/font/google` CSS served: latin-ext for Sora, Inter and JetBrains Mono, plus cyrillic, cyrillic-ext, greek, greek-ext and vietnamese for Inter and cyrillic, cyrillic-ext, greek and vietnamese for JetBrains Mono (`@fontsource-variable` 5.3.0, OFL files unchanged). They are plain `@font-face` rules with the fontsource `unicode-range` in `frontend/src/app/fonts-extra.css`, `font-display: swap`, never preloaded, so a latin-only page fetches none of them. `font-family` declarations use new `--font-display-stack`, `--font-sans-stack` and `--font-mono-stack` variables that put the extra faces ahead of the next/font family (whose metric-matched fallback would otherwise claim those glyphs). Offline builds are unaffected and the `next/font/google` CI guard is unchanged.
+
 ## [0.6.1] - 2026-10-04
 
 ### Changed

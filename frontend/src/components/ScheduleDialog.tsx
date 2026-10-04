@@ -454,7 +454,7 @@ export function ScheduleDialogProvider({ children }: { children: ReactNode }) {
                       }}
                     >
                       <div style={{ minWidth: 0, flex: 1 }}>
-                        <div style={{ fontFamily: "var(--font-mono, monospace)" }}>
+                        <div style={{ fontFamily: "var(--font-mono-stack, monospace)" }}>
                           {new Date(p.scheduledFor).toLocaleString()}
                         </div>
                         <div

@@ -69,6 +69,15 @@
   /* next/font's metric-matched fallback faces (defeating its CLS reduction). */
   /* Consumers append `, system-ui, sans-serif` for a generic last resort.    */
 
+  /* The non-latin subsets (fonts-extra.css) are separate unicode-range faces  */
+  /* ("Sora Extra", "Inter Extra", "JetBrains Mono Extra"). They must come     */
+  /* BEFORE the next/font family: its variable also lists a metric-matched     */
+  /* local fallback that would otherwise claim non-latin glyphs first. Use the */
+  /* -stack variables in font-family declarations, not the raw next/font ones. */
+  --font-display-stack: "Sora Extra", var(--font-display);
+  --font-sans-stack:    "Inter Extra", var(--font-sans);
+  --font-mono-stack:    "JetBrains Mono Extra", var(--font-mono);
+
   /* ── Typography scale ─────────────────────────────────────────── */
   --text-xs:   0.75rem;
   --text-sm:   0.8125rem;
@@ -121,7 +130,7 @@
 body {
   background: var(--bg-void);
   color: var(--text);
-  font-family: var(--font-sans), system-ui, sans-serif;
+  font-family: var(--font-sans-stack), system-ui, sans-serif;
   font-size: var(--text-base);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
@@ -129,7 +138,7 @@ body {
 }
 
 h1, h2, h3 {
-  font-family: var(--font-display), system-ui, sans-serif;
+  font-family: var(--font-display-stack), system-ui, sans-serif;
 }
 
 a { color: var(--primary); text-decoration: none; }
@@ -540,7 +549,7 @@ a:hover { color: var(--primary-hover); }
   background: var(--surface-alt);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono-stack, monospace);
   font-size: var(--text-xs);
   line-height: 1.7;
   overflow: auto;
@@ -587,7 +596,7 @@ a:hover { color: var(--primary-hover); }
 }
 
 .stat-value {
-  font-family: var(--font-display), system-ui, sans-serif;
+  font-family: var(--font-display-stack), system-ui, sans-serif;
   font-size: var(--text-2xl);
   font-weight: 700;
   letter-spacing: -0.03em;

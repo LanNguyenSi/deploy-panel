@@ -88,7 +88,7 @@ function Swatch({ name, value, bg }: { name: string; value: string; bg: string }
           style={{
             fontSize: "var(--text-xs)",
             color: "var(--text-dim)",
-            fontFamily: "var(--font-mono, monospace)",
+            fontFamily: "var(--font-mono-stack, monospace)",
           }}
         >
           {value}
@@ -109,7 +109,7 @@ function DotRow({ label, cls }: { label: string; cls: string }) {
       }}
     >
       <span className={`status-dot ${cls}`} />
-      <span style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", fontFamily: "var(--font-mono, monospace)" }}>
+      <span style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", fontFamily: "var(--font-mono-stack, monospace)" }}>
         .{cls}
       </span>
       <span style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)" }}>{label}</span>
@@ -213,7 +213,7 @@ export default function StyleguidePage() {
               >
                 <span
                   style={{
-                    fontFamily: "var(--font-display), system-ui, sans-serif",
+                    fontFamily: "var(--font-display-stack), system-ui, sans-serif",
                     fontSize: size,
                     fontWeight: 700,
                     letterSpacing: "-0.02em",
@@ -253,7 +253,7 @@ export default function StyleguidePage() {
               >
                 <span
                   style={{
-                    fontFamily: "var(--font-sans), system-ui, sans-serif",
+                    fontFamily: "var(--font-sans-stack), system-ui, sans-serif",
                     fontSize: size,
                     color: "var(--text)",
                     flexShrink: 0,
@@ -289,7 +289,7 @@ export default function StyleguidePage() {
               >
                 <span
                   style={{
-                    fontFamily: "var(--font-mono, monospace)",
+                    fontFamily: "var(--font-mono-stack, monospace)",
                     fontSize: size,
                     color: "var(--text-mono)",
                     flexShrink: 0,
@@ -646,7 +646,7 @@ export default function StyleguidePage() {
                 Roll back <strong>api-gateway</strong> to commit{" "}
                 <code
                   style={{
-                    fontFamily: "var(--font-mono, monospace)",
+                    fontFamily: "var(--font-mono-stack, monospace)",
                     fontSize: "var(--text-xs)",
                     background: "var(--bg-steel)",
                     padding: "0.125rem 0.375rem",
@@ -678,7 +678,7 @@ export default function StyleguidePage() {
             <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>
               <code
                 style={{
-                  fontFamily: "var(--font-mono, monospace)",
+                  fontFamily: "var(--font-mono-stack, monospace)",
                   fontSize: "var(--text-xs)",
                   background: "var(--bg-steel)",
                   padding: "0.125rem 0.375rem",
@@ -719,7 +719,7 @@ export default function StyleguidePage() {
                   }}
                 />
                 <div style={{ fontSize: "var(--text-xs)", fontWeight: 600, color: "var(--text)" }}>{name}</div>
-                <div style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)", fontFamily: "var(--font-mono, monospace)" }}>
+                <div style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)", fontFamily: "var(--font-mono-stack, monospace)" }}>
                   {value}
                 </div>
               </div>
