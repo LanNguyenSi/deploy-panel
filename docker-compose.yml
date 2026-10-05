@@ -46,10 +46,13 @@ services:
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
       NODE_ENV: ${NODE_ENV:-production}
     healthcheck:
+      # Same timing as the HEALTHCHECK in backend/Dockerfile (guarded by
+      # backend/tests/dockerfile-healthcheck.test.ts); keep them in sync.
       test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+      interval: 5s
+      timeout: 3s
+      start_period: 15s
+      retries: 4
     restart: unless-stopped
 
   frontend:
