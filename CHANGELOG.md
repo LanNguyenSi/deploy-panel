@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The stuck-deploy sweep no longer marks a deploy as `success` just because the app's relay preflight passes (9791c995). A deploy cut off before the git pull (the old containers still run) used to be recovered as `success` although the repo stayed on the old commit and the containers were never recreated. For every app except the panel itself, a recovered deploy is now `success` only when the relay's `GET /api/apps/:name` shows a deploy recorded at or after the stuck record's start whose latest entry succeeded and whose commit matches the repo's current HEAD (the record's own `commitAfter` when present); otherwise the record is `interrupted` and the `startup-recovery` step says which check failed. The panel's own self-deploy keeps the preflight-only verdict; its relay app name is `deploy-panel`, overridable with the new optional `PANEL_SELF_APP_NAME` env var.
+
 ## [0.6.2] - 2026-10-05
 
 ### Changed

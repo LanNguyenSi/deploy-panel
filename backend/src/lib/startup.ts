@@ -15,6 +15,115 @@ const STUCK_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes (reduced — deploy-recov
 let sweepInFlight = false;
 
 /**
+ * Relay app name of the panel itself. A self-deploy replaces the panel's own
+ * containers, so the panel that runs this sweep is by construction the
+ * recreated one, and the relay may still be finishing the deploy (and has not
+ * recorded it yet) when the sweep first looks. Those records keep the
+ * preflight-only verdict; every other app needs proof the target was reached.
+ * Override with PANEL_SELF_APP_NAME when the panel is registered under a
+ * different relay app name.
+ */
+const DEFAULT_PANEL_SELF_APP_NAME = "deploy-panel";
+
+function isPanelSelfApp(appName: string): boolean {
+  const configured = process.env.PANEL_SELF_APP_NAME?.trim();
+  return appName === (configured || DEFAULT_PANEL_SELF_APP_NAME);
+}
+
+/** One entry of the relay's own deploy history (agent-relay services/history.ts). */
+interface RelayDeployRecord {
+  status?: string;
+  commitAfter?: string;
+  createdAt?: string;
+}
+
+/** The slice of GET /api/apps/:name the target check reads (agent-relay getAppDetail + history). */
+interface RelayAppDetail {
+  app?: {
+    /** Short HEAD of the app's repo (`git rev-parse --short HEAD`). */
+    commit?: string;
+    recentDeploys?: RelayDeployRecord[];
+  };
+}
+
+export type TargetVerdict = { reached: true } | { reached: false; reason: string };
+
+/**
+ * Short and full shas of the same commit match on their common prefix. A
+ * minimum length keeps an empty or one-character value from matching
+ * everything.
+ */
+function commitsMatch(a: string, b: string): boolean {
+  const x = a.trim().toLowerCase();
+  const y = b.trim().toLowerCase();
+  if (x.length < 7 || y.length < 7) return false;
+  return x.startsWith(y) || y.startsWith(x);
+}
+
+/**
+ * Decides whether a deploy stuck on "running" actually reached its target,
+ * from what the relay reports (no relay API beyond GET /api/apps/:name):
+ *
+ * - The deploy record carries no target commit while it is running
+ *   (commitBefore/commitAfter are written at finalize), so the target is the
+ *   record's own `commitAfter` when present, else the `commitAfter` of the
+ *   relay's own history entry for this deploy.
+ * - "The containers were recreated after the deploy started" is proven by
+ *   the relay having recorded a deploy for the app at or after this deploy's
+ *   start (the relay records one only after build, up and health finished).
+ *   The latest such entry must be a success. No entry since the start means
+ *   the deploy never got that far (the incident shape: cut off after the
+ *   pre-update build, repo still on the old commit, old containers up).
+ * - The repo's current HEAD must equal the target commit.
+ *
+ * Timestamps compare the relay's clock with the panel's database clock; a
+ * relay running behind can only make a real success look interrupted (the
+ * fail-closed direction), never the reverse.
+ */
+export function assessTargetReached(
+  deploy: { createdAt: Date; commitAfter?: string | null },
+  detail: RelayAppDetail,
+): TargetVerdict {
+  const head = typeof detail?.app?.commit === "string" ? detail.app.commit.trim() : "";
+  if (!head) return { reached: false, reason: "the relay reported no repo HEAD for the app" };
+
+  const history = Array.isArray(detail.app?.recentDeploys) ? detail.app.recentDeploys : [];
+  const startMs = deploy.createdAt.getTime();
+  let latest: RelayDeployRecord | undefined;
+  let latestMs = -Infinity;
+  for (const record of history) {
+    const ms = Date.parse(record?.createdAt ?? "");
+    if (!(ms >= startMs)) continue;
+    if (ms >= latestMs) {
+      latest = record;
+      latestMs = ms;
+    }
+  }
+  if (!latest) {
+    return {
+      reached: false,
+      reason: `the relay recorded no deploy since ${deploy.createdAt.toISOString()}, so the containers were not recreated by this deploy (repo HEAD is ${head})`,
+    };
+  }
+  if (latest.status !== "success") {
+    return {
+      reached: false,
+      reason: `the latest relay deploy since the start ended ${latest.status ?? "without a status"}`,
+    };
+  }
+
+  const target = deploy.commitAfter?.trim() || latest.commitAfter?.trim() || "";
+  if (!target) return { reached: false, reason: "no target commit is recorded for this deploy" };
+  if (!commitsMatch(head, target)) {
+    return {
+      reached: false,
+      reason: `the repo HEAD ${head} does not match the target commit ${target}`,
+    };
+  }
+  return { reached: true };
+}
+
+/**
  * Sweeps deploys stuck on "running" for longer than STUCK_THRESHOLD_MS.
  * These are likely from self-deploys where the backend restarted mid-request
  * (the panel replaces its own container mid-deploy). This used to run only
@@ -36,9 +145,14 @@ let sweepInFlight = false;
  * (either way, this process is the one that should recover it).
  *
  * For each stuck deploy:
- * 1. Try to check if the app is healthy via relay
- * 2. If healthy → mark as "success" (deploy completed before restart)
- * 3. If unhealthy or relay unreachable → mark as "interrupted"
+ * 1. Try to check if the app is healthy via relay (preflight)
+ * 2. If healthy, a non-panel app is only "success" when the relay also
+ *    proves the deploy reached its target (see assessTargetReached): a
+ *    healthy preflight alone is true for any deploy cut off BEFORE the
+ *    git pull, because the old containers are still up. The panel's own
+ *    app keeps the preflight-only verdict (see isPanelSelfApp).
+ * 3. Otherwise (unhealthy, relay unreachable, target not reached) → mark
+ *    as "interrupted", with the failed check named in the recovery step
  *
  * Each candidate is finalized with a compare-and-set (`updateMany` scoped
  * to `status: "running"`) instead of a plain `update`: a rollback route or
@@ -96,17 +210,37 @@ async function sweepOnce(): Promise<void> {
   for (const deploy of stuckDeploys) {
     try {
       let newStatus = "interrupted";
+      // Which check kept this record from "success"; named in the recovery step.
+      let failedCheck: string | undefined = "no relay configured for this server";
 
       // Try to check the app's actual health via relay
       if (deploy.server.relayUrl && deploy.app.name) {
+        failedCheck = "relay unreachable or app lookup failed";
         try {
           const result = await relayRequest<{ app: string; passed: boolean }>({
             serverId: deploy.server.id,
             path: `/api/apps/${deploy.app.name}/preflight`,
           });
-          // If preflight passes (containers running, compose exists), deploy likely succeeded
-          if (result.passed) {
+          if (!result.passed) {
+            failedCheck = "relay preflight did not pass";
+          } else if (isPanelSelfApp(deploy.app.name)) {
+            // Self-deploy: preflight passing is the whole verdict (see isPanelSelfApp).
             newStatus = "success";
+            failedCheck = undefined;
+          } else {
+            // Preflight passing only says containers are running, which is also
+            // true when the deploy was cut off before it changed anything.
+            const detail = await relayRequest<RelayAppDetail>({
+              serverId: deploy.server.id,
+              path: `/api/apps/${encodeURIComponent(deploy.app.name)}`,
+            });
+            const verdict = assessTargetReached(deploy, detail);
+            if (verdict.reached) {
+              newStatus = "success";
+              failedCheck = undefined;
+            } else {
+              failedCheck = `target not reached: ${verdict.reason}`;
+            }
           }
         } catch {
           // Relay unreachable or app not found: mark as interrupted
@@ -127,7 +261,9 @@ async function sweepOnce(): Promise<void> {
         name: "startup-recovery",
         status: newStatus === "success" ? "success" : "failure",
         durationMs: 0,
-        output: `Marked as ${newStatus} (was stuck on running since ${deploy.createdAt.toISOString()})`,
+        output:
+          `Marked as ${newStatus} (was stuck on running since ${deploy.createdAt.toISOString()})` +
+          (failedCheck ? `; check failed: ${failedCheck}` : ""),
       };
 
       // Compare-and-set: only finalize a record that is STILL "running".

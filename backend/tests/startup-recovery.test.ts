@@ -48,6 +48,29 @@ const mRelay = relayRequest as unknown as ReturnType<typeof vi.fn>;
 
 const lastCall = (m: ReturnType<typeof vi.fn>) => m.mock.calls[m.mock.calls.length - 1][0];
 
+// Relay mock: preflight and app-detail answer by path. `detail` is what
+// GET /api/apps/:name returns (agent-relay getAppDetail + recentDeploys).
+const mockRelay = (opts: {
+  passed?: boolean;
+  detail?: { commit?: string; recentDeploys?: Array<Record<string, unknown>> };
+}) => {
+  mRelay.mockImplementation(async ({ path }: { path: string }) => {
+    if (path.endsWith("/preflight")) return { app: "x", passed: opts.passed ?? true };
+    return { app: { name: "x", containers: "[]", ...(opts.detail ?? {}) } };
+  });
+};
+
+const DEPLOY_START = new Date("2026-01-01T00:00:00Z");
+// A relay history entry for a deploy that finished after DEPLOY_START.
+const relayDeployAfterStart = (over: Record<string, unknown> = {}) => ({
+  id: "d-1",
+  status: "success",
+  commitBefore: "oldsha1111111",
+  commitAfter: "newsha2222222",
+  createdAt: "2026-01-01T00:03:00.000Z",
+  ...over,
+});
+
 const makeStuckDeploy = (overrides: Partial<Record<string, unknown>> = {}) => ({
   id: "d1",
   appId: "a1",
@@ -137,7 +160,9 @@ describe("recoverStuckDeploys", () => {
     // verdict won, the final app.update would be "unknown"; asserting
     // "healthy" pins that the newer (later-processed) verdict is the one
     // left standing.
-    mRelay.mockResolvedValue({ app: "thd", passed: true });
+    mockRelay({
+      detail: { commit: "newsha2", recentDeploys: [relayDeployAfterStart({ createdAt: "2026-01-01T00:06:00.000Z" })] },
+    });
 
     await recoverStuckDeploys();
 
@@ -146,11 +171,13 @@ describe("recoverStuckDeploys", () => {
     expect(appUpdateCalls.at(-1).data.status).toBe("healthy");
   });
 
-  it("marks the deploy success/healthy when the relay preflight passes", async () => {
+  it("marks the deploy success/healthy when the relay preflight passes and the relay proves the target was reached", async () => {
     mFindMany.mockResolvedValue([
       makeStuckDeploy({ id: "d2", appId: "a2", app: { name: "thd2" }, server: { id: "srv-a", relayUrl: "http://relay.example", relayToken: null } }),
     ]);
-    mRelay.mockResolvedValue({ app: "thd2", passed: true });
+    mockRelay({
+      detail: { commit: "newsha2", recentDeploys: [relayDeployAfterStart()] },
+    });
 
     await recoverStuckDeploys();
 
@@ -158,6 +185,176 @@ describe("recoverStuckDeploys", () => {
     expect(lastCall(mAppUpdate).data.status).toBe("healthy");
     const steps = JSON.parse(lastCall(mUpdateMany).data.log);
     expect(steps.at(-1).status).toBe("success");
+  });
+
+  describe("a recovered deploy is success only when the app reached the target", () => {
+    const relayDeploy = (over: Record<string, unknown> = {}) =>
+      makeStuckDeploy({
+        id: "t1",
+        appId: "at1",
+        createdAt: DEPLOY_START,
+        app: { name: "event-booking-system" },
+        server: { id: "srv-a", relayUrl: "http://relay.example", relayToken: null },
+        ...over,
+      });
+
+    const finalizedStatus = () => lastCall(mUpdateMany).data.status;
+    const recoveryOutput = () => JSON.parse(lastCall(mUpdateMany).data.log).at(-1).output as string;
+
+    it("finalizes as interrupted, not success, when preflight passes but the repo HEAD is still the old commit and the relay recorded no deploy since the start", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      mockRelay({
+        passed: true,
+        detail: {
+          commit: "oldsha1",
+          // The only relay record predates this deploy's start and ended on
+          // the old commit: the deploy was cut off before it changed anything.
+          recentDeploys: [relayDeployAfterStart({ createdAt: "2025-12-31T23:00:00.000Z", commitAfter: "oldsha1111111" })],
+        },
+      });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("interrupted");
+      expect(lastCall(mAppUpdate).data.status).toBe("unknown");
+      const steps = JSON.parse(lastCall(mUpdateMany).data.log);
+      expect(steps.at(-1).status).toBe("failure");
+      expect(recoveryOutput()).toContain("check failed: target not reached");
+      expect(recoveryOutput()).toContain("recorded no deploy since");
+    });
+
+    it("finalizes as interrupted when the relay has no deploy history at all", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      mockRelay({ detail: { commit: "oldsha1", recentDeploys: [] } });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("interrupted");
+    });
+
+    it("finalizes as interrupted when the relay reports no repo HEAD", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      mockRelay({ detail: { recentDeploys: [relayDeployAfterStart()] } });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("interrupted");
+      expect(recoveryOutput()).toContain("no repo HEAD");
+    });
+
+    it("finalizes as interrupted when the repo HEAD does not match the target commit, even though a deploy was recorded after the start", async () => {
+      mFindMany.mockResolvedValue([relayDeploy({ commitAfter: "newsha2222222" })]);
+      mockRelay({
+        detail: { commit: "oldsha1", recentDeploys: [relayDeployAfterStart({ commitAfter: "newsha2222222" })] },
+      });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("interrupted");
+      expect(recoveryOutput()).toContain("does not match the target commit");
+    });
+
+    it("finalizes as interrupted when the relay's deploy after the start did not succeed", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      mockRelay({
+        detail: { commit: "newsha2", recentDeploys: [relayDeployAfterStart({ status: "failed" })] },
+      });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("interrupted");
+      expect(recoveryOutput()).toContain("ended failed");
+    });
+
+    it("judges by the NEWEST relay record since the start, not an older successful one", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      mockRelay({
+        detail: {
+          commit: "newsha2",
+          recentDeploys: [
+            relayDeployAfterStart({ id: "d-2", status: "failed", createdAt: "2026-01-01T00:04:00.000Z" }),
+            relayDeployAfterStart({ id: "d-1", status: "success", createdAt: "2026-01-01T00:03:00.000Z" }),
+          ],
+        },
+      });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("interrupted");
+    });
+
+    it("accepts a short HEAD against a full target sha (prefix match) and a recorded commitAfter on the deploy", async () => {
+      mFindMany.mockResolvedValue([relayDeploy({ commitAfter: "newsha2222222abcdef" })]);
+      mockRelay({
+        detail: { commit: "newsha2", recentDeploys: [relayDeployAfterStart({ commitAfter: "newsha2222222abcdef" })] },
+      });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("success");
+      expect(lastCall(mAppUpdate).data.status).toBe("healthy");
+    });
+
+    it("does not let a too-short HEAD or target match everything", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      mockRelay({
+        detail: { commit: "n", recentDeploys: [relayDeployAfterStart({ commitAfter: "n" })] },
+      });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("interrupted");
+    });
+
+    it("stays interrupted when the app-detail lookup fails after a passing preflight", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      mRelay.mockImplementation(async ({ path }: { path: string }) => {
+        if (path.endsWith("/preflight")) return { app: "x", passed: true };
+        throw new Error("detail unreachable");
+      });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("interrupted");
+    });
+
+    it("keeps the panel's own self-deploy on the preflight-only verdict: success even with no relay history since the start", async () => {
+      mFindMany.mockResolvedValue([relayDeploy({ app: { name: "deploy-panel" } })]);
+      // No relay record since the start and a HEAD that would fail the target
+      // check for any other app: the self-deploy path must not consult it.
+      mockRelay({ passed: true, detail: { commit: "oldsha1", recentDeploys: [] } });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("success");
+      expect(lastCall(mAppUpdate).data.status).toBe("healthy");
+      expect(mRelay).toHaveBeenCalledTimes(1);
+      expect(mRelay.mock.calls[0][0].path).toBe("/api/apps/deploy-panel/preflight");
+    });
+
+    it("a self-deploy whose preflight does not pass is still interrupted", async () => {
+      mFindMany.mockResolvedValue([relayDeploy({ app: { name: "deploy-panel" } })]);
+      mockRelay({ passed: false });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("interrupted");
+      expect(recoveryOutput()).toContain("preflight did not pass");
+    });
+
+    it("honours PANEL_SELF_APP_NAME for a panel registered under another relay app name", async () => {
+      vi.stubEnv("PANEL_SELF_APP_NAME", "my-panel");
+      try {
+        mFindMany.mockResolvedValue([relayDeploy({ app: { name: "my-panel" } })]);
+        mockRelay({ passed: true, detail: { commit: "oldsha1", recentDeploys: [] } });
+
+        await recoverStuckDeploys();
+
+        expect(finalizedStatus()).toBe("success");
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
   });
 
   it("marks the deploy interrupted when the relay is unreachable, recording a failure step", async () => {
