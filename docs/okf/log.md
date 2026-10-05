@@ -2,6 +2,7 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-10-05T06:01:12Z, deploy-outcome-trust-chain.md re-verified and re-stamped after the panel's own Dockerfile HEALTHCHECK flags changed (task 3b28a0b1): the margin paragraph now names `--interval=5s --timeout=3s --start-period=15s --retries=4` instead of the old 30s interval, and the matching comment in deploy-recovery.ts was updated without moving any cited line range. `okf-kit check --require-anchors docs/okf` was run after the source commit.
 - 2026-10-04T14:09:07Z, app-secrets-config-footgun.md re-stamped after the env PUT row in docs/api.md was narrowed (audit-log entry only when something changed). The secrets routes this doc points to are unchanged.
 - 2026-10-04T14:04:17Z, app-secrets-config-footgun.md re-stamped after docs/api.md gained the install-relay row and reworded the env update and deploy lookup rows; its claims about secrets are unaffected. `okf-kit check --require-anchors docs/okf` was run after the source commit.
 - 2026-10-04T13:57:32Z, app-secrets-config-footgun.md re-stamped after docs/api.md gained rows for the app tag, live-url, hide, deploy lookup, bulk-deploy and env routes; its claims about secrets are unaffected. `okf-kit check docs/okf` was run after the source commit.

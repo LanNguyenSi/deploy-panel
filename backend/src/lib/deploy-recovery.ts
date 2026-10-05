@@ -153,13 +153,13 @@ const RECOVERY_INTERVAL_MS = 12_000;
  * healthcheck interval) can consume the window and be recorded failed here.
  * The verdict reason then names the still-starting service(s) — an operator
  * seeing that phrasing should suspect a slow healthcheck before a broken
- * app. Margin warning: deploy-panel's OWN images declare
- * `HEALTHCHECK --interval=30s` with no start_period (backend/Dockerfile,
- * frontend/Dockerfile; the prod compose overrides only db), so their health
- * stays "starting" for ~30s after each recreate — this window's last poll
- * at ~48s clears that only if the container clock starts roughly with the
- * window. agent-tasks' frontend (5s interval, 10s start_period) resolves
- * comfortably; other remote apps are unverified.
+ * app. Margin note: deploy-panel's OWN images declare
+ * `HEALTHCHECK --interval=5s --timeout=3s --start-period=15s --retries=4`
+ * (backend/Dockerfile, frontend/Dockerfile; the prod compose overrides only
+ * db), so a healthy container resolves within ~5s of a recreate and a
+ * broken one is reported unhealthy by ~38s, well inside this window's last
+ * poll at ~48s. agent-tasks' frontend (5s interval, 10s start_period) is
+ * comparable; other remote apps are unverified.
  *
  * This is the recovery-path complement to the gate streamDeploy runs on the
  * relay-reported-success paths: before, recovery accepted the relay's

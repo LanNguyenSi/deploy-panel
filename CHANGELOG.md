@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The panel's own backend and frontend images now declare `HEALTHCHECK --interval=5s --timeout=3s --start-period=15s --retries=4` instead of the 30s interval with no start period (3b28a0b1). A healthy container resolves within ~5s of a recreate, a broken one is reported unhealthy by ~38s, and a steady-state blip must last 20s before the container is reported unhealthy. A panel self-deploy therefore no longer has to take the optimistic gate's pending extension, and the strict recovery window's last poll (~48s) has real margin. A new static test (`backend/tests/dockerfile-healthcheck.test.ts`) guards the flags; the margin comments in `deploy-recovery.ts` and the OKF trust-chain doc are updated.
+
 ### Fixed
 
 - Characters outside the latin subset render in the brand fonts again (7ad79c03). The self-hosted fonts now also vendor the subsets the old `next/font/google` CSS served: latin-ext for Sora, Inter and JetBrains Mono, plus cyrillic, cyrillic-ext, greek, greek-ext and vietnamese for Inter and cyrillic, cyrillic-ext, greek and vietnamese for JetBrains Mono (`@fontsource-variable` 5.3.0, OFL files unchanged). They are plain `@font-face` rules with the fontsource `unicode-range` in `frontend/src/app/fonts-extra.css`, `font-display: swap`, never preloaded, so a latin-only page fetches none of them. `font-family` declarations use new `--font-display-stack`, `--font-sans-stack` and `--font-mono-stack` variables that put the extra faces ahead of the next/font family (whose metric-matched fallback would otherwise claim those glyphs). Offline builds are unaffected and the `next/font/google` CI guard is unchanged.
