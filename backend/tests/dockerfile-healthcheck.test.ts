@@ -102,7 +102,7 @@ describe.each(DOCKERFILES)("%s HEALTHCHECK", (file) => {
 /**
  * docker-compose.yml overrides the backend image's HEALTHCHECK for the dev
  * stack (the frontend waits for `service_healthy`); keep it identical to the
- * Dockerfile flags so the dev stack and the CI smoke job use the same timing.
+ * Dockerfile flags so the dev stack uses the same timing as the image.
  */
 function composeBackendHealthcheck(text: string): Record<string, string> {
   const backend = /\n  backend:\n([\s\S]*?)(?=\n  [a-z][\w-]*:\n|\nvolumes:|$)/.exec(text);

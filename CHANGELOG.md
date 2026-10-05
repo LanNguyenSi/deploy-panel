@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - The panel's own backend and frontend images now declare `HEALTHCHECK --interval=5s --timeout=3s --start-period=15s --retries=4` instead of the 30s interval with no start period (3b28a0b1). A healthy container resolves within ~5s of a recreate, a broken one is reported unhealthy by ~31s (fast-failing probe) up to ~50s (hung probe: `start_period + retries x (interval + timeout) + timeout`), and a steady-state blip must last 20s before the container is reported unhealthy. A panel self-deploy therefore no longer has to take the optimistic gate's pending extension, and the strict recovery window (last poll ~48s) has margin for the healthy case. A new static test (`backend/tests/dockerfile-healthcheck.test.ts`) guards the flags; the margin comments in `deploy-recovery.ts` and the OKF trust-chain doc are updated.
 
-- `docker-compose.yml` now uses the same backend healthcheck timing as `backend/Dockerfile` (interval 5s, timeout 3s, start period 15s, 4 retries) instead of overriding it with 30s/5s/3, so the dev stack and the CI smoke job no longer wait up to 30s for the backend to report healthy (b0fbdbe7). A static test fails when the two drift apart. `docker-compose.prod.yml` is unchanged.
+- `docker-compose.yml` now uses the same backend healthcheck timing as `backend/Dockerfile` (interval 5s, timeout 3s, start period 15s, 4 retries) instead of overriding it with 30s/5s/3, so the dev frontend, which waits for the backend's `service_healthy`, no longer waits up to 30s (b0fbdbe7). The CI smoke job polls `/api/health` itself and is unaffected. A static test fails when the two drift apart. `docker-compose.prod.yml` is unchanged.
 
 ### Fixed
 
