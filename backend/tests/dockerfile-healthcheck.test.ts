@@ -10,10 +10,14 @@ import { fileURLToPath } from "node:url";
  * and deploy-recovery.ts (5 x 12s strict window). Needs neither Docker nor a
  * database: it only parses the Dockerfiles.
  *
+ * Docker starts the next probe one interval after the previous probe
+ * COMPLETES, so a probe that hangs until its timeout costs interval + timeout.
+ *
  * Inequalities (seconds):
- *   interval <= 5                                   first probe inside the base window
- *   start_period + retries * interval + timeout < 60  unhealthy resolves inside the combined window
- *   retries * interval >= 15                        a short blip does not de-route the panel
+ *   interval <= 5                                              first probe inside the base window
+ *   start_period + retries * (interval + timeout) + timeout < 60  worst case (hung probe) unhealthy
+ *                                                              resolves inside the combined window
+ *   retries * interval >= 15                                   a short blip does not de-route the panel
  */
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");
@@ -35,15 +39,39 @@ function toSeconds(raw: string): number {
   }
 }
 
-function parseHealthcheck(file: string): Record<string, string> {
-  const text = readFileSync(path.join(repoRoot, file), "utf8");
-  const lines = text.split("\n").filter((l) => /^\s*HEALTHCHECK\s/.test(l));
-  expect(lines, `${file} must have exactly one HEALTHCHECK line`).toHaveLength(1);
+/** Join Dockerfile backslash line continuations into single logical lines. */
+function joinContinuations(text: string): string[] {
+  return text.replace(/\\[ \t]*\r?\n/g, " ").split("\n");
+}
+
+function parseHealthcheckText(text: string, label: string): Record<string, string> {
+  const lines = joinContinuations(text).filter((l) => /^\s*HEALTHCHECK\s/.test(l));
+  expect(lines, `${label} must have exactly one HEALTHCHECK instruction`).toHaveLength(1);
   const head = lines[0].split(/\s+CMD\s/)[0];
   const flags: Record<string, string> = {};
   for (const m of head.matchAll(/--([a-z-]+)=(\S+)/g)) flags[m[1]] = m[2];
   return flags;
 }
+
+function parseHealthcheck(file: string): Record<string, string> {
+  return parseHealthcheckText(readFileSync(path.join(repoRoot, file), "utf8"), file);
+}
+
+describe("parseHealthcheckText", () => {
+  it("reads flags from a HEALTHCHECK split across backslash continuations", () => {
+    const flags = parseHealthcheckText(
+      [
+        "FROM node:22",
+        "HEALTHCHECK --interval=5s --timeout=3s \\",
+        "  --start-period=15s \\",
+        "  --retries=4 CMD true",
+        "",
+      ].join("\n"),
+      "inline",
+    );
+    expect(flags).toEqual({ interval: "5s", timeout: "3s", "start-period": "15s", retries: "4" });
+  });
+});
 
 describe.each(DOCKERFILES)("%s HEALTHCHECK", (file) => {
   const flags = parseHealthcheck(file);
@@ -58,12 +86,12 @@ describe.each(DOCKERFILES)("%s HEALTHCHECK", (file) => {
     expect(toSeconds(flags["interval"])).toBeLessThanOrEqual(5);
   });
 
-  it("resolves unhealthy inside the ~60s combined optimistic window", () => {
-    const bound =
-      toSeconds(flags["start-period"]) +
-      toSeconds(flags["retries"]) * toSeconds(flags["interval"]) +
-      toSeconds(flags["timeout"]);
-    expect(bound).toBeLessThan(60);
+  it("resolves unhealthy inside the ~60s combined optimistic window even when every probe hangs", () => {
+    const interval = toSeconds(flags["interval"]);
+    const timeout = toSeconds(flags["timeout"]);
+    const worstCase =
+      toSeconds(flags["start-period"]) + toSeconds(flags["retries"]) * (interval + timeout) + timeout;
+    expect(worstCase).toBeLessThan(60);
   });
 
   it("tolerates at least 15s of consecutive failures before reporting unhealthy", () => {

@@ -156,10 +156,10 @@ const RECOVERY_INTERVAL_MS = 12_000;
  * app. Margin note: deploy-panel's OWN images declare
  * `HEALTHCHECK --interval=5s --timeout=3s --start-period=15s --retries=4`
  * (backend/Dockerfile, frontend/Dockerfile; the prod compose overrides only
- * db), so a healthy container resolves within ~5s of a recreate and a
- * broken one is reported unhealthy by ~38s, well inside this window's last
- * poll at ~48s. agent-tasks' frontend (5s interval, 10s start_period) is
- * comparable; other remote apps are unverified.
+ * db), so a healthy container resolves within ~5s of a recreate; a broken
+ * one is reported unhealthy by ~31s (refused probe) up to ~50s (hung probe:
+ * 15 + 4 x (5 + 3) + 3), and either ends failed here. agent-tasks' frontend
+ * (5s interval, 10s start_period) is comparable; other apps are unverified.
  *
  * This is the recovery-path complement to the gate streamDeploy runs on the
  * relay-reported-success paths: before, recovery accepted the relay's

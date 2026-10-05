@@ -37,8 +37,11 @@ ENV HOSTNAME=0.0.0.0
 #   healthy resolves by ~5s (first probe after one interval, a success marks
 #     the container healthy even inside start-period), inside the ~15s base
 #     window;
-#   unhealthy resolves by 15 + 4 x 5 + 3 = 38s, inside the ~60s combined
-#     window (failed probes in start-period do not count);
+#   unhealthy: Docker starts the next probe one interval after the previous
+#     one COMPLETES, so a refused probe (fails fast) is reported by about
+#     15 + 4 x 5 = ~31s, and the worst case (hung probe, every counted probe
+#     hits the timeout) by 15 + 4 x (5 + 3) + 3 = 50s, inside the ~60s
+#     combined window (failed probes in start-period do not count);
 #   steady-state de-route after 4 x 5 = 20s of consecutive failures (>= 15s),
 #     so a short blip does not make Traefik drop the container.
 # backend/tests/dockerfile-healthcheck.test.ts guards these inequalities.
