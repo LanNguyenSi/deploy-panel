@@ -32,17 +32,17 @@ function isPanelSelfApp(appName: string): boolean {
 
 /**
  * One entry of the relay's own deploy history. The fields are the ones
- * agent-relay's DeployRecord declares (src/services/history.ts:17-26) and
- * recordDeploy writes (history.ts:63-80); the history rides on
+ * agent-relay's DeployRecord declares (src/services/history.ts:20-29) and
+ * recordDeploy writes (history.ts:63-82); the history rides on
  * GET /api/apps/:name as `app.recentDeploys`, newest first, capped at 10
  * (src/api/routes.ts:53-54).
  */
 interface RelayDeployRecord {
   status?: string;
   commitAfter?: string;
-  /** ISO time the relay RECORDED the entry, i.e. when the deploy ended (history.ts:76). */
+  /** ISO time the relay RECORDED the entry, i.e. when the deploy ended (history.ts:74). */
   createdAt?: string;
-  /** Duration of the deploy; rollbackApp's outcome carries none, so a rollback records 0 (history.ts:75). */
+  /** Duration of the deploy; rollbackApp's outcome carries none, so a rollback records 0 (history.ts:72). */
   durationMs?: number;
   /** "api" for HTTP deploys and rollbacks, "mcp" for the MCP tools (routes.ts:104,133,156; mcp/server.ts:41,86). */
   triggeredBy?: string;
@@ -103,21 +103,21 @@ function commitsMatch(a: string, b: string): boolean {
  *   ALWAYS the `commitAfter` of the relay's own history entry for this
  *   deploy; the record is never consulted for one.
  * - That entry must be the ONLY relay history entry recorded at or after
- *   this deploy's start. Anything else (a rollback, a redeploy from the
- *   panel, the relay API, MCP or CI, a retry) leaves several candidates, and
- *   with a rollback or later redeploy the entry's commitAfter equals HEAD no
- *   matter what this deploy did, so the check cannot tell them apart: it is
- *   ambiguous, hence interrupted. Zero entries means the deploy never got
+ *   this deploy's start. A rollback or redeploy next to this deploy's own
+ *   entry leaves several candidates whose commitAfter equals HEAD no matter
+ *   what this deploy did, so the check cannot tell them apart: ambiguous,
+ *   hence interrupted. Residual: when this deploy left no entry, a single
+ *   non-panel deploy over the relay's HTTP API is indistinguishable. Zero entries means the deploy never got
  *   that far (the incident shape: cut off after the pre-update build, repo
  *   still on the old commit, old containers up).
- * - The entry must belong to this deploy: triggeredBy, when present, must be
- *   what the panel's own calls record; a durationMs must be present and
+ * - The entry must belong to this deploy: triggeredBy must be what the
+ *   panel's own calls record (an entry without it is rejected); a durationMs must be present and
  *   positive (a rollback records none, and a deploy always takes time); and
  *   the entry's own start (createdAt minus durationMs) must not predate this
  *   deploy's start by more than RELAY_CLOCK_TOLERANCE_MS, which rejects an
  *   earlier deploy that merely finished after the start.
  * - The entry must be a success. The relay records every non-blocked result,
- *   failures as "failed" (routes.ts:104,133; history.ts:71), so only a
+ *   failures as "failed" (routes.ts:104,133; history.ts:69), so only a
  *   success entry implies build, up and health all passed; even then
  *   `compose up -d` on an unchanged image does not recreate the containers,
  *   so the matching HEAD and the success entry together are the evidence
@@ -156,10 +156,10 @@ export function assessTargetReached(
   }
 
   const entry = sinceStart[0];
-  if (typeof entry.triggeredBy === "string" && entry.triggeredBy !== PANEL_RELAY_TRIGGER) {
+  if (entry.triggeredBy !== PANEL_RELAY_TRIGGER) {
     return {
       reached: false,
-      reason: `the relay entry since the start was triggered by "${entry.triggeredBy}", not by the panel's own deploy call`,
+      reason: `the relay entry since the start was triggered by ${typeof entry.triggeredBy === "string" ? `"${entry.triggeredBy}"` : "nothing it recorded"}, not by the panel's own deploy call`,
     };
   }
   const durationMs = entry.durationMs;
@@ -306,6 +306,7 @@ async function sweepOnce(): Promise<void> {
             // Any panel-side deploy of the same app created after this record
             // (a rollback, a scheduled or manual redeploy) makes the relay's
             // history ambiguous: it may be the one that moved HEAD.
+            failedCheck = "deploy history lookup failed";
             const laterDeploy = await prisma.deploy.findFirst({
               where: { appId: deploy.appId, id: { not: deploy.id }, createdAt: { gt: deploy.createdAt } },
               select: { id: true },
@@ -313,6 +314,7 @@ async function sweepOnce(): Promise<void> {
             if (laterDeploy) {
               failedCheck = `target not reached: another deploy or rollback of this app (${laterDeploy.id}) was recorded after this one started, so the repo state cannot be attributed to this deploy`;
             } else {
+              failedCheck = "relay unreachable or app lookup failed";
               const detail = await relayRequest<RelayAppDetail>({
                 serverId: deploy.server.id,
                 path: `/api/apps/${encodeURIComponent(deploy.app.name)}`,

@@ -345,6 +345,18 @@ describe("recoverStuckDeploys", () => {
       expect(recoveryOutput()).toContain('triggered by "mcp"');
     });
 
+    it("finalizes as interrupted when the entry since the start records no trigger at all", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      const entry = relayDeployAfterStart();
+      delete (entry as Record<string, unknown>).triggeredBy;
+      mockRelay({ detail: { commit: "newsha2", recentDeploys: [entry] } });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("interrupted");
+      expect(recoveryOutput()).toContain("triggered by nothing it recorded");
+    });
+
     it("finalizes as interrupted when the entry's own start predates the stuck start (an earlier deploy recorded after it, e.g. relay clock ahead)", async () => {
       mFindMany.mockResolvedValue([relayDeploy()]);
       // Recorded at 00:03 but ran 4 minutes: it began at 23:59, before 00:00.
