@@ -38,6 +38,9 @@ services:
       CORS_ORIGINS: https://deploy-panel.opentriologue.ai
       FRONTEND_URL: https://deploy-panel.opentriologue.ai
       NODE_ENV: production
+      # Optional: relay app name the panel is registered under (default
+      # deploy-panel); the stuck-deploy sweep matches it by app name only.
+      PANEL_SELF_APP_NAME: ${PANEL_SELF_APP_NAME:-}
       # Optional — gates the identity-broker register endpoint. Empty by
       # default (back-compat accept-any); set in prod .env to restrict.
       ALLOWED_GITHUB_LOGINS: ${ALLOWED_GITHUB_LOGINS:-}

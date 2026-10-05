@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The stuck-deploy sweep no longer marks a deploy as `success` just because the app's relay preflight passes (9791c995). A deploy cut off before the git pull (the old containers still run) used to be recovered as `success` although the repo stayed on the old commit and the containers were never recreated. For every app except the panel itself, a recovered deploy is now `success` only when (a) no other panel deploy row (deploy, rollback, scheduled deploy) for the app was created after it, and (b) the relay's `GET /api/apps/:name` shows exactly one history entry recorded at or after the stuck record's start, that entry is a success, was triggered over the relay API (`triggeredBy` must be `api`; an entry without it is rejected), carries a positive `durationMs` (a rollback records none) and began no earlier than the stuck start minus a 10s clock tolerance, and its `commitAfter` matches the repo's current HEAD. Otherwise the record is `interrupted` and the `startup-recovery` step says which check failed. Residual: if the cut-off deploy left no relay entry, a single later non-panel deploy over the relay's HTTP API cannot be told apart from it (the relay records no deploy id). The target always comes from the relay entry, since a running row never carries a commit. The panel's own self-deploy keeps the preflight-only verdict; its relay app name is `deploy-panel`, overridable with the new optional `PANEL_SELF_APP_NAME` env var, which `docker-compose.yml` and `docker-compose.prod.yml` now forward to the backend.
+
 ## [0.6.2] - 2026-10-05
 
 ### Changed
