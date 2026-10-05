@@ -37,7 +37,7 @@ vi.mock("../src/lib/relay.js", () => ({
 
 import { prisma } from "../src/lib/prisma.js";
 import { relayRequest } from "../src/lib/relay.js";
-import { recoverStuckDeploys } from "../src/lib/startup.js";
+import { recoverStuckDeploys, RELAY_CLOCK_TOLERANCE_MS } from "../src/lib/startup.js";
 import { registerActiveDeploy, clearActiveDeploys } from "../src/lib/deploy-recovery.js";
 
 const mFindMany = (prisma.deploy as any).findMany as ReturnType<typeof vi.fn>;
@@ -61,12 +61,17 @@ const mockRelay = (opts: {
 };
 
 const DEPLOY_START = new Date("2026-01-01T00:00:00Z");
-// A relay history entry for a deploy that finished after DEPLOY_START.
+// A relay history entry for a deploy that finished after DEPLOY_START: it
+// ended at 00:03:00 after running 60s, so it began at 00:02:00, two minutes
+// after the stuck record's start, and was triggered by an HTTP call like the
+// panel's own deploys.
 const relayDeployAfterStart = (over: Record<string, unknown> = {}) => ({
   id: "d-1",
   status: "success",
   commitBefore: "oldsha1111111",
   commitAfter: "newsha2222222",
+  durationMs: 60_000,
+  triggeredBy: "api",
   createdAt: "2026-01-01T00:03:00.000Z",
   ...over,
 });
@@ -266,14 +271,27 @@ describe("recoverStuckDeploys", () => {
       expect(recoveryOutput()).toContain("ended failed");
     });
 
-    it("judges by the NEWEST relay record since the start, not an older successful one", async () => {
+    it("takes the target from the relay entry, never from the deploy record: a record-side commitAfter that disagrees with HEAD does not decide the verdict", async () => {
+      // A running row never carries commitAfter, so the record is not a target
+      // source. If it were consulted, this stale value would wrongly reject.
+      mFindMany.mockResolvedValue([relayDeploy({ commitAfter: "stale0000000" })]);
+      mockRelay({
+        detail: { commit: "newsha2", recentDeploys: [relayDeployAfterStart()] },
+      });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("success");
+    });
+
+    it("finalizes as interrupted when the relay recorded more than one deploy since the start, even when the newest succeeded on HEAD (ambiguous)", async () => {
       mFindMany.mockResolvedValue([relayDeploy()]);
       mockRelay({
         detail: {
           commit: "newsha2",
           recentDeploys: [
-            relayDeployAfterStart({ id: "d-2", status: "failed", createdAt: "2026-01-01T00:04:00.000Z" }),
-            relayDeployAfterStart({ id: "d-1", status: "success", createdAt: "2026-01-01T00:03:00.000Z" }),
+            relayDeployAfterStart({ id: "d-2", createdAt: "2026-01-01T00:04:00.000Z" }),
+            relayDeployAfterStart({ id: "d-1", createdAt: "2026-01-01T00:03:00.000Z" }),
           ],
         },
       });
@@ -281,10 +299,160 @@ describe("recoverStuckDeploys", () => {
       await recoverStuckDeploys();
 
       expect(finalizedStatus()).toBe("interrupted");
+      expect(recoveryOutput()).toContain("2 deploys or rollbacks since");
     });
 
-    it("accepts a short HEAD against a full target sha (prefix match) and a recorded commitAfter on the deploy", async () => {
-      mFindMany.mockResolvedValue([relayDeploy({ commitAfter: "newsha2222222abcdef" })]);
+    it("finalizes as interrupted when a rollback was recorded after the start and HEAD is the rollback commit (a rollback records no duration)", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      // The stuck deploy never pulled; an operator then rolled back to an
+      // older commit. The rollback entry is a success whose commitAfter equals
+      // HEAD, so without the guards this would read as this deploy's success.
+      mockRelay({
+        detail: {
+          commit: "rollbk3",
+          recentDeploys: [
+            relayDeployAfterStart({ id: "d-9", commitBefore: "oldsha1111111", commitAfter: "rollbk3333333", durationMs: 0 }),
+          ],
+        },
+      });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("interrupted");
+      expect(recoveryOutput()).toContain("no deploy duration");
+    });
+
+    it("finalizes as interrupted when the relay entry since the start has no durationMs field at all", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      mockRelay({
+        detail: { commit: "newsha2", recentDeploys: [relayDeployAfterStart({ durationMs: undefined })] },
+      });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("interrupted");
+    });
+
+    it("finalizes as interrupted when the entry since the start was triggered by something other than the panel's HTTP deploy call", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      mockRelay({
+        detail: { commit: "newsha2", recentDeploys: [relayDeployAfterStart({ triggeredBy: "mcp" })] },
+      });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("interrupted");
+      expect(recoveryOutput()).toContain('triggered by "mcp"');
+    });
+
+    it("finalizes as interrupted when the entry's own start predates the stuck start (an earlier deploy recorded after it, e.g. relay clock ahead)", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      // Recorded at 00:03 but ran 4 minutes: it began at 23:59, before 00:00.
+      mockRelay({
+        detail: {
+          commit: "newsha2",
+          recentDeploys: [relayDeployAfterStart({ durationMs: 4 * 60_000 })],
+        },
+      });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("interrupted");
+      expect(recoveryOutput()).toContain("is an earlier deploy");
+    });
+
+    it("tolerates relay clock skew up to exactly RELAY_CLOCK_TOLERANCE_MS before the stuck start, and not a millisecond more", async () => {
+      // Entry recorded at 00:03:00; with durationMs = 180000 + tolerance it
+      // began exactly `tolerance` before the stuck start.
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      mockRelay({
+        detail: {
+          commit: "newsha2",
+          recentDeploys: [relayDeployAfterStart({ durationMs: 180_000 + RELAY_CLOCK_TOLERANCE_MS })],
+        },
+      });
+      await recoverStuckDeploys();
+      expect(finalizedStatus()).toBe("success");
+
+      vi.clearAllMocks();
+      mUpdateMany.mockResolvedValue({ count: 1 });
+      mDeployFindFirst.mockResolvedValue(null);
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      mockRelay({
+        detail: {
+          commit: "newsha2",
+          recentDeploys: [relayDeployAfterStart({ durationMs: 180_000 + RELAY_CLOCK_TOLERANCE_MS + 1 })],
+        },
+      });
+      await recoverStuckDeploys();
+      expect(finalizedStatus()).toBe("interrupted");
+    });
+
+    it("pins the inclusive start boundary: an entry recorded exactly at the stuck record's createdAt counts, one a millisecond earlier does not", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      mockRelay({
+        detail: {
+          commit: "newsha2",
+          recentDeploys: [relayDeployAfterStart({ createdAt: DEPLOY_START.toISOString(), durationMs: 5_000 })],
+        },
+      });
+      await recoverStuckDeploys();
+      expect(finalizedStatus()).toBe("success");
+
+      vi.clearAllMocks();
+      mUpdateMany.mockResolvedValue({ count: 1 });
+      mDeployFindFirst.mockResolvedValue(null);
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      mockRelay({
+        detail: {
+          commit: "newsha2",
+          recentDeploys: [
+            relayDeployAfterStart({ createdAt: new Date(DEPLOY_START.getTime() - 1).toISOString(), durationMs: 5_000 }),
+          ],
+        },
+      });
+      await recoverStuckDeploys();
+      expect(finalizedStatus()).toBe("interrupted");
+      expect(recoveryOutput()).toContain("recorded no deploy since");
+    });
+
+    it("finalizes as interrupted, without asking the relay for history, when another panel deploy row for the app was created after the stuck one", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      mDeployFindFirst.mockImplementation(async (args: any) =>
+        args.where.createdAt?.gt ? { id: "later-rollback" } : null,
+      );
+      // Relay history that would otherwise read as a clean success.
+      mockRelay({ detail: { commit: "newsha2", recentDeploys: [relayDeployAfterStart()] } });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("interrupted");
+      expect(recoveryOutput()).toContain("another deploy or rollback of this app (later-rollback)");
+      expect(mRelay.mock.calls.map((c) => c[0].path)).toEqual(["/api/apps/event-booking-system/preflight"]);
+      // Scoped to this app, to rows created strictly after this one, and not
+      // to the record itself.
+      const laterQuery = mDeployFindFirst.mock.calls.map((c) => c[0]).find((a: any) => a.where.createdAt?.gt);
+      expect(laterQuery.where).toEqual({
+        appId: "at1",
+        id: { not: "t1" },
+        createdAt: { gt: DEPLOY_START },
+      });
+    });
+
+    it("keeps the panel's own self-deploy a success even when a later deploy row exists for it", async () => {
+      mFindMany.mockResolvedValue([relayDeploy({ app: { name: "deploy-panel" } })]);
+      mDeployFindFirst.mockImplementation(async (args: any) =>
+        args.where.createdAt?.gt ? { id: "later" } : null,
+      );
+      mockRelay({ passed: true });
+
+      await recoverStuckDeploys();
+
+      expect(finalizedStatus()).toBe("success");
+    });
+
+    it("accepts a short HEAD against a full target sha (prefix match)", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
       mockRelay({
         detail: { commit: "newsha2", recentDeploys: [relayDeployAfterStart({ commitAfter: "newsha2222222abcdef" })] },
       });

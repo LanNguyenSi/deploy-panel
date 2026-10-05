@@ -45,6 +45,9 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
       NODE_ENV: ${NODE_ENV:-production}
+      # Optional: relay app name the panel is registered under (default
+      # deploy-panel); the stuck-deploy sweep matches it by app name only.
+      PANEL_SELF_APP_NAME: ${PANEL_SELF_APP_NAME:-}
     healthcheck:
       # Same timing as the HEALTHCHECK in backend/Dockerfile (guarded by
       # backend/tests/dockerfile-healthcheck.test.ts); keep them in sync.
