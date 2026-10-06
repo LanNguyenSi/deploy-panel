@@ -317,6 +317,19 @@ describe("recoverBrokenDeploy: a healthy probe needs proof the target was reache
     expect(lastCall(mDeployUpdate).data.status).toBe("success");
   });
 
+  it("kind rollback whose start time cannot be read -> interrupted (fail closed), even against a relay that is not id-capable", async () => {
+    mDeployFindUnique.mockResolvedValue({ log: "[]", createdAt: null });
+    mRelay.mockImplementation(async ({ path }: { path: string }) =>
+      path === "/health" ? { status: "ok", version: "0.5.0" } : { app: { name: "thd", containers: "[]", commit: HEAD, recentDeploys: [relayEntry()] } },
+    );
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up", "rollback");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps.at(-1).output).toContain("start time could not be read");
+  });
+
   it("kind rollback keeps the health-only verdict even with a later panel row when the relay is not id-capable", async () => {
     mDeployFindFirst.mockResolvedValue({ id: "later" });
     mRelay.mockImplementation(async ({ path }: { path: string }) =>
