@@ -2,6 +2,8 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-10-06T14:07:40Z, upstream badge for task 2e82656c: `realtime-update-strategy.md` line citations into `frontend/src/lib/api.ts` (+13 lines) and the server page (+1 import line) shifted and were re-pointed; its claims are unaffected. `deploy-outcome-trust-chain.md` re-verified against `relay.ts` (new optional `timeoutMs`, default unchanged at 5 minutes) and `routes/apps.ts` (list route only), and `app-secrets-config-footgun.md` against `docs/api.md` (list row text only): no claim changed, re-stamp only. `okf-kit check docs/okf` was run after the source commit.
+
 - 2026-10-06T09:40:06Z, review fixes for task ec0cd6ea: `deploy-outcome-trust-chain.md` citations re-pointed after the JSDoc edits in `deploy-target.ts` and `deploy-recovery.ts`, the app-card update citation now spans the whole update, and the recovered-rollback fail-closed cases (app lookup throws, start time unreadable) are stated.
 
 - 2026-10-06T09:28:50Z, relay-capability id path for task ec0cd6ea: `checkDeployTarget` reads the relay version from `GET /health` and treats a relay at or above `RELAY_DEPLOY_ID_MIN_VERSION` as id-capable (an id in the history still counts), so an id-capable relay with no entry for the deploy's id is not reached; recovered rollbacks run the id-matched check against an id-capable relay (`idPathOnly`) and keep the health-only verdict otherwise. `deploy-outcome-trust-chain.md` was updated for both and every citation into `deploy-target.ts` (checkDeployTarget, assessTargetReached, commitsMatch) and `deploy-recovery.ts` (shifted by 3 to 5 lines) was re-pointed with anchors verified. Re-stamped; `okf-kit check --require-anchors docs/okf` was run after the source commit.
