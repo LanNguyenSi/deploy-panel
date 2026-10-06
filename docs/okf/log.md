@@ -2,6 +2,8 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-10-06T14:20:56Z, upstream route for task 2e82656c: the app list stays database-only and staleness moved to `GET /api/servers/:serverId/apps/upstream`. `realtime-update-strategy.md` re-pointed its deploy-polling citation in the server page (`page.tsx` 156-177, shifted by the new upstream state and loader); the `api.ts` citations did not move. `deploy-outcome-trust-chain.md` re-verified against `routes/apps.ts` (list route unchanged in behaviour, new sibling route; its rollback claims are untouched) and `app-secrets-config-footgun.md` against `docs/api.md` (list and upstream rows only): no claim changed, re-stamp only. `okf-kit check` was run after the source commit.
+
 - 2026-10-06T14:07:40Z, upstream badge for task 2e82656c: `realtime-update-strategy.md` line citations into `frontend/src/lib/api.ts` (+13 lines) and the server page (+1 import line) shifted and were re-pointed; its claims are unaffected. `deploy-outcome-trust-chain.md` re-verified against `relay.ts` (new optional `timeoutMs`, default unchanged at 5 minutes) and `routes/apps.ts` (list route only), and `app-secrets-config-footgun.md` against `docs/api.md` (list row text only): no claim changed, re-stamp only. `okf-kit check docs/okf` was run after the source commit.
 
 - 2026-10-06T09:40:06Z, review fixes for task ec0cd6ea: `deploy-outcome-trust-chain.md` citations re-pointed after the JSDoc edits in `deploy-target.ts` and `deploy-recovery.ts`, the app-card update citation now spans the whole update, and the recovered-rollback fail-closed cases (app lookup throws, start time unreadable) are stated.
