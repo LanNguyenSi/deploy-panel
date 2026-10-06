@@ -81,6 +81,14 @@ describe("assessTargetReached with the panel's deploy id", () => {
     expect(assessTargetReached(deploy, detail([entry()]))).toEqual({ reached: true });
   });
 
+  it("id-capable relay whose recent history holds no id-bearing entry: the timing correlation is used (documented residual)", () => {
+    // Shape: the first panel deploy after a relay upgrade, or an app mostly deployed over MCP/HTTP.
+    // The relay may record ids, but nothing in the recent history shows it, so the id path is not taken.
+    expect(assessTargetReached(deploy, detail([entry({ triggeredBy: "api" })]))).toEqual({ reached: true });
+    const old = entry({ createdAt: new Date(START.getTime() - 3_600_000).toISOString() });
+    expect(assessTargetReached(deploy, detail([old])).reached).toBe(false);
+  });
+
   it("missing field (older relay): the timing correlation still rejects an ambiguous history", () => {
     const verdict = assessTargetReached(deploy, detail([entry(), entry()]));
     expect(verdict.reached).toBe(false);

@@ -16,7 +16,10 @@ export async function relayRequest<T>(options: RelayRequestOptions): Promise<T> 
   if (!server) throw new RelayError("Server not found", 404);
   if (!server.relayUrl) throw new RelayError("No relay URL configured for this server", 400);
 
-  const headers: Record<string, string> = { ...extraHeaders, "Content-Type": "application/json" };
+  const callerHeaders = Object.fromEntries(
+    Object.entries(extraHeaders ?? {}).filter(([key]) => !["content-type", "authorization"].includes(key.toLowerCase())),
+  );
+  const headers: Record<string, string> = { ...callerHeaders, "Content-Type": "application/json" };
   if (server.relayToken) {
     headers["Authorization"] = `Bearer ${server.relayToken}`;
   }

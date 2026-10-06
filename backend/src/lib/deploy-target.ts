@@ -94,8 +94,8 @@ function commitsMatch(a: string, b: string): boolean {
  *   this deploy's start. A rollback or redeploy next to this deploy's own
  *   entry leaves several candidates whose commitAfter equals HEAD no matter
  *   what this deploy did, so the check cannot tell them apart: ambiguous,
- *   hence interrupted. Residual (fallback only, against a relay that records no
- *   ids): when this deploy left no entry, a single non-panel deploy over the
+ *   hence interrupted. Residual (fallback only, while the recent history holds
+ *   no id-bearing entry, e.g. the first deploy after a relay upgrade): when this deploy left no entry, a single non-panel deploy over the
  *   relay's HTTP API is indistinguishable. Zero entries means the deploy never got
  *   that far (the incident shape: cut off after the pre-update build, repo
  *   still on the old commit, old containers up).
