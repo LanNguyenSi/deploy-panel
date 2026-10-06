@@ -153,7 +153,10 @@ export async function streamDeploy(opts: {
       return;
     }
 
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    // X-Deploy-Id ties the relay's history entry to THIS panel deploy row, so
+    // the stuck-sweep and connection-lost recovery can find it by id
+    // (deploy-target.ts). A relay 400 for the id lands in the 4xx branch below.
+    const headers: Record<string, string> = { "Content-Type": "application/json", "X-Deploy-Id": deployId };
     if (relayToken) headers["Authorization"] = `Bearer ${relayToken}`;
 
     const res = await fetch(`${relayUrl}/api/apps/${appName}/deploy?stream=true`, {

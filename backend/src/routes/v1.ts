@@ -323,6 +323,7 @@ v1Router.post("/rollback", async (c) => {
         path: `/api/apps/${appName}/rollback`,
         method: "POST",
         body: { to_commit },
+        headers: { "X-Deploy-Id": deployId },
       });
 
       // agent-relay nests the payload under `result` only when the rollback

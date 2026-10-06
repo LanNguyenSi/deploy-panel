@@ -177,6 +177,19 @@ describe("POST /:name/rollback — agent-relay result shape", () => {
     expect(body.deploy.blocked).toBeUndefined();
   });
 
+  it("sends the panel Deploy row id as X-Deploy-Id on the relay rollback call", async () => {
+    mRelay.mockResolvedValueOnce({ success: true, commitBefore: "abc123", commitAfter: "def456" });
+
+    const res = await app().request("/servers/srv-a/apps/my-app/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mRelay.mock.calls[0][0].headers).toEqual({ "X-Deploy-Id": "deploy-1" });
+  });
+
   it("positive case unchanged: flat top-level success shape marks the row rolled_back", async () => {
     mRelay.mockResolvedValueOnce({
       deploy: { id: "relay-deploy-1" },
