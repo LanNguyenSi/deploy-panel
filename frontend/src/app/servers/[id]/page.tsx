@@ -17,6 +17,7 @@ import AppSecretsPanel from "@/components/AppSecretsPanel";
 import { DeployStepList } from "@/components/DeploySteps";
 import { ServerReinstallDialog } from "@/components/ServerReinstallDialog";
 import { ServerUpdateImageDialog } from "@/components/ServerUpdateImageDialog";
+import { countOutdated, describeUpstream, formatCheckedAt, githubCompareUrl, shortSha } from "@/lib/upstream";
 
 type Panel = { type: "logs" | "deploy" | "preflight" | "env" | "secrets"; app: string };
 
@@ -266,6 +267,8 @@ export default function ServerDetailPage() {
     setPreflight(null);
   }
 
+  const outdatedCount = countOutdated(apps);
+
   return (
     <main className="page-shell">
       <div style={{ marginBottom: "var(--space-4)" }}>
@@ -277,7 +280,16 @@ export default function ServerDetailPage() {
       <div className="page-header">
         <div>
           <h1 className="page-title">{serverName || "Server"}</h1>
-          <p className="page-subtitle">{apps.length} app{apps.length !== 1 ? "s" : ""} registered</p>
+          <p className="page-subtitle">{apps.length} app{apps.length !== 1 ? "s" : ""} registered
+            {outdatedCount > 0 && (
+              <>
+                {" · "}
+                <strong data-testid="outdated-count" style={{ color: "var(--warning-fg)" }}>
+                  {`▲ ${outdatedCount} outdated`}
+                </strong>
+              </>
+            )}
+          </p>
         </div>
         <div style={{ display: "flex", gap: "var(--space-2)" }}>
           <button
@@ -440,6 +452,8 @@ export default function ServerDetailPage() {
                 </span>
               </div>
 
+              <UpstreamLine app={app} />
+
               {/* Action buttons — primary separated from secondary */}
               <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", flexWrap: "wrap" }}>
                 <button onClick={() => handleDeploy(app.name)} disabled={deploying === app.name} className="btn btn-primary btn-sm">
@@ -586,4 +600,40 @@ export default function ServerDetailPage() {
 function TagBadge({ tag }: { tag: string | null }) {
   if (!tag) return null;
   return <span className={`tag tag-${tag}`}>{tag}</span>;
+}
+
+function UpstreamLine({ app }: { app: AppWithCount }) {
+  const view = describeUpstream(app.upstream);
+  const up = app.upstream;
+  const compare = view.state === "outdated" ? githubCompareUrl(app.repoUrl, up) : null;
+  const checked = formatCheckedAt(up?.checkedAt);
+  return (
+    <div
+      data-testid={`upstream-${app.name}`}
+      style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--space-2)", marginBottom: "var(--space-3)", fontSize: "var(--text-xs)", color: "var(--muted)" }}
+    >
+      <span className={`badge ${view.badgeClass}`}>
+        <span aria-hidden="true">{view.icon}</span> {view.label}
+      </span>
+      {view.state === "unknown" ? (
+        <span>{view.reason}</span>
+      ) : (
+        <>
+          <span>
+            deployed <code>{shortSha(up?.deployedCommit)}</code>
+            {up?.branch ? ` on ${up.branch}` : ""}
+          </span>
+          <span>
+            remote <code>{shortSha(up?.remoteHead)}</code>
+          </span>
+        </>
+      )}
+      {checked && <span>checked {checked}</span>}
+      {compare && (
+        <a href={compare} target="_blank" rel="noopener noreferrer">
+          Compare on GitHub ↗
+        </a>
+      )}
+    </div>
+  );
 }

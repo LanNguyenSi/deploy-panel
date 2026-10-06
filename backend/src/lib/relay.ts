@@ -7,10 +7,12 @@ export interface RelayRequestOptions {
   body?: unknown;
   /** Extra request headers (e.g. X-Deploy-Id); the content type and bearer token cannot be overridden. */
   headers?: Record<string, string>;
+  /** Request timeout in ms; defaults to 5 minutes (deploys can take a while). */
+  timeoutMs?: number;
 }
 
 export async function relayRequest<T>(options: RelayRequestOptions): Promise<T> {
-  const { serverId, path, method = "GET", body, headers: extraHeaders } = options;
+  const { serverId, path, method = "GET", body, headers: extraHeaders, timeoutMs = 300_000 } = options;
 
   const server = await prisma.server.findUnique({ where: { id: serverId } });
   if (!server) throw new RelayError("Server not found", 404);
@@ -28,7 +30,7 @@ export async function relayRequest<T>(options: RelayRequestOptions): Promise<T> 
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(300_000), // 5 min — deploys can take a while
+    signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!response.ok) {

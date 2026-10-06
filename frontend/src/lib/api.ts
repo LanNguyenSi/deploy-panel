@@ -42,6 +42,16 @@ export interface Server {
   hasHostKeyPinned?: boolean;
 }
 
+/** Deployed commit vs remote branch head, as reported by the relay (via the backend). */
+export interface AppUpstream {
+  branch: string | null;
+  deployedCommit: string | null;
+  remoteHead: string | null;
+  checkedAt: string | null;
+  state: "current" | "behind" | "unknown";
+  reason?: string;
+}
+
 export interface App {
   id: string;
   serverId: string;
@@ -51,6 +61,9 @@ export interface App {
   tag: string | null;
   liveUrl: string | null;
   lastDeployAt: string | null;
+  repoUrl?: string | null;
+  /** Absent from an older backend; the UI treats that as unknown. */
+  upstream?: AppUpstream;
 }
 
 export interface Deploy {

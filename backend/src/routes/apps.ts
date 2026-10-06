@@ -10,6 +10,7 @@ import { findOwnedServer, getActorContext } from "../lib/ownership.js";
 import { isPrivateOrLoopbackHost } from "../services/probe-guard.js";
 import { listMaskedAppSecrets, setAppSecret, deleteAppSecret } from "../lib/app-secrets.js";
 import { evaluateRequiredEnv } from "../lib/required-env-gate.js";
+import { fetchUpstreamByApp, upstreamForApp } from "../lib/upstream.js";
 
 export const appsRouter = new Hono();
 
@@ -55,7 +56,15 @@ appsRouter.get("/", async (c) => {
     include: { _count: { select: { deploys: true } } },
   });
 
-  return c.json({ apps });
+  // Staleness (deployed commit vs remote branch head) comes from the relay,
+  // never from a GitHub token in the panel. One relay call per listing; a
+  // relay that is down or older than the upstream fields yields state
+  // "unknown", never "current".
+  const upstreamByApp = apps.length > 0 ? await fetchUpstreamByApp(serverId) : new Map();
+
+  return c.json({
+    apps: apps.map((a) => ({ ...a, upstream: upstreamForApp(upstreamByApp, a.name) })),
+  });
 });
 
 // PATCH /api/servers/:serverId/apps/:name/tag — update app tag
