@@ -26,8 +26,10 @@ export interface Upstream {
 export const REASON_NOT_REPORTED = "relay does not report upstream";
 export const REASON_RELAY_UNREACHABLE = "relay unreachable";
 /** The relay answered but its body carries no app list at all. */
-export const REASON_NOT_LISTED = "relay does not list this app";
+export const REASON_LISTING_UNAVAILABLE = "relay listing unavailable";
 /** The relay listed its apps and this one is not among them. */
+export const REASON_NOT_LISTED = "relay does not list this app";
+/** The relay listed this app as `configured: false` (no checkout or config on the relay). */
 export const REASON_NOT_CONFIGURED = "app not configured on relay";
 const REASON_MALFORMED = "relay reported malformed upstream";
 const REASON_BAD_STATE = "relay reported an unrecognised upstream state";
@@ -102,10 +104,17 @@ export function sanitizeUpstream(raw: unknown): Upstream {
   return { ...fields, state: o.state };
 }
 
+/** One entry of the relay app listing, keyed by app name. */
+export interface RelayAppEntry {
+  /** The relay's `configured` flag; `false` marks an app it knows but cannot report on. */
+  configured: unknown;
+  upstream: unknown;
+}
+
 /** One relay app listing: `listed` is false when the body had no `apps` array. */
 export interface RelayUpstreamListing {
   listed: boolean;
-  entries: Map<string, unknown>;
+  entries: Map<string, RelayAppEntry>;
 }
 
 /**
@@ -120,12 +129,15 @@ export async function fetchUpstreamByApp(serverId: string): Promise<RelayUpstrea
       path: "/api/apps",
       timeoutMs: 8_000,
     });
-    const entries = new Map<string, unknown>();
+    const entries = new Map<string, RelayAppEntry>();
     const listed = Array.isArray(body?.apps);
     if (Array.isArray(body?.apps)) {
       for (const entry of body.apps) {
         if (entry && typeof entry === "object" && typeof (entry as any).name === "string") {
-          entries.set((entry as any).name, (entry as any).upstream);
+          entries.set((entry as any).name, {
+            configured: (entry as any).configured,
+            upstream: (entry as any).upstream,
+          });
         }
       }
     }
@@ -138,7 +150,9 @@ export async function fetchUpstreamByApp(serverId: string): Promise<RelayUpstrea
 /** The upstream value for one app given the (possibly failed) relay listing. */
 export function upstreamForApp(listing: RelayUpstreamListing | null, appName: string): Upstream {
   if (listing === null) return unknown(REASON_RELAY_UNREACHABLE);
-  if (!listing.listed) return unknown(REASON_NOT_LISTED);
-  if (!listing.entries.has(appName)) return unknown(REASON_NOT_CONFIGURED);
-  return sanitizeUpstream(listing.entries.get(appName));
+  if (!listing.listed) return unknown(REASON_LISTING_UNAVAILABLE);
+  const entry = listing.entries.get(appName);
+  if (!entry) return unknown(REASON_NOT_LISTED);
+  if (entry.configured === false) return unknown(REASON_NOT_CONFIGURED);
+  return sanitizeUpstream(entry.upstream);
 }

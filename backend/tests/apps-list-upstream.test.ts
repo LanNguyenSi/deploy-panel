@@ -71,9 +71,10 @@ describe("GET /servers/:serverId/apps/upstream", () => {
       apps: [
         {
           name: "alpha",
+          configured: true,
           upstream: { branch: "main", deployedCommit: A, remoteHead: B, checkedAt: "2026-10-06T10:00:00Z", state: "behind" },
         },
-        { name: "beta" },
+        { name: "beta", configured: true },
       ],
     });
     const res = await get("/upstream");
@@ -86,10 +87,19 @@ describe("GET /servers/:serverId/apps/upstream", () => {
     expect(body.upstream.beta).toMatchObject({ state: "unknown", reason: "relay does not report upstream" });
   });
 
-  it("gives a distinct reason for an app the relay does not list", async () => {
-    mRelay.mockResolvedValue({ apps: [{ name: "alpha" }] });
-    const body = await (await get("/upstream")).json();
-    expect(body.upstream.beta).toMatchObject({ state: "unknown", reason: "app not configured on relay" });
+  it("gives a distinct reason per relay listing shape", async () => {
+    mRelay.mockResolvedValue({ apps: [{ name: "alpha", configured: true }] });
+    let body = await (await get("/upstream")).json();
+    expect(body.upstream.alpha.reason).toBe("relay does not report upstream");
+    expect(body.upstream.beta.reason).toBe("relay does not list this app");
+
+    mRelay.mockResolvedValue({ apps: [{ name: "alpha", configured: true }, { name: "beta", configured: false }] });
+    body = await (await get("/upstream")).json();
+    expect(body.upstream.beta.reason).toBe("app not configured on relay");
+
+    mRelay.mockResolvedValue({});
+    body = await (await get("/upstream")).json();
+    expect(body.upstream.alpha.reason).toBe("relay listing unavailable");
   });
 
   it("still answers 200 (all unknown) when the relay is unreachable", async () => {

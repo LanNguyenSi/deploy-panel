@@ -100,6 +100,9 @@ describe("ServerDetailPage: upstream badge", () => {
     expect(mystery.queryByText(/Current/)).toBeNull();
 
     expect(screen.getByTestId("outdated-count")).toHaveTextContent("1 outdated");
+    const glyph = screen.getByTestId("outdated-count").querySelector("span");
+    expect(glyph).toHaveTextContent("▲");
+    expect(glyph).toHaveAttribute("aria-hidden", "true");
   });
 
   it("omits the compare link when the repo is not on GitHub or unknown", async () => {
@@ -195,5 +198,75 @@ describe("ServerDetailPage: upstream badge", () => {
     );
     await waitFor(() => expect(within(screen.getByTestId("upstream-two")).getByText(/Outdated/)).toBeInTheDocument());
     expect(mGetUpstream).toHaveBeenCalledTimes(2);
+  });
+
+  function deferred() {
+    let resolve!: (v: unknown) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  it("keeps the newer upstream response when an older request resolves later", async () => {
+    const first = deferred();
+    const second = deferred();
+    mGetUpstream.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    setup([app("racer", {})]);
+    await waitFor(() => expect(mGetUpstream).toHaveBeenCalledTimes(2));
+
+    second.resolve({ upstream: { racer: { branch: "main", deployedCommit: A, remoteHead: B, checkedAt: null, state: "behind" } } });
+    await waitFor(() => expect(within(screen.getByTestId("upstream-racer")).getByText(/Outdated/)).toBeInTheDocument());
+
+    first.resolve({ upstream: { racer: { branch: "main", deployedCommit: A, remoteHead: A, checkedAt: null, state: "current" } } });
+    await new Promise((r) => setTimeout(r, 20));
+    const line = within(screen.getByTestId("upstream-racer"));
+    expect(line.getByText(/Outdated/)).toBeInTheDocument();
+    expect(line.queryByText(/Current/)).toBeNull();
+    expect(screen.getByTestId("outdated-count")).toHaveTextContent("1 outdated");
+  });
+
+  it("ignores a late failure of an older upstream request after a newer one succeeded", async () => {
+    const first = deferred();
+    const second = deferred();
+    mGetUpstream.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    setup([app("racer", {})]);
+    await waitFor(() => expect(mGetUpstream).toHaveBeenCalledTimes(2));
+
+    second.resolve({ upstream: { racer: { branch: "main", deployedCommit: A, remoteHead: B, checkedAt: null, state: "behind" } } });
+    await waitFor(() => expect(within(screen.getByTestId("upstream-racer")).getByText(/Outdated/)).toBeInTheDocument());
+
+    first.reject(new Error("late boom"));
+    await new Promise((r) => setTimeout(r, 20));
+    const line = within(screen.getByTestId("upstream-racer"));
+    expect(line.queryByText("upstream check failed")).toBeNull();
+    expect(line.getByText(/Outdated/)).toBeInTheDocument();
+  });
+
+  it("shows Checking, not a not-reported reason, for an app missing from the map while a refetch is in flight", async () => {
+    const refetch = deferred();
+    mGetApps.mockReset();
+    mGetApps.mockResolvedValueOnce({ apps: [app("one", {})] }).mockResolvedValue({ apps: [app("one", {}), app("two", {})] });
+    mGetUpstream
+      .mockResolvedValueOnce({ upstream: { one: { branch: "main", deployedCommit: A, remoteHead: A, checkedAt: null, state: "current" } } })
+      .mockReturnValueOnce(refetch.promise);
+    mGetServer.mockResolvedValue({
+      server: { id: "srv-a", name: "srv-a", host: "1.2.3.4", status: "online", lastSeenAt: null, createdAt: "2026-01-01T00:00:00.000Z", relayMode: null, hasHostKeyPinned: false, relayDir: null, relayComposeFile: null },
+    });
+    mSyncServer.mockResolvedValue({ synced: true, apps: 2, created: 1, updated: 0 });
+    render(
+      <Providers>
+        <ServerDetailPage />
+      </Providers>,
+    );
+    const two = await screen.findByTestId("upstream-two");
+    await waitFor(() => expect(mGetUpstream).toHaveBeenCalledTimes(2));
+    expect(within(two).getByText(/Checking/)).toBeInTheDocument();
+    expect(within(two).queryByText("relay does not report upstream")).toBeNull();
+
+    refetch.resolve({ upstream: { two: { branch: "main", deployedCommit: A, remoteHead: B, checkedAt: null, state: "behind" } } });
+    await waitFor(() => expect(within(screen.getByTestId("upstream-two")).getByText(/Outdated/)).toBeInTheDocument());
   });
 });

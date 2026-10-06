@@ -5,6 +5,7 @@ vi.mock("../src/lib/relay.js", () => ({ relayRequest: vi.fn() }));
 import { relayRequest } from "../src/lib/relay.js";
 import {
   fetchUpstreamByApp,
+  REASON_LISTING_UNAVAILABLE,
   REASON_NOT_CONFIGURED,
   REASON_NOT_LISTED,
   REASON_NOT_REPORTED,
@@ -54,6 +55,17 @@ describe("sanitizeUpstream", () => {
   it("drops a checkedAt that is not ISO-8601 shaped", () => {
     for (const v of ["Oct 6 2026", "10/06/2026", "1791296051195", "2026"]) {
       expect(sanitizeUpstream({ ...base, checkedAt: v, state: "behind" }).checkedAt).toBeNull();
+    }
+  });
+
+  it("drops an ISO-shaped but impossible checkedAt without throwing", () => {
+    for (const v of ["2026-13-45T10:00Z", "2026-13-45T10:00:00Z"]) {
+      let u: ReturnType<typeof sanitizeUpstream> | undefined;
+      expect(() => {
+        u = sanitizeUpstream({ ...base, checkedAt: v, state: "behind" });
+      }).not.toThrow();
+      expect(u?.checkedAt).toBeNull();
+      expect(u?.state).toBe("behind");
     }
   });
 
@@ -128,12 +140,17 @@ describe("sanitizeUpstream", () => {
 describe("fetchUpstreamByApp / upstreamForApp", () => {
   it("maps relay apps by name and treats an absent entry as not reported", async () => {
     (relayRequest as any).mockResolvedValueOnce({
-      apps: [{ name: "one", upstream: { ...base, state: "behind" } }, { name: "old" }],
+      apps: [
+        { name: "one", configured: true, upstream: { ...base, state: "behind" } },
+        { name: "old", configured: true },
+        { name: "bare", configured: false },
+      ],
     });
     const map = await fetchUpstreamByApp("srv");
     expect(upstreamForApp(map, "one").state).toBe("behind");
     expect(upstreamForApp(map, "old").reason).toBe(REASON_NOT_REPORTED);
-    expect(upstreamForApp(map, "missing").reason).toBe(REASON_NOT_CONFIGURED);
+    expect(upstreamForApp(map, "bare").reason).toBe(REASON_NOT_CONFIGURED);
+    expect(upstreamForApp(map, "missing").reason).toBe(REASON_NOT_LISTED);
   });
 
   it("calls the relay with an 8 second budget", async () => {
@@ -153,6 +170,12 @@ describe("fetchUpstreamByApp / upstreamForApp", () => {
   it("tolerates a relay body without an apps array", async () => {
     (relayRequest as any).mockResolvedValueOnce({});
     const map = await fetchUpstreamByApp("srv");
-    expect(upstreamForApp(map, "one")).toMatchObject({ state: "unknown", reason: REASON_NOT_LISTED });
+    expect(upstreamForApp(map, "one")).toMatchObject({ state: "unknown", reason: REASON_LISTING_UNAVAILABLE });
+  });
+
+  it("treats a non-array apps value as an unavailable listing", async () => {
+    (relayRequest as any).mockResolvedValueOnce({ apps: "x" });
+    const map = await fetchUpstreamByApp("srv");
+    expect(upstreamForApp(map, "one")).toMatchObject({ state: "unknown", reason: REASON_LISTING_UNAVAILABLE });
   });
 });
