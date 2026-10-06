@@ -2,6 +2,18 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-10-06T04:21:42Z, recovery follow-up for task 82713feb: the target check in
+  `recoverBrokenDeploy` now runs for every kind except `"rollback"` (fail
+  closed), its JSDoc gained the in-flight residual (3 lines, later citations
+  shifted by 3), and the shared target-check JSDoc in `deploy-target.ts` names
+  both callers (1 line, later citations shifted by 1). All
+  `deploy-outcome-trust-chain.md` citations into both files were re-pointed and
+  their anchors verified; the poll-window claim now cites the constants and the
+  `lastDeployAt` claim cites the app update. `docs/api.md` and
+  `docs/architecture.md` list `interrupted`; `app-secrets-config-footgun.md`
+  (sources `docs/api.md`) re-checked, its claims are unaffected. Both docs
+  re-stamped.
+
 - 2026-10-06T04:12:19Z, deploy-outcome-trust-chain.md re-verified and re-stamped after connection-lost recovery gained the stuck sweep's target check (task 82713feb): a healthy probe alone no longer makes `recoverBrokenDeploy` write success for a deploy (it needs no later panel Deploy row and exactly one matching relay success entry whose commitAfter is HEAD, otherwise `interrupted` with the failed check named); the check moved to the new `backend/src/lib/deploy-target.ts` (added to `sources`) and is shared with the sweep; the rollback routes keep the health-only verdict. All `startup.ts` and `deploy-recovery.ts` citations were re-pointed with anchors. Container `CreatedAt` is deliberately not used as a condition (compose up -d on an unchanged image does not recreate containers). `okf-kit check --require-anchors docs/okf` was run after the source commit.
 - 2026-10-05T14:23:20Z, task 9791c995 (review round 3 fixes): `assessTargetReached` now rejects a relay entry without `triggeredBy`, and the sweep names a failed later-deploy lookup as such; `deploy-outcome-trust-chain.md` says so in (b), names the single-HTTP-API-deploy residual in (a), and its two `startup.ts` sweep citations were re-pointed (288-327, 310-312). Re-stamped.
 - 2026-10-05T14:13:45Z, deploy-outcome-trust-chain.md re-verified and re-stamped after the stuck-deploy sweep's target check was tightened (task 9791c995): besides a successful relay entry matching HEAD it now requires no later panel Deploy row for the app, exactly one relay history entry since the start, a relay-API trigger, a positive durationMs and an entry start within a 10 s clock tolerance of the stuck start; the target always comes from the relay entry (the record's commitAfter preference was removed as dead code). The claim that the relay records only after build, up and health was corrected (it records every non-blocked result, failures as failed), the clock-skew paragraph now states both directions, and the startup.ts citations were re-pointed. app-secrets-config-footgun.md and auth-and-ownership-model.md re-stamped after docs/configuration.md's `PANEL_SELF_APP_NAME` row gained the app-name-only and compose-forwarding note; their claims are unaffected. `okf-kit check --require-anchors docs/okf` was run after the source commit.
