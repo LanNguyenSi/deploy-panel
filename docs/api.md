@@ -94,7 +94,7 @@ curl -X POST https://panel.example.com/api/v1/deploy \
   -d '{"server": "srv_abc", "app": "web-prod"}'
 ```
 
-The response includes a deploy id you can poll via `GET /api/v1/deploy/:id` to wait for `success` / `failed` / `rolled_back`.
+The response includes a deploy id you can poll via `GET /api/v1/deploy/:id` to wait for `success` / `failed` / `rolled_back` / `interrupted` (the relay connection was lost and the panel could not prove the deploy reached its target).
 
 ## Other endpoints
 

@@ -254,6 +254,9 @@ describe("POST /:name/rollback — RelayError from the relay call itself", () =>
     expect(body.message).toContain("boom");
 
     expect(mRecoverBrokenDeploy).toHaveBeenCalledTimes(1);
+    // A rollback is recovered by health alone: the relay records no duration
+    // for a rollback, which the deploy target check rejects by design.
+    expect(mRecoverBrokenDeploy.mock.calls[0][5]).toBe("rollback");
     expect(mDeployUpdate).not.toHaveBeenCalled();
   });
 });

@@ -399,7 +399,7 @@ v1Router.post("/rollback", async (c) => {
       // the bottom of this route does NOT cover it, since this call is
       // neither awaited nor returned: the IIFE's promise settles once this
       // function body finishes, not once this un-awaited promise does.
-      recoverBrokenDeploy(deployId, appRecord.id, srv.id, appName, errMsg).catch((recoveryErr) => {
+      recoverBrokenDeploy(deployId, appRecord.id, srv.id, appName, errMsg, "rollback").catch((recoveryErr) => {
         console.error(`[stuck-sweep] recoverBrokenDeploy failed for ${deployId} (${appName}):`, recoveryErr);
       });
     } finally {

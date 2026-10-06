@@ -811,6 +811,9 @@ describe("v1 POST /rollback: RelayError from the relay call itself", () => {
     await new Promise((r) => setTimeout(r, 0));
 
     expect(recoverBrokenDeploy).toHaveBeenCalledTimes(1);
+    // A rollback is recovered by health alone: the relay records no duration
+    // for a rollback, which the deploy target check rejects by design.
+    expect(vi.mocked(recoverBrokenDeploy).mock.calls[0][5]).toBe("rollback");
     expect(mDeploy.update).not.toHaveBeenCalled();
   });
 });
