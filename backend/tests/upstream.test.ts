@@ -153,6 +153,14 @@ describe("fetchUpstreamByApp / upstreamForApp", () => {
     expect(upstreamForApp(map, "missing").reason).toBe(REASON_NOT_LISTED);
   });
 
+  it("keeps the verdict of a listed entry that carries upstream but no configured flag", async () => {
+    (relayRequest as any).mockResolvedValueOnce({
+      apps: [{ name: "loose", upstream: { ...base, state: "behind" } }],
+    });
+    const map = await fetchUpstreamByApp("srv");
+    expect(upstreamForApp(map, "loose").state).toBe("behind");
+  });
+
   it("calls the relay with an 8 second budget", async () => {
     (relayRequest as any).mockClear();
     (relayRequest as any).mockResolvedValueOnce({ apps: [] });

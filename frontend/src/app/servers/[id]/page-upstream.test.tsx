@@ -269,4 +269,26 @@ describe("ServerDetailPage: upstream badge", () => {
     refetch.resolve({ upstream: { two: { branch: "main", deployedCommit: A, remoteHead: B, checkedAt: null, state: "behind" } } });
     await waitFor(() => expect(within(screen.getByTestId("upstream-two")).getByText(/Outdated/)).toBeInTheDocument());
   });
+
+  it("settles the in-flight count after a failed request: a later map without an app shows its reason, not Checking", async () => {
+    mGetApps.mockReset();
+    mGetApps.mockResolvedValueOnce({ apps: [app("one", {})] }).mockResolvedValue({ apps: [app("one", {}), app("two", {})] });
+    mGetUpstream
+      .mockRejectedValueOnce(new Error("first boom"))
+      .mockResolvedValue({ upstream: { one: { branch: "main", deployedCommit: A, remoteHead: A, checkedAt: null, state: "current" } } });
+    mGetServer.mockResolvedValue({
+      server: { id: "srv-a", name: "srv-a", host: "1.2.3.4", status: "online", lastSeenAt: null, createdAt: "2026-01-01T00:00:00.000Z", relayMode: null, hasHostKeyPinned: false, relayDir: null, relayComposeFile: null },
+    });
+    mSyncServer.mockResolvedValue({ synced: true, apps: 2, created: 1, updated: 0 });
+    render(
+      <Providers>
+        <ServerDetailPage />
+      </Providers>,
+    );
+    await waitFor(() => expect(mGetUpstream).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(within(screen.getByTestId("upstream-two")).getByText("relay does not report upstream")).toBeInTheDocument(),
+    );
+    expect(within(screen.getByTestId("upstream-two")).queryByText(/Checking/)).toBeNull();
+  });
 });
