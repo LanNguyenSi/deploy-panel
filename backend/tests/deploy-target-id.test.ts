@@ -146,6 +146,8 @@ describe("relay deploy-id capability", () => {
     expect(relayVersionSupportsDeployIds(RELAY_DEPLOY_ID_MIN_VERSION)).toBe(true);
     expect(relayVersionSupportsDeployIds("0.6.1")).toBe(true);
     expect(relayVersionSupportsDeployIds("v1.0.0")).toBe(true);
+    expect(relayVersionSupportsDeployIds("0.6.0-rc.1")).toBe(true);
+    expect(relayVersionSupportsDeployIds("0.6.0+build.5")).toBe(true);
     expect(relayVersionSupportsDeployIds("unknown")).toBe(false);
     expect(relayVersionSupportsDeployIds(undefined)).toBe(false);
   });

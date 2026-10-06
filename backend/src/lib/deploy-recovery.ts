@@ -202,7 +202,9 @@ const RECOVERY_INTERVAL_MS = 12_000;
  * id the route sent, must be a success whose commitAfter is the repo HEAD, or
  * the row ends `interrupted`. A relay that is not id-capable keeps the
  * health-only verdict (a rollback that never ran while the old version stays
- * healthy still ends `success`).
+ * healthy still ends `success`). Fail closed: when the relay cannot be asked
+ * for the app (the lookup throws) or the row's start time cannot be read, a
+ * recovered rollback ends `interrupted` rather than `success`.
  */
 export async function recoverBrokenDeploy(
   deployId: string,

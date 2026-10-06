@@ -352,6 +352,32 @@ describe("recoverBrokenDeploy: a healthy probe needs proof the target was reache
     expect(JSON.parse(call.data.log).at(-1).output).toContain("target not reached");
   });
 
+  it("kind rollback against an id-capable relay (version) whose history entries carry no ids at all, and none of its own, ends interrupted", async () => {
+    mockRelayWithHealth(
+      { status: "ok", version: "0.6.0" },
+      { commit: HEAD, recentDeploys: [relayEntry(), relayEntry({ status: "failed" })] },
+    );
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up", "rollback");
+
+    const call = lastCall(mDeployUpdate);
+    expect(call.data.status).toBe("interrupted");
+    expect(JSON.parse(call.data.log).at(-1).output).toContain("target not reached");
+  });
+
+  it("kind rollback ends interrupted (fail closed) when the app lookup at the relay throws", async () => {
+    mRelay.mockImplementation(async ({ path }: { path: string }) => {
+      if (path === "/health") return { status: "ok", version: "0.6.0" };
+      throw new Error("relay down");
+    });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up", "rollback");
+
+    const call = lastCall(mDeployUpdate);
+    expect(call.data.status).toBe("interrupted");
+    expect(JSON.parse(call.data.log).at(-1).output).toContain("relay unreachable or app lookup failed");
+  });
+
   it("kind rollback against an id-capable relay (ids in history only) whose matched entry failed ends interrupted", async () => {
     mockRelayWithHealth(
       { status: "ok" },

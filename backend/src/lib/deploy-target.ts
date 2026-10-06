@@ -123,24 +123,27 @@ function commitsMatch(a: string, b: string): boolean {
  *   ALWAYS the `commitAfter` of the relay's own history entry for this
  *   deploy; the record is never consulted for one.
  * - Id match (preferred). The panel sends its Deploy row id as X-Deploy-Id on
- *   every relay deploy and rollback call. When any history entry carries a
- *   deployId the relay is known to record ids, and the entry whose deployId
- *   equals this deploy's id is THE entry for this deploy: no other deploy,
- *   rollback or non-panel call can be mistaken for it, so no entry for this
- *   id means the deploy never reached the relay's history (not reached). The
- *   timing, trigger and ambiguity heuristics below are then not needed; the
- *   success and HEAD checks still apply. Documented fallback: a relay whose
- *   history shows no deployId at all (an older relay, or no entry written
- *   with an id yet) keeps the correlation below.
- * - Fallback correlation. That entry must be the ONLY relay history entry recorded at or after
- *   this deploy's start. A rollback or redeploy next to this deploy's own
- *   entry leaves several candidates whose commitAfter equals HEAD no matter
- *   what this deploy did, so the check cannot tell them apart: ambiguous,
- *   hence interrupted. Residual (fallback only, while the recent history holds
- *   no id-bearing entry, e.g. the first deploy after a relay upgrade): when this deploy left no entry, a single non-panel deploy over the
- *   relay's HTTP API is indistinguishable. Zero entries means the deploy never got
- *   that far (the incident shape: cut off after the pre-update build, repo
- *   still on the old commit, old containers up).
+ *   every relay deploy and rollback call. A relay is id-capable when its
+ *   /health version is at or above RELAY_DEPLOY_ID_MIN_VERSION
+ *   (options.relayRecordsIds) or when any history entry carries a deployId.
+ *   For an id-capable relay the entry whose deployId equals this deploy's id
+ *   is THE entry for this deploy: no other deploy, rollback or non-panel call
+ *   can be mistaken for it, so no entry for this id means the deploy never
+ *   reached the relay's history (not reached), even when the recent history
+ *   holds no id-bearing entry yet. The timing, trigger and ambiguity
+ *   heuristics below are then not needed; the success and HEAD checks still
+ *   apply.
+ * - Fallback correlation, only for a relay that is neither id-capable by
+ *   version nor shows an id in its history (an older relay, or one whose
+ *   /health version could not be read). That entry must be the ONLY relay
+ *   history entry recorded at or after this deploy's start. A rollback or
+ *   redeploy next to this deploy's own entry leaves several candidates whose
+ *   commitAfter equals HEAD no matter what this deploy did, so the check
+ *   cannot tell them apart: ambiguous, hence interrupted. Residual (this
+ *   fallback only): when this deploy left no entry, a single non-panel deploy
+ *   over the relay's HTTP API is indistinguishable. Zero entries means the
+ *   deploy never got that far (the incident shape: cut off after the
+ *   pre-update build, repo still on the old commit, old containers up).
  * - The entry must belong to this deploy: triggeredBy must be what the
  *   panel's own calls record (an entry without it is rejected); a durationMs must be present and
  *   positive (a rollback records none, and a deploy always takes time); and
