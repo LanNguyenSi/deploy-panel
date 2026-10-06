@@ -17,6 +17,12 @@ interface RelayDeployRecord {
   durationMs?: number;
   /** "api" for HTTP deploys and rollbacks, "mcp" for the MCP tools (routes.ts:104,133,156; mcp/server.ts:41,86). */
   triggeredBy?: string;
+  /**
+   * The id the panel sent in X-Deploy-Id on the call that produced this entry
+   * (agent-relay records it when the caller supplies one; an older relay, or
+   * an entry whose caller sent none, has no such field).
+   */
+  deployId?: string;
 }
 
 /** The slice of GET /api/apps/:name the target check reads (agent-relay getAppDetail + history). */
@@ -74,12 +80,23 @@ function commitsMatch(a: string, b: string): boolean {
  *   (commitBefore/commitAfter are written at finalize), so the target is
  *   ALWAYS the `commitAfter` of the relay's own history entry for this
  *   deploy; the record is never consulted for one.
- * - That entry must be the ONLY relay history entry recorded at or after
+ * - Id match (preferred). The panel sends its Deploy row id as X-Deploy-Id on
+ *   every relay deploy and rollback call. When any history entry carries a
+ *   deployId the relay is known to record ids, and the entry whose deployId
+ *   equals this deploy's id is THE entry for this deploy: no other deploy,
+ *   rollback or non-panel call can be mistaken for it, so no entry for this
+ *   id means the deploy never reached the relay's history (not reached). The
+ *   timing, trigger and ambiguity heuristics below are then not needed; the
+ *   success and HEAD checks still apply. Documented fallback: a relay whose
+ *   history shows no deployId at all (an older relay, or no entry written
+ *   with an id yet) keeps the correlation below.
+ * - Fallback correlation. That entry must be the ONLY relay history entry recorded at or after
  *   this deploy's start. A rollback or redeploy next to this deploy's own
  *   entry leaves several candidates whose commitAfter equals HEAD no matter
  *   what this deploy did, so the check cannot tell them apart: ambiguous,
- *   hence interrupted. Residual: when this deploy left no entry, a single
- *   non-panel deploy over the relay's HTTP API is indistinguishable. Zero entries means the deploy never got
+ *   hence interrupted. Residual (fallback only, while the recent history holds
+ *   no id-bearing entry, e.g. the first deploy after a relay upgrade): when this deploy left no entry, a single non-panel deploy over the
+ *   relay's HTTP API is indistinguishable. Zero entries means the deploy never got
  *   that far (the incident shape: cut off after the pre-update build, repo
  *   still on the old commit, old containers up).
  * - The entry must belong to this deploy: triggeredBy must be what the
@@ -105,13 +122,26 @@ function commitsMatch(a: string, b: string): boolean {
  * grossly wrong relay clock remains an unprotected residual.
  */
 export function assessTargetReached(
-  deploy: { createdAt: Date },
+  deploy: { id?: string; createdAt: Date },
   detail: RelayAppDetail,
 ): TargetVerdict {
   const head = typeof detail?.app?.commit === "string" ? detail.app.commit.trim() : "";
   if (!head) return { reached: false, reason: "the relay reported no repo HEAD for the app" };
 
   const history = Array.isArray(detail.app?.recentDeploys) ? detail.app.recentDeploys : [];
+
+  const relayReportsIds = history.some((record) => typeof record?.deployId === "string");
+  if (relayReportsIds && deploy.id) {
+    const own = history.find((record) => record?.deployId === deploy.id);
+    if (!own) {
+      return {
+        reached: false,
+        reason: `the relay reports deploy ids but none of its recent entries carries this deploy's id (${deploy.id}), so this deploy left no entry`,
+      };
+    }
+    return assessEntryOutcome(own, head);
+  }
+
   const startMs = deploy.createdAt.getTime();
   const sinceStart = history.filter((record) => Date.parse(record?.createdAt ?? "") >= startMs);
   if (sinceStart.length === 0) {
@@ -148,6 +178,11 @@ export function assessTargetReached(
       reason: `the relay entry since the start began at ${new Date(entryStartMs).toISOString()}, before this deploy started at ${deploy.createdAt.toISOString()}, so it is an earlier deploy`,
     };
   }
+  return assessEntryOutcome(entry, head);
+}
+
+/** The success and HEAD checks shared by the id-matched and the correlated entry. */
+function assessEntryOutcome(entry: RelayDeployRecord, head: string): TargetVerdict {
   if (entry.status !== "success") {
     return {
       reached: false,
@@ -165,7 +200,6 @@ export function assessTargetReached(
   }
   return { reached: true };
 }
-
 
 export type DeployTargetCheck = { reached: true } | { reached: false; failedCheck: string };
 

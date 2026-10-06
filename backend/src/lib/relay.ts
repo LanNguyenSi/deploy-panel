@@ -5,16 +5,21 @@ export interface RelayRequestOptions {
   path: string;
   method?: string;
   body?: unknown;
+  /** Extra request headers (e.g. X-Deploy-Id); the content type and bearer token cannot be overridden. */
+  headers?: Record<string, string>;
 }
 
 export async function relayRequest<T>(options: RelayRequestOptions): Promise<T> {
-  const { serverId, path, method = "GET", body } = options;
+  const { serverId, path, method = "GET", body, headers: extraHeaders } = options;
 
   const server = await prisma.server.findUnique({ where: { id: serverId } });
   if (!server) throw new RelayError("Server not found", 404);
   if (!server.relayUrl) throw new RelayError("No relay URL configured for this server", 400);
 
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const callerHeaders = Object.fromEntries(
+    Object.entries(extraHeaders ?? {}).filter(([key]) => !["content-type", "authorization"].includes(key.toLowerCase())),
+  );
+  const headers: Record<string, string> = { ...callerHeaders, "Content-Type": "application/json" };
   if (server.relayToken) {
     headers["Authorization"] = `Bearer ${server.relayToken}`;
   }

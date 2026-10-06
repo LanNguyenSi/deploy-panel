@@ -277,6 +277,7 @@ appsRouter.post("/:name/rollback", async (c) => {
       path: `/api/apps/${name}/rollback`,
       method: "POST",
       body: { to_commit: body.to_commit },
+      headers: { "X-Deploy-Id": deploy.id },
     });
 
     // agent-relay nests the payload under a `result` key ONLY when the

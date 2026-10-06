@@ -624,6 +624,7 @@ describe("v1 POST /rollback — owned server flow", () => {
     expect(relayRequest).toHaveBeenCalledOnce();
     const relayArg = vi.mocked(relayRequest).mock.calls[0][0];
     expect(relayArg.path).toBe("/api/apps/my-app/rollback");
+    expect(relayArg.headers).toEqual({ "X-Deploy-Id": "rollback-1" });
   });
 
   it("non-owned server: 404, no deploy created", async () => {
