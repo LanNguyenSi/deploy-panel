@@ -44,7 +44,7 @@ Relay calls use per-operation timeouts: 5 seconds for connectivity and system-in
 
 - **Server**: a VPS instance with host, optional SSH key path, relay URL/token, and connection status (`unknown`, `online`, `offline`, `no-relay`).
 - **App**: a deployed application per server with health status (`unknown`, `healthy`, `unhealthy`, `deploying`); unique per `(serverId, name)`.
-- **Deploy**: deployment history with commit SHAs (before / after), status (`pending`, `running`, `success`, `failed`, `rolled_back`), duration, logs, and trigger source.
+- **Deploy**: deployment history with commit SHAs (before / after), status (`pending`, `running`, `success`, `failed`, `rolled_back`, `interrupted`), duration, logs, and trigger source.
 - **Audit**: append-only audit trail of user-initiated actions (deploy, rollback, server changes, etc.).
 - **Scheduled**: scheduled deploy entries for cron-like recurring deploys.
 

@@ -63,7 +63,8 @@ function commitsMatch(a: string, b: string): boolean {
 }
 
 /**
- * Decides whether a deploy stuck on "running" actually reached its target,
+ * Decides whether a deploy (stuck on "running", or recovered after a lost
+ * relay connection) actually reached its target,
  * from what the relay reports (no relay API beyond GET /api/apps/:name).
  * The caller has already ruled out any other panel Deploy row for the app
  * created after this one (see checkDeployTarget); this function rules out the

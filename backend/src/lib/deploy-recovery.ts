@@ -190,7 +190,10 @@ const RECOVERY_INTERVAL_MS = 12_000;
  * `lastDeployAt`. The panel's own app gets no exemption here, unlike the
  * sweep: the sweep runs in the recreated panel, whereas this function only
  * reaches the check while the process is still alive, i.e. while the panel's
- * containers have not been replaced by this deploy.
+ * containers have not been replaced by this deploy. Residual: the check runs
+ * right after the first healthy probe, so a relay that is still finishing the
+ * deploy has not recorded its history entry yet and the row ends
+ * `interrupted` even if the deploy completes later (fail closed).
  *
  * `kind: "rollback"` (both rollback routes) skips that check: the relay
  * records a rollback entry without a duration, which the check rejects by
@@ -274,7 +277,7 @@ async function recoverBrokenDeployBody(
   // A start time that could not be read means the check cannot run, which is
   // a failed check, never a pass.
   let target: DeployTargetCheck | null = null;
-  if (verdict.healthy && !hasRollbackOrFailure && kind === "deploy") {
+  if (verdict.healthy && !hasRollbackOrFailure && kind !== "rollback") {
     const startedAt = existingDeploy?.createdAt;
     target =
       startedAt instanceof Date
