@@ -68,6 +68,12 @@ describe("sanitizeUpstream", () => {
     expect(sanitizeUpstream({ ...base, state: "behind", remoteHead: undefined }).state).toBe("unknown");
   });
 
+  it("accepts only full 40-hex commits and drops abbreviated ones", () => {
+    const u = sanitizeUpstream({ ...base, state: "unknown", reason: "r", deployedCommit: "abc123", remoteHead: A.slice(0, 12) });
+    expect(u.deployedCommit).toBeNull();
+    expect(u.remoteHead).toBeNull();
+  });
+
   it("rejects a verdict that contradicts the commits", () => {
     expect(sanitizeUpstream({ ...base, state: "current" }).state).toBe("unknown");
     expect(sanitizeUpstream({ ...base, remoteHead: A, state: "behind" }).state).toBe("unknown");
