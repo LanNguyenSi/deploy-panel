@@ -10,6 +10,7 @@ import { findOwnedServer, getActorContext } from "../lib/ownership.js";
 import { isPrivateOrLoopbackHost } from "../services/probe-guard.js";
 import { listMaskedAppSecrets, setAppSecret, deleteAppSecret } from "../lib/app-secrets.js";
 import { evaluateRequiredEnv } from "../lib/required-env-gate.js";
+import { fetchUpstreamByApp, upstreamForApp, type Upstream } from "../lib/upstream.js";
 
 export const appsRouter = new Hono();
 
@@ -56,6 +57,21 @@ appsRouter.get("/", async (c) => {
   });
 
   return c.json({ apps });
+});
+
+// GET /api/servers/:serverId/apps/upstream — staleness per app (deployed
+// commit vs remote branch head). Kept off the list route so the list stays
+// database-only and never waits on the relay. Data comes from the relay, never
+// from a GitHub token in the panel; one relay call per request. A relay that
+// is down or older than the upstream fields yields state "unknown", never
+// "current".
+appsRouter.get("/upstream", async (c) => {
+  const serverId = getServerId(c);
+  const apps = await prisma.app.findMany({ where: { serverId }, select: { name: true } });
+  const listing = apps.length > 0 ? await fetchUpstreamByApp(serverId) : null;
+  const upstream: Record<string, Upstream> = {};
+  for (const a of apps) upstream[a.name] = upstreamForApp(listing, a.name);
+  return c.json({ upstream });
 });
 
 // PATCH /api/servers/:serverId/apps/:name/tag — update app tag

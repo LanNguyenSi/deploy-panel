@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getServer, getApps, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, setAppLiveUrl, bulkDeploy, type AppWithCount, type RelayMode } from "@/lib/api";
+import { getServer, getApps, getAppsUpstream, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, setAppLiveUrl, bulkDeploy, type AppUpstream, type AppWithCount, type RelayMode } from "@/lib/api";
 import { deployStatusBadge } from "@/lib/status";
 import { describeRollbackResult } from "@/lib/rollback";
 import { useToast } from "@/components/Toast";
@@ -17,6 +17,7 @@ import AppSecretsPanel from "@/components/AppSecretsPanel";
 import { DeployStepList } from "@/components/DeploySteps";
 import { ServerReinstallDialog } from "@/components/ServerReinstallDialog";
 import { ServerUpdateImageDialog } from "@/components/ServerUpdateImageDialog";
+import { countOutdated, describeUpstream, failedUpstream, formatCheckedAt, githubCompareUrl, shortSha } from "@/lib/upstream";
 
 type Panel = { type: "logs" | "deploy" | "preflight" | "env" | "secrets"; app: string };
 
@@ -31,6 +32,11 @@ export default function ServerDetailPage() {
   const [reinstallOpen, setReinstallOpen] = useState(false);
   const [updateImageOpen, setUpdateImageOpen] = useState(false);
   const [apps, setApps] = useState<AppWithCount[]>([]);
+  // Upstream staleness arrives after the list: null = not arrived yet, "failed" = request failed.
+  const [upstream, setUpstream] = useState<Record<string, AppUpstream> | "failed" | null>(null);
+  const upstreamSeq = useRef(0);
+  // Upstream requests still in flight (a stale one may outlive a newer one), so an app the current map does not cover yet shows "Checking".
+  const [upstreamInFlight, setUpstreamInFlight] = useState(0);
   const [loading, setLoading] = useState(true);
   const [panel, setPanel] = useState<Panel | null>(null);
   const [logs, setLogs] = useState<string | null>(null);
@@ -87,6 +93,19 @@ export default function ServerDetailPage() {
     }
   }
 
+  async function loadUpstream() {
+    const seq = ++upstreamSeq.current;
+    setUpstreamInFlight((n) => n + 1);
+    try {
+      const data = await getAppsUpstream(id);
+      if (seq === upstreamSeq.current) setUpstream(data.upstream);
+    } catch {
+      if (seq === upstreamSeq.current) setUpstream("failed");
+    } finally {
+      setUpstreamInFlight((n) => n - 1);
+    }
+  }
+
   async function load() {
     try {
       const [serverData, appsData] = await Promise.all([
@@ -100,6 +119,7 @@ export default function ServerDetailPage() {
       setServerRelayDir(serverData.server.relayDir ?? null);
       setServerRelayComposeFile(serverData.server.relayComposeFile ?? null);
       setApps(appsData.apps);
+      void loadUpstream();
     } catch (err) {
       console.error("Failed to load:", err);
     } finally {
@@ -113,6 +133,7 @@ export default function ServerDetailPage() {
       await syncServer(id);
       const appsData = await getApps(id);
       setApps(appsData.apps);
+      void loadUpstream();
     } catch {
       // Silent fail — sync is best-effort
     } finally {
@@ -266,6 +287,11 @@ export default function ServerDetailPage() {
     setPreflight(null);
   }
 
+  const upstreamPending = upstream === null || upstreamInFlight > 0;
+  const upstreamOf = (name: string): AppUpstream | undefined =>
+    upstream === "failed" ? failedUpstream() : upstream?.[name];
+  const outdatedCount = countOutdated(apps.map((a) => ({ upstream: upstreamOf(a.name) })));
+
   return (
     <main className="page-shell">
       <div style={{ marginBottom: "var(--space-4)" }}>
@@ -277,7 +303,16 @@ export default function ServerDetailPage() {
       <div className="page-header">
         <div>
           <h1 className="page-title">{serverName || "Server"}</h1>
-          <p className="page-subtitle">{apps.length} app{apps.length !== 1 ? "s" : ""} registered</p>
+          <p className="page-subtitle">{apps.length} app{apps.length !== 1 ? "s" : ""} registered
+            {outdatedCount > 0 && (
+              <>
+                {" · "}
+                <strong data-testid="outdated-count" style={{ color: "var(--warning-fg)" }}>
+                  <span aria-hidden="true">▲</span> {outdatedCount} outdated
+                </strong>
+              </>
+            )}
+          </p>
         </div>
         <div style={{ display: "flex", gap: "var(--space-2)" }}>
           <button
@@ -440,6 +475,8 @@ export default function ServerDetailPage() {
                 </span>
               </div>
 
+              <UpstreamLine app={app} upstream={upstreamOf(app.name)} pending={upstreamPending} />
+
               {/* Action buttons — primary separated from secondary */}
               <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", flexWrap: "wrap" }}>
                 <button onClick={() => handleDeploy(app.name)} disabled={deploying === app.name} className="btn btn-primary btn-sm">
@@ -586,4 +623,39 @@ export default function ServerDetailPage() {
 function TagBadge({ tag }: { tag: string | null }) {
   if (!tag) return null;
   return <span className={`tag tag-${tag}`}>{tag}</span>;
+}
+
+function UpstreamLine({ app, upstream: up, pending }: { app: AppWithCount; upstream: AppUpstream | undefined; pending: boolean }) {
+  const view = describeUpstream(up, pending);
+  const compare = view.state === "outdated" ? githubCompareUrl(app.repoUrl, up) : null;
+  const checked = formatCheckedAt(up?.checkedAt);
+  return (
+    <div
+      data-testid={`upstream-${app.name}`}
+      style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--space-2)", marginBottom: "var(--space-3)", fontSize: "var(--text-xs)", color: "var(--muted)" }}
+    >
+      <span className={`badge ${view.badgeClass}`}>
+        <span aria-hidden="true">{view.icon}</span> {view.label}
+      </span>
+      {view.state === "checking" ? null : view.state === "unknown" ? (
+        <span>{view.reason}</span>
+      ) : (
+        <>
+          <span>
+            deployed <code>{shortSha(up?.deployedCommit)}</code>
+            {up?.branch ? ` on ${up.branch}` : ""}
+          </span>
+          <span>
+            remote <code>{shortSha(up?.remoteHead)}</code>
+          </span>
+        </>
+      )}
+      {checked && <span>checked {checked}</span>}
+      {compare && (
+        <a href={compare} target="_blank" rel="noopener noreferrer">
+          Compare on GitHub ↗
+        </a>
+      )}
+    </div>
+  );
 }

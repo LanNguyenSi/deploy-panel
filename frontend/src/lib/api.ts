@@ -42,6 +42,16 @@ export interface Server {
   hasHostKeyPinned?: boolean;
 }
 
+/** Deployed commit vs remote branch head, as reported by the relay (via the backend). */
+export interface AppUpstream {
+  branch: string | null;
+  deployedCommit: string | null;
+  remoteHead: string | null;
+  checkedAt: string | null;
+  state: "current" | "behind" | "unknown";
+  reason?: string;
+}
+
 export interface App {
   id: string;
   serverId: string;
@@ -51,6 +61,7 @@ export interface App {
   tag: string | null;
   liveUrl: string | null;
   lastDeployAt: string | null;
+  repoUrl?: string | null;
 }
 
 export interface Deploy {
@@ -386,6 +397,11 @@ export interface AppWithCount extends App {
 
 export async function getApps(serverId: string): Promise<{ apps: AppWithCount[] }> {
   return request(`/api/servers/${serverId}/apps`);
+}
+
+/** Staleness per app name; served separately so the app list never waits on the relay. */
+export async function getAppsUpstream(serverId: string): Promise<{ upstream: Record<string, AppUpstream> }> {
+  return request(`/api/servers/${serverId}/apps/upstream`);
 }
 
 export async function deployApp(serverId: string, name: string, options?: { branch?: string; force?: boolean }): Promise<{ deploy: { id: string; status: string } }> {
