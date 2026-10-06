@@ -25,12 +25,17 @@ export interface Upstream {
 
 export const REASON_NOT_REPORTED = "relay does not report upstream";
 export const REASON_RELAY_UNREACHABLE = "relay unreachable";
+/** The relay answered but its body carries no app list at all. */
+export const REASON_NOT_LISTED = "relay does not list this app";
+/** The relay listed its apps and this one is not among them. */
+export const REASON_NOT_CONFIGURED = "app not configured on relay";
 const REASON_MALFORMED = "relay reported malformed upstream";
 const REASON_BAD_STATE = "relay reported an unrecognised upstream state";
 const REASON_INCONSISTENT = "relay upstream state contradicts its commits";
 
 const SHA_RE = /^[0-9a-f]{40}$/i;
 const BRANCH_RE = /^[A-Za-z0-9._/@+-]{1,255}$/;
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/i;
 const MAX_REASON = 200;
 // Control characters (incl. newlines) never belong in a one-line reason.
 // eslint-disable-next-line no-control-regex
@@ -56,7 +61,7 @@ function sanitizeBranch(v: unknown): string | null {
 }
 
 function sanitizeCheckedAt(v: unknown): string | null {
-  if (typeof v !== "string" || v.length > 64) return null;
+  if (typeof v !== "string" || v.length > 64 || !ISO_RE.test(v)) return null;
   const ms = Date.parse(v);
   return Number.isNaN(ms) ? null : new Date(ms).toISOString();
 }
@@ -97,34 +102,43 @@ export function sanitizeUpstream(raw: unknown): Upstream {
   return { ...fields, state: o.state };
 }
 
+/** One relay app listing: `listed` is false when the body had no `apps` array. */
+export interface RelayUpstreamListing {
+  listed: boolean;
+  entries: Map<string, unknown>;
+}
+
 /**
  * Best-effort: one relay GET /api/apps per server, mapped by app name. Never
  * throws; a relay that is down or too slow yields `null` so callers mark
  * every app unknown ("relay unreachable") and the page still renders.
  */
-export async function fetchUpstreamByApp(serverId: string): Promise<Map<string, unknown> | null> {
+export async function fetchUpstreamByApp(serverId: string): Promise<RelayUpstreamListing | null> {
   try {
     const body = await relayRequest<{ apps?: unknown }>({
       serverId,
       path: "/api/apps",
       timeoutMs: 8_000,
     });
-    const map = new Map<string, unknown>();
+    const entries = new Map<string, unknown>();
+    const listed = Array.isArray(body?.apps);
     if (Array.isArray(body?.apps)) {
       for (const entry of body.apps) {
         if (entry && typeof entry === "object" && typeof (entry as any).name === "string") {
-          map.set((entry as any).name, (entry as any).upstream);
+          entries.set((entry as any).name, (entry as any).upstream);
         }
       }
     }
-    return map;
+    return { listed, entries };
   } catch {
     return null;
   }
 }
 
 /** The upstream value for one app given the (possibly failed) relay listing. */
-export function upstreamForApp(map: Map<string, unknown> | null, appName: string): Upstream {
-  if (map === null) return unknown(REASON_RELAY_UNREACHABLE);
-  return sanitizeUpstream(map.get(appName));
+export function upstreamForApp(listing: RelayUpstreamListing | null, appName: string): Upstream {
+  if (listing === null) return unknown(REASON_RELAY_UNREACHABLE);
+  if (!listing.listed) return unknown(REASON_NOT_LISTED);
+  if (!listing.entries.has(appName)) return unknown(REASON_NOT_CONFIGURED);
+  return sanitizeUpstream(listing.entries.get(appName));
 }

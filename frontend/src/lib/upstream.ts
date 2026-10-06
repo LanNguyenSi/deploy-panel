@@ -4,7 +4,7 @@ import type { AppUpstream } from "@/lib/api";
 // by a text label plus an icon glyph, never by colour alone.
 
 export type UpstreamView = {
-  state: "current" | "outdated" | "unknown";
+  state: "current" | "outdated" | "unknown" | "checking";
   label: string;
   icon: string;
   badgeClass: string;
@@ -12,13 +12,22 @@ export type UpstreamView = {
 };
 
 const NOT_REPORTED = "relay does not report upstream";
+export const CHECK_FAILED = "upstream check failed";
+
+/** The value every app gets when the upstream request itself fails. */
+export function failedUpstream(): AppUpstream {
+  return { branch: null, deployedCommit: null, remoteHead: null, checkedAt: null, state: "unknown", reason: CHECK_FAILED };
+}
 
 export function shortSha(sha: string | null | undefined): string {
   return sha ? sha.slice(0, 7) : "?";
 }
 
 /** The relay's "behind" is shown as "outdated" (deployed commit differs from the remote branch head). */
-export function describeUpstream(up: AppUpstream | undefined | null): UpstreamView {
+export function describeUpstream(up: AppUpstream | undefined | null, pending = false): UpstreamView {
+  if (pending && !up) {
+    return { state: "checking", label: "Checking", icon: "…", badgeClass: "badge-neutral", reason: null };
+  }
   if (up?.state === "current") {
     return { state: "current", label: "Current", icon: "✓", badgeClass: "badge-success", reason: null };
   }

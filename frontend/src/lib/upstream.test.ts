@@ -17,6 +17,11 @@ describe("describeUpstream", () => {
     expect(describeUpstream(undefined)).toMatchObject({ state: "unknown", reason: "relay does not report upstream" });
     expect(describeUpstream(null).state).toBe("unknown");
   });
+  it("shows a neutral checking state only while pending and nothing has arrived", () => {
+    expect(describeUpstream(undefined, true)).toMatchObject({ state: "checking", label: "Checking", badgeClass: "badge-neutral" });
+    expect(describeUpstream(behind, true).state).toBe("outdated");
+    expect(describeUpstream(undefined, false).state).toBe("unknown");
+  });
   it("keeps the relay reason for unknown", () => {
     expect(describeUpstream({ ...behind, state: "unknown", reason: "ls-remote timed out" }).reason).toBe("ls-remote timed out");
   });

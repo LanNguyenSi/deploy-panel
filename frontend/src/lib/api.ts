@@ -62,8 +62,6 @@ export interface App {
   liveUrl: string | null;
   lastDeployAt: string | null;
   repoUrl?: string | null;
-  /** Absent from an older backend; the UI treats that as unknown. */
-  upstream?: AppUpstream;
 }
 
 export interface Deploy {
@@ -399,6 +397,11 @@ export interface AppWithCount extends App {
 
 export async function getApps(serverId: string): Promise<{ apps: AppWithCount[] }> {
   return request(`/api/servers/${serverId}/apps`);
+}
+
+/** Staleness per app name; served separately so the app list never waits on the relay. */
+export async function getAppsUpstream(serverId: string): Promise<{ upstream: Record<string, AppUpstream> }> {
+  return request(`/api/servers/${serverId}/apps/upstream`);
 }
 
 export async function deployApp(serverId: string, name: string, options?: { branch?: string; force?: boolean }): Promise<{ deploy: { id: string; status: string } }> {

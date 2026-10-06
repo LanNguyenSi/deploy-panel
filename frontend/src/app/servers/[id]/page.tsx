@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getServer, getApps, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, setAppLiveUrl, bulkDeploy, type AppWithCount, type RelayMode } from "@/lib/api";
+import { getServer, getApps, getAppsUpstream, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, setAppLiveUrl, bulkDeploy, type AppUpstream, type AppWithCount, type RelayMode } from "@/lib/api";
 import { deployStatusBadge } from "@/lib/status";
 import { describeRollbackResult } from "@/lib/rollback";
 import { useToast } from "@/components/Toast";
@@ -17,7 +17,7 @@ import AppSecretsPanel from "@/components/AppSecretsPanel";
 import { DeployStepList } from "@/components/DeploySteps";
 import { ServerReinstallDialog } from "@/components/ServerReinstallDialog";
 import { ServerUpdateImageDialog } from "@/components/ServerUpdateImageDialog";
-import { countOutdated, describeUpstream, formatCheckedAt, githubCompareUrl, shortSha } from "@/lib/upstream";
+import { countOutdated, describeUpstream, failedUpstream, formatCheckedAt, githubCompareUrl, shortSha } from "@/lib/upstream";
 
 type Panel = { type: "logs" | "deploy" | "preflight" | "env" | "secrets"; app: string };
 
@@ -32,6 +32,9 @@ export default function ServerDetailPage() {
   const [reinstallOpen, setReinstallOpen] = useState(false);
   const [updateImageOpen, setUpdateImageOpen] = useState(false);
   const [apps, setApps] = useState<AppWithCount[]>([]);
+  // Upstream staleness arrives after the list: null = not arrived yet, "failed" = request failed.
+  const [upstream, setUpstream] = useState<Record<string, AppUpstream> | "failed" | null>(null);
+  const upstreamSeq = useRef(0);
   const [loading, setLoading] = useState(true);
   const [panel, setPanel] = useState<Panel | null>(null);
   const [logs, setLogs] = useState<string | null>(null);
@@ -88,6 +91,16 @@ export default function ServerDetailPage() {
     }
   }
 
+  async function loadUpstream() {
+    const seq = ++upstreamSeq.current;
+    try {
+      const data = await getAppsUpstream(id);
+      if (seq === upstreamSeq.current) setUpstream(data.upstream);
+    } catch {
+      if (seq === upstreamSeq.current) setUpstream("failed");
+    }
+  }
+
   async function load() {
     try {
       const [serverData, appsData] = await Promise.all([
@@ -101,6 +114,7 @@ export default function ServerDetailPage() {
       setServerRelayDir(serverData.server.relayDir ?? null);
       setServerRelayComposeFile(serverData.server.relayComposeFile ?? null);
       setApps(appsData.apps);
+      void loadUpstream();
     } catch (err) {
       console.error("Failed to load:", err);
     } finally {
@@ -114,6 +128,7 @@ export default function ServerDetailPage() {
       await syncServer(id);
       const appsData = await getApps(id);
       setApps(appsData.apps);
+      void loadUpstream();
     } catch {
       // Silent fail — sync is best-effort
     } finally {
@@ -267,7 +282,10 @@ export default function ServerDetailPage() {
     setPreflight(null);
   }
 
-  const outdatedCount = countOutdated(apps);
+  const upstreamPending = upstream === null;
+  const upstreamOf = (name: string): AppUpstream | undefined =>
+    upstream === "failed" ? failedUpstream() : upstream?.[name];
+  const outdatedCount = countOutdated(apps.map((a) => ({ upstream: upstreamOf(a.name) })));
 
   return (
     <main className="page-shell">
@@ -285,7 +303,7 @@ export default function ServerDetailPage() {
               <>
                 {" · "}
                 <strong data-testid="outdated-count" style={{ color: "var(--warning-fg)" }}>
-                  {`▲ ${outdatedCount} outdated`}
+                  <span aria-hidden="true">▲</span> {outdatedCount} outdated
                 </strong>
               </>
             )}
@@ -452,7 +470,7 @@ export default function ServerDetailPage() {
                 </span>
               </div>
 
-              <UpstreamLine app={app} />
+              <UpstreamLine app={app} upstream={upstreamOf(app.name)} pending={upstreamPending} />
 
               {/* Action buttons — primary separated from secondary */}
               <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", flexWrap: "wrap" }}>
@@ -602,9 +620,8 @@ function TagBadge({ tag }: { tag: string | null }) {
   return <span className={`tag tag-${tag}`}>{tag}</span>;
 }
 
-function UpstreamLine({ app }: { app: AppWithCount }) {
-  const view = describeUpstream(app.upstream);
-  const up = app.upstream;
+function UpstreamLine({ app, upstream: up, pending }: { app: AppWithCount; upstream: AppUpstream | undefined; pending: boolean }) {
+  const view = describeUpstream(up, pending);
   const compare = view.state === "outdated" ? githubCompareUrl(app.repoUrl, up) : null;
   const checked = formatCheckedAt(up?.checkedAt);
   return (
@@ -615,7 +632,7 @@ function UpstreamLine({ app }: { app: AppWithCount }) {
       <span className={`badge ${view.badgeClass}`}>
         <span aria-hidden="true">{view.icon}</span> {view.label}
       </span>
-      {view.state === "unknown" ? (
+      {view.state === "checking" ? null : view.state === "unknown" ? (
         <span>{view.reason}</span>
       ) : (
         <>

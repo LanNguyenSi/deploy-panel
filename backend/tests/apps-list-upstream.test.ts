@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 
-// GET /api/servers/:serverId/apps merges the relay's per-app upstream info
-// (deployed commit vs remote branch head) into each app row.
+// The app list stays database-only (no relay call); the relay's per-app
+// upstream info (deployed commit vs remote branch head) is served separately
+// by GET /api/servers/:serverId/apps/upstream.
 
 vi.mock("../src/lib/relay.js", () => ({
   relayRequest: vi.fn(),
@@ -28,6 +29,7 @@ vi.mock("../src/lib/audit.js", () => ({
 vi.mock("../src/lib/stream-deploy.js", () => ({ streamDeploy: vi.fn() }));
 vi.mock("../src/lib/deploy-recovery.js", () => ({ recoverBrokenDeploy: vi.fn() }));
 
+import { findOwnedServer } from "../src/lib/ownership.js";
 import { prisma } from "../src/lib/prisma.js";
 import { relayRequest } from "../src/lib/relay.js";
 import { appsRouter } from "../src/routes/apps.js";
@@ -38,10 +40,10 @@ const mRelay = relayRequest as unknown as ReturnType<typeof vi.fn>;
 const A = "a".repeat(40);
 const B = "b".repeat(40);
 
-function list() {
+function get(path: string) {
   const a = new Hono();
   a.route("/servers/:serverId/apps", appsRouter as unknown as Hono);
-  return a.request("/servers/srv-a/apps");
+  return a.request(`/servers/srv-a/apps${path}`);
 }
 
 beforeEach(() => {
@@ -52,8 +54,19 @@ beforeEach(() => {
   ]);
 });
 
-describe("GET /servers/:serverId/apps upstream", () => {
-  it("attaches relay upstream per app and marks an app the relay omits unknown", async () => {
+describe("GET /servers/:serverId/apps", () => {
+  it("lists apps from the database without calling the relay", async () => {
+    const res = await get("");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.apps.map((a: any) => a.name)).toEqual(["alpha", "beta"]);
+    expect(body.apps[0]).not.toHaveProperty("upstream");
+    expect(mRelay).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /servers/:serverId/apps/upstream", () => {
+  it("maps relay upstream per app name and marks an app the relay does not report unknown", async () => {
     mRelay.mockResolvedValue({
       apps: [
         {
@@ -63,25 +76,41 @@ describe("GET /servers/:serverId/apps upstream", () => {
         { name: "beta" },
       ],
     });
-    const body = await (await list()).json();
-    expect(mRelay).toHaveBeenCalledWith(expect.objectContaining({ serverId: "srv-a", path: "/api/apps" }));
-    expect(body.apps[0].upstream).toMatchObject({ state: "behind", deployedCommit: A, remoteHead: B });
-    expect(body.apps[1].upstream).toMatchObject({ state: "unknown", reason: "relay does not report upstream" });
-  });
-
-  it("still lists apps (all unknown) when the relay is unreachable", async () => {
-    mRelay.mockRejectedValue(new Error("ECONNREFUSED"));
-    const res = await list();
+    const res = await get("/upstream");
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.apps).toHaveLength(2);
-    for (const a of body.apps) expect(a.upstream).toMatchObject({ state: "unknown", reason: "relay unreachable" });
+    expect(mRelay).toHaveBeenCalledTimes(1);
+    expect(mRelay).toHaveBeenCalledWith(expect.objectContaining({ serverId: "srv-a", path: "/api/apps", timeoutMs: 8000 }));
+    expect(Object.keys(body.upstream).sort()).toEqual(["alpha", "beta"]);
+    expect(body.upstream.alpha).toMatchObject({ state: "behind", deployedCommit: A, remoteHead: B });
+    expect(body.upstream.beta).toMatchObject({ state: "unknown", reason: "relay does not report upstream" });
+  });
+
+  it("gives a distinct reason for an app the relay does not list", async () => {
+    mRelay.mockResolvedValue({ apps: [{ name: "alpha" }] });
+    const body = await (await get("/upstream")).json();
+    expect(body.upstream.beta).toMatchObject({ state: "unknown", reason: "app not configured on relay" });
+  });
+
+  it("still answers 200 (all unknown) when the relay is unreachable", async () => {
+    mRelay.mockRejectedValue(new Error("ECONNREFUSED"));
+    const res = await get("/upstream");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    for (const n of ["alpha", "beta"]) expect(body.upstream[n]).toMatchObject({ state: "unknown", reason: "relay unreachable" });
   });
 
   it("does not call the relay for a server without apps", async () => {
     mFindMany.mockResolvedValue([]);
-    const body = await (await list()).json();
-    expect(body.apps).toEqual([]);
+    const body = await (await get("/upstream")).json();
+    expect(body.upstream).toEqual({});
+    expect(mRelay).not.toHaveBeenCalled();
+  });
+
+  it("applies the same ownership check as the list route", async () => {
+    (findOwnedServer as any).mockResolvedValueOnce(null);
+    const res = await get("/upstream");
+    expect(res.status).toBe(404);
     expect(mRelay).not.toHaveBeenCalled();
   });
 });

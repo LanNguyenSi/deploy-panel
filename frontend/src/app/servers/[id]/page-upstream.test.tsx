@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Providers } from "@/components/Providers";
 import ServerDetailPage from "./page";
@@ -9,6 +9,7 @@ vi.mock("next/navigation", () => ({
 
 const mGetServer = vi.fn();
 const mGetApps = vi.fn();
+const mGetUpstream = vi.fn();
 const mSyncServer = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -17,6 +18,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     ...actual,
     getServer: (...a: unknown[]) => mGetServer(...a),
     getApps: (...a: unknown[]) => mGetApps(...a),
+    getAppsUpstream: (...a: unknown[]) => mGetUpstream(...a),
     syncServer: (...a: unknown[]) => mSyncServer(...a),
   };
 });
@@ -40,7 +42,7 @@ function app(name: string, extra: Record<string, unknown>) {
   };
 }
 
-async function renderWith(apps: unknown[]) {
+function setup(apps: unknown[]) {
   mGetServer.mockResolvedValue({
     server: { id: "srv-a", name: "srv-a", host: "1.2.3.4", status: "online", lastSeenAt: null, createdAt: "2026-01-01T00:00:00.000Z", relayMode: null, hasHostKeyPinned: false, relayDir: null, relayComposeFile: null },
   });
@@ -51,21 +53,32 @@ async function renderWith(apps: unknown[]) {
       <ServerDetailPage />
     </Providers>,
   );
-  await screen.findByTestId(`upstream-${(apps[0] as any).name}`);
+}
+
+async function renderWith(apps: unknown[], upstream: Record<string, unknown>) {
+  mGetUpstream.mockResolvedValue({ upstream });
+  setup(apps);
+  const first = `upstream-${(apps[0] as any).name}`;
+  await screen.findByTestId(first);
+  await waitFor(() => expect(within(screen.getByTestId(first)).queryByText(/Checking/)).toBeNull());
 }
 
 afterEach(() => vi.clearAllMocks());
 
 describe("ServerDetailPage: upstream badge", () => {
   it("renders outdated with both short SHAs, checked-at, compare link and the count", async () => {
-    await renderWith([
-      app("old-app", {
-        repoUrl: "https://github.com/acme/widget",
-        upstream: { branch: "main", deployedCommit: A, remoteHead: B, checkedAt: "2026-10-06T10:00:00.000Z", state: "behind" },
-      }),
-      app("fresh-app", { upstream: { branch: "main", deployedCommit: A, remoteHead: A, checkedAt: "2026-10-06T10:00:00.000Z", state: "current" } }),
-      app("mystery", { upstream: { branch: null, deployedCommit: null, remoteHead: null, checkedAt: null, state: "unknown", reason: "ls-remote timed out" } }),
-    ]);
+    await renderWith(
+      [
+        app("old-app", { repoUrl: "https://github.com/acme/widget" }),
+        app("fresh-app", {}),
+        app("mystery", {}),
+      ],
+      {
+        "old-app": { branch: "main", deployedCommit: A, remoteHead: B, checkedAt: "2026-10-06T10:00:00.000Z", state: "behind" },
+        "fresh-app": { branch: "main", deployedCommit: A, remoteHead: A, checkedAt: "2026-10-06T10:00:00.000Z", state: "current" },
+        mystery: { branch: null, deployedCommit: null, remoteHead: null, checkedAt: null, state: "unknown", reason: "ls-remote timed out" },
+      },
+    );
 
     const old = within(screen.getByTestId("upstream-old-app"));
     expect(old.getByText(/Outdated/)).toBeInTheDocument();
@@ -90,21 +103,66 @@ describe("ServerDetailPage: upstream badge", () => {
   });
 
   it("omits the compare link when the repo is not on GitHub or unknown", async () => {
-    await renderWith([
-      app("gl", { repoUrl: "https://gitlab.com/acme/widget", upstream: { branch: "main", deployedCommit: A, remoteHead: B, checkedAt: null, state: "behind" } }),
-      app("norepo", { upstream: { branch: "main", deployedCommit: A, remoteHead: B, checkedAt: null, state: "behind" } }),
-    ]);
+    await renderWith(
+      [app("gl", { repoUrl: "https://gitlab.com/acme/widget" }), app("norepo", {})],
+      {
+        gl: { branch: "main", deployedCommit: A, remoteHead: B, checkedAt: null, state: "behind" },
+        norepo: { branch: "main", deployedCommit: A, remoteHead: B, checkedAt: null, state: "behind" },
+      },
+    );
     expect(within(screen.getByTestId("upstream-gl")).queryByRole("link")).toBeNull();
     expect(within(screen.getByTestId("upstream-norepo")).queryByRole("link")).toBeNull();
     expect(screen.getByTestId("outdated-count")).toHaveTextContent("2 outdated");
   });
 
-  it("renders unknown (not current) when an older backend sends no upstream, and shows no count", async () => {
-    await renderWith([app("legacy", {})]);
+  it("renders no compare link for a current or unknown app even with a GitHub repo and both commits", async () => {
+    await renderWith(
+      [app("cur", { repoUrl: "https://github.com/acme/widget" }), app("unk", { repoUrl: "https://github.com/acme/widget" })],
+      {
+        cur: { branch: "main", deployedCommit: A, remoteHead: A, checkedAt: null, state: "current" },
+        unk: { branch: "main", deployedCommit: A, remoteHead: B, checkedAt: null, state: "unknown", reason: "relay reported malformed upstream" },
+      },
+    );
+    expect(within(screen.getByTestId("upstream-cur")).queryByRole("link")).toBeNull();
+    expect(within(screen.getByTestId("upstream-unk")).queryByRole("link")).toBeNull();
+  });
+
+  it("renders unknown (not current) for an app the upstream response omits, and shows no count", async () => {
+    await renderWith([app("legacy", {})], {});
     const legacy = within(screen.getByTestId("upstream-legacy"));
     expect(legacy.getByText(/Unknown/)).toBeInTheDocument();
     expect(legacy.getByText("relay does not report upstream")).toBeInTheDocument();
     expect(legacy.queryByText(/Current/)).toBeNull();
+    expect(screen.queryByTestId("outdated-count")).toBeNull();
+  });
+
+  it("renders the list with a neutral checking badge before the upstream request resolves, then updates", async () => {
+    let resolve!: (v: unknown) => void;
+    mGetUpstream.mockReturnValue(new Promise((r) => (resolve = r)));
+    setup([app("slow", {})]);
+
+    const line = await screen.findByTestId("upstream-slow");
+    expect(within(line).getByText(/Checking/)).toBeInTheDocument();
+    expect(within(line).queryByText(/Current/)).toBeNull();
+    expect(within(line).queryByText(/Unknown/)).toBeNull();
+    expect(screen.queryByTestId("outdated-count")).toBeNull();
+    expect(mGetUpstream).toHaveBeenCalledWith("srv-a");
+
+    resolve({ upstream: { slow: { branch: "main", deployedCommit: A, remoteHead: B, checkedAt: null, state: "behind" } } });
+    await waitFor(() => expect(within(screen.getByTestId("upstream-slow")).getByText(/Outdated/)).toBeInTheDocument());
+    expect(within(screen.getByTestId("upstream-slow")).queryByText(/Checking/)).toBeNull();
+    expect(screen.getByTestId("outdated-count")).toHaveTextContent("1 outdated");
+  });
+
+  it("maps every app to unknown when the upstream request fails", async () => {
+    mGetUpstream.mockRejectedValue(new Error("boom"));
+    setup([app("a1", {}), app("a2", {})]);
+    await waitFor(() => expect(within(screen.getByTestId("upstream-a1")).getByText(/Unknown/)).toBeInTheDocument());
+    for (const n of ["a1", "a2"]) {
+      const line = within(screen.getByTestId(`upstream-${n}`));
+      expect(line.getByText("upstream check failed")).toBeInTheDocument();
+      expect(line.queryByText(/Current/)).toBeNull();
+    }
     expect(screen.queryByTestId("outdated-count")).toBeNull();
   });
 });

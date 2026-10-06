@@ -5,6 +5,8 @@ vi.mock("../src/lib/relay.js", () => ({ relayRequest: vi.fn() }));
 import { relayRequest } from "../src/lib/relay.js";
 import {
   fetchUpstreamByApp,
+  REASON_NOT_CONFIGURED,
+  REASON_NOT_LISTED,
   REASON_NOT_REPORTED,
   REASON_RELAY_UNREACHABLE,
   sanitizeUpstream,
@@ -31,6 +33,28 @@ describe("sanitizeUpstream", () => {
     expect(u.state).toBe("unknown");
     expect(u.reason).toBe("ls-remote failed");
     expect(sanitizeUpstream({ ...base, state: "behind" })).not.toHaveProperty("reason");
+  });
+
+  it("strips C1 control characters from the reason", () => {
+    const u = sanitizeUpstream({ state: "unknown", reason: "a\u0085b\u009fc\u007fd" });
+    expect(u.reason).toBe("a b c d");
+  });
+
+  it("accepts a 255-char branch and drops a 256-char one", () => {
+    expect(sanitizeUpstream({ ...base, branch: "b".repeat(255), state: "behind" }).branch).toHaveLength(255);
+    expect(sanitizeUpstream({ ...base, branch: "b".repeat(256), state: "behind" }).branch).toBeNull();
+  });
+
+  it("drops an over-long checkedAt even when Date.parse accepts it", () => {
+    const long = `2026-10-06T10:00:00.${"0".repeat(60)}Z`;
+    expect(Number.isNaN(Date.parse(long))).toBe(false);
+    expect(sanitizeUpstream({ ...base, checkedAt: long, state: "behind" }).checkedAt).toBeNull();
+  });
+
+  it("drops a checkedAt that is not ISO-8601 shaped", () => {
+    for (const v of ["Oct 6 2026", "10/06/2026", "1791296051195", "2026"]) {
+      expect(sanitizeUpstream({ ...base, checkedAt: v, state: "behind" }).checkedAt).toBeNull();
+    }
   });
 
   it("truncates an oversized reason", () => {
@@ -109,7 +133,14 @@ describe("fetchUpstreamByApp / upstreamForApp", () => {
     const map = await fetchUpstreamByApp("srv");
     expect(upstreamForApp(map, "one").state).toBe("behind");
     expect(upstreamForApp(map, "old").reason).toBe(REASON_NOT_REPORTED);
-    expect(upstreamForApp(map, "missing").reason).toBe(REASON_NOT_REPORTED);
+    expect(upstreamForApp(map, "missing").reason).toBe(REASON_NOT_CONFIGURED);
+  });
+
+  it("calls the relay with an 8 second budget", async () => {
+    (relayRequest as any).mockClear();
+    (relayRequest as any).mockResolvedValueOnce({ apps: [] });
+    await fetchUpstreamByApp("srv");
+    expect((relayRequest as any).mock.calls[0][0]).toMatchObject({ serverId: "srv", path: "/api/apps", timeoutMs: 8000 });
   });
 
   it("returns null and unknown for every app when the relay call fails", async () => {
@@ -122,6 +153,6 @@ describe("fetchUpstreamByApp / upstreamForApp", () => {
   it("tolerates a relay body without an apps array", async () => {
     (relayRequest as any).mockResolvedValueOnce({});
     const map = await fetchUpstreamByApp("srv");
-    expect(upstreamForApp(map, "one").state).toBe("unknown");
+    expect(upstreamForApp(map, "one")).toMatchObject({ state: "unknown", reason: REASON_NOT_LISTED });
   });
 });
