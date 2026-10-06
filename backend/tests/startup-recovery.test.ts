@@ -52,10 +52,13 @@ const lastCall = (m: ReturnType<typeof vi.fn>) => m.mock.calls[m.mock.calls.leng
 // GET /api/apps/:name returns (agent-relay getAppDetail + recentDeploys).
 const mockRelay = (opts: {
   passed?: boolean;
+  /** What GET /health returns; omitted means the relay reports no version. */
+  health?: { status?: string; version?: string };
   detail?: { commit?: string; recentDeploys?: Array<Record<string, unknown>> };
 }) => {
   mRelay.mockImplementation(async ({ path }: { path: string }) => {
     if (path.endsWith("/preflight")) return { app: "x", passed: opts.passed ?? true };
+    if (path === "/health") return opts.health ?? { status: "ok" };
     return { app: { name: "x", containers: "[]", ...(opts.detail ?? {}) } };
   });
 };
@@ -320,6 +323,67 @@ describe("recoverStuckDeploys", () => {
 
       expect(finalizedStatus()).toBe("interrupted");
       expect(recoveryOutput()).toContain("no deploy duration");
+    });
+
+    describe("deploy-id path chosen by relay capability", () => {
+      const OWN = "t1";
+      const idEntry = (over: Record<string, unknown> = {}) => relayDeployAfterStart({ deployId: OWN, ...over });
+
+      it("finalizes a stuck rollback row success via the id path: the rollback's own entry (no duration, odd timing) matches by id, succeeded and equals HEAD", async () => {
+        mFindMany.mockResolvedValue([relayDeploy()]);
+        mockRelay({
+          health: { status: "ok", version: "0.6.0" },
+          detail: {
+            commit: "rollbk3",
+            recentDeploys: [idEntry({ commitAfter: "rollbk3333333", durationMs: 0, triggeredBy: "api" })],
+          },
+        });
+
+        await recoverStuckDeploys();
+
+        expect(finalizedStatus()).toBe("success");
+        expect(mAppUpdate).toHaveBeenCalled();
+      });
+
+      it("an id-capable relay by version with no entry carrying the id is not reached, even when no history entry has an id yet (first deploy after a relay upgrade)", async () => {
+        mFindMany.mockResolvedValue([relayDeploy()]);
+        // A lone non-panel deploy that the timing correlation would accept.
+        mockRelay({
+          health: { status: "ok", version: "0.6.0" },
+          detail: { commit: "newsha2", recentDeploys: [relayDeployAfterStart()] },
+        });
+
+        await recoverStuckDeploys();
+
+        expect(finalizedStatus()).toBe("interrupted");
+        expect(recoveryOutput()).toContain("carries this deploy's id");
+      });
+
+      it("a relay below the id release keeps the timing correlation: the same lone entry is accepted", async () => {
+        mFindMany.mockResolvedValue([relayDeploy()]);
+        mockRelay({
+          health: { status: "ok", version: "0.5.0" },
+          detail: { commit: "newsha2", recentDeploys: [relayDeployAfterStart()] },
+        });
+
+        await recoverStuckDeploys();
+
+        expect(finalizedStatus()).toBe("success");
+      });
+
+      it("an unreadable /health falls back to the history inference (no ids in history: timing correlation)", async () => {
+        mFindMany.mockResolvedValue([relayDeploy()]);
+        mockRelay({ detail: { commit: "newsha2", recentDeploys: [relayDeployAfterStart()] } });
+        const base = mRelay.getMockImplementation()!;
+        mRelay.mockImplementation(async (o: { path: string }) => {
+          if (o.path === "/health") throw new Error("ECONNREFUSED");
+          return base(o);
+        });
+
+        await recoverStuckDeploys();
+
+        expect(finalizedStatus()).toBe("success");
+      });
     });
 
     it("finalizes as interrupted when the relay entry since the start has no durationMs field at all", async () => {
