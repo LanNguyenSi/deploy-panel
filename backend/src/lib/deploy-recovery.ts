@@ -196,8 +196,8 @@ const RECOVERY_INTERVAL_MS = 12_000;
  * `interrupted` even if the deploy completes later (fail closed).
  *
  * `kind: "rollback"` (both rollback routes) skips that check: the relay
- * records a rollback entry without a duration, which the check rejects by
- * design, so applying it would end every recovered rollback `interrupted`.
+ * records a rollback entry without a duration, which the check's timing path
+ * rejects, so without an id-bearing history it would end it `interrupted`.
  * A recovered rollback therefore keeps the health-only verdict (a rollback
  * that never ran while the old version stays healthy still ends `success`).
  */
