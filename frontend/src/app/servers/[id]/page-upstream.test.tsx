@@ -165,4 +165,35 @@ describe("ServerDetailPage: upstream badge", () => {
     }
     expect(screen.queryByTestId("outdated-count")).toBeNull();
   });
+
+  it("fetches upstream after the list load even when the background sync fails", async () => {
+    mGetUpstream.mockResolvedValue({ upstream: { solo: { branch: "main", deployedCommit: A, remoteHead: B, checkedAt: null, state: "behind" } } });
+    setup([app("solo", {})]);
+    mSyncServer.mockRejectedValue(new Error("sync down"));
+    await waitFor(() => expect(within(screen.getByTestId("upstream-solo")).getByText(/Outdated/)).toBeInTheDocument());
+  });
+
+  it("fetches upstream again after the sync refreshes the list, covering apps the sync added", async () => {
+    mGetApps.mockReset();
+    mGetApps.mockResolvedValueOnce({ apps: [app("one", {})] }).mockResolvedValue({ apps: [app("one", {}), app("two", {})] });
+    mGetUpstream
+      .mockResolvedValueOnce({ upstream: { one: { branch: "main", deployedCommit: A, remoteHead: A, checkedAt: null, state: "current" } } })
+      .mockResolvedValue({
+        upstream: {
+          one: { branch: "main", deployedCommit: A, remoteHead: A, checkedAt: null, state: "current" },
+          two: { branch: "main", deployedCommit: A, remoteHead: B, checkedAt: null, state: "behind" },
+        },
+      });
+    mGetServer.mockResolvedValue({
+      server: { id: "srv-a", name: "srv-a", host: "1.2.3.4", status: "online", lastSeenAt: null, createdAt: "2026-01-01T00:00:00.000Z", relayMode: null, hasHostKeyPinned: false, relayDir: null, relayComposeFile: null },
+    });
+    mSyncServer.mockResolvedValue({ synced: true, apps: 2, created: 1, updated: 0 });
+    render(
+      <Providers>
+        <ServerDetailPage />
+      </Providers>,
+    );
+    await waitFor(() => expect(within(screen.getByTestId("upstream-two")).getByText(/Outdated/)).toBeInTheDocument());
+    expect(mGetUpstream).toHaveBeenCalledTimes(2);
+  });
 });
