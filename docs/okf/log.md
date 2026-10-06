@@ -2,6 +2,8 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-10-06T07:00:35Z, deploy id for task 59da7c87: the panel now sends its Deploy row id as `X-Deploy-Id` on every relay deploy and rollback call, and `assessTargetReached` matches the relay history entry carrying that `deployId` when the relay records ids (an older relay without the field keeps the timing correlation). `deploy-outcome-trust-chain.md` describes the id match, the fallback and the 400 handling, and every citation into `stream-deploy.ts` (3 lines added in `streamDeploy`, later citations shifted by 3) and `deploy-target.ts` was re-pointed with anchors verified. `realtime-update-strategy.md` (sources `stream-deploy.ts`) had its two `stream-deploy.ts` citations shifted by 3, claims unaffected. Both docs re-stamped; `okf-kit check --require-anchors docs/okf` was run after the source commit.
+
 - 2026-10-06T04:21:42Z, recovery follow-up for task 82713feb: the target check in
   `recoverBrokenDeploy` now runs for every kind except `"rollback"` (fail
   closed), its JSDoc gained the in-flight residual (3 lines, later citations
