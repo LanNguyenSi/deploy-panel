@@ -35,8 +35,8 @@ export default function ServerDetailPage() {
   // Upstream staleness arrives after the list: null = not arrived yet, "failed" = request failed.
   const [upstream, setUpstream] = useState<Record<string, AppUpstream> | "failed" | null>(null);
   const upstreamSeq = useRef(0);
-  // True while the newest upstream request is in flight, so an app the current map does not cover yet shows "Checking".
-  const [upstreamLoading, setUpstreamLoading] = useState(false);
+  // Upstream requests still in flight (a stale one may outlive a newer one), so an app the current map does not cover yet shows "Checking".
+  const [upstreamInFlight, setUpstreamInFlight] = useState(0);
   const [loading, setLoading] = useState(true);
   const [panel, setPanel] = useState<Panel | null>(null);
   const [logs, setLogs] = useState<string | null>(null);
@@ -95,14 +95,14 @@ export default function ServerDetailPage() {
 
   async function loadUpstream() {
     const seq = ++upstreamSeq.current;
-    setUpstreamLoading(true);
+    setUpstreamInFlight((n) => n + 1);
     try {
       const data = await getAppsUpstream(id);
       if (seq === upstreamSeq.current) setUpstream(data.upstream);
     } catch {
       if (seq === upstreamSeq.current) setUpstream("failed");
     } finally {
-      if (seq === upstreamSeq.current) setUpstreamLoading(false);
+      setUpstreamInFlight((n) => n - 1);
     }
   }
 
@@ -287,7 +287,7 @@ export default function ServerDetailPage() {
     setPreflight(null);
   }
 
-  const upstreamPending = upstream === null || upstreamLoading;
+  const upstreamPending = upstream === null || upstreamInFlight > 0;
   const upstreamOf = (name: string): AppUpstream | undefined =>
     upstream === "failed" ? failedUpstream() : upstream?.[name];
   const outdatedCount = countOutdated(apps.map((a) => ({ upstream: upstreamOf(a.name) })));
