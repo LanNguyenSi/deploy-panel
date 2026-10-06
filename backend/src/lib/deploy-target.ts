@@ -34,6 +34,48 @@ interface RelayAppDetail {
   };
 }
 
+/**
+ * First agent-relay release that records a caller-supplied deploy id in its
+ * history (the X-Deploy-Id support added after 0.5.0). The relay reports its
+ * version on the public GET /health ({ status, version }, agent-relay
+ * src/index.ts), so the capability is read per check instead of being inferred
+ * from history, and survives a panel restart. Update this if the release that
+ * ships the id support is numbered differently.
+ */
+export const RELAY_DEPLOY_ID_MIN_VERSION = "0.6.0";
+
+/** Parses "1.2.3" or "v1.2.3-rc.1" into [major, minor, patch]; null when it is not a version. */
+function parseVersion(raw: unknown): [number, number, number] | null {
+  if (typeof raw !== "string") return null;
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(raw.trim());
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+
+/** True when `version` is a semver at or above RELAY_DEPLOY_ID_MIN_VERSION. */
+export function relayVersionSupportsDeployIds(version: unknown): boolean {
+  const v = parseVersion(version);
+  const min = parseVersion(RELAY_DEPLOY_ID_MIN_VERSION);
+  if (!v || !min) return false;
+  for (let i = 0; i < 3; i++) {
+    if (v[i] !== min[i]) return v[i] > min[i];
+  }
+  return true;
+}
+
+/**
+ * Whether the server's relay records deploy ids, from its /health version.
+ * A relay that cannot be asked, or reports no parseable version, is "unknown"
+ * (false): the history-based inference in assessTargetReached then applies.
+ */
+async function relayReportsIdCapability(serverId: string): Promise<boolean> {
+  try {
+    const health = await relayRequest<{ version?: string }>({ serverId, path: "/health" });
+    return relayVersionSupportsDeployIds(health?.version);
+  } catch {
+    return false;
+  }
+}
+
 export type TargetVerdict = { reached: true } | { reached: false; reason: string };
 
 /**
@@ -124,13 +166,19 @@ function commitsMatch(a: string, b: string): boolean {
 export function assessTargetReached(
   deploy: { id?: string; createdAt: Date },
   detail: RelayAppDetail,
+  options: { relayRecordsIds?: boolean } = {},
 ): TargetVerdict {
   const head = typeof detail?.app?.commit === "string" ? detail.app.commit.trim() : "";
   if (!head) return { reached: false, reason: "the relay reported no repo HEAD for the app" };
 
   const history = Array.isArray(detail.app?.recentDeploys) ? detail.app.recentDeploys : [];
 
-  const relayReportsIds = history.some((record) => typeof record?.deployId === "string");
+  // Id-capable: the relay's version says so (options.relayRecordsIds), or any
+  // history entry carries an id. For an id-capable relay, no entry with this
+  // deploy's id means the deploy never reached the relay, even when the app's
+  // recent history holds no id-bearing entry yet.
+  const relayReportsIds =
+    options.relayRecordsIds === true || history.some((record) => typeof record?.deployId === "string");
   if (relayReportsIds && deploy.id) {
     const own = history.find((record) => record?.deployId === deploy.id);
     if (!own) {
@@ -201,6 +249,15 @@ function assessEntryOutcome(entry: RelayDeployRecord, head: string): TargetVerdi
   return { reached: true };
 }
 
+function fetchAppDetail(serverId: string, appName: string): Promise<RelayAppDetail> {
+  return relayRequest<RelayAppDetail>({ serverId, path: `/api/apps/${encodeURIComponent(appName)}` });
+}
+
+function historyCarriesIds(detail: RelayAppDetail): boolean {
+  const history = Array.isArray(detail?.app?.recentDeploys) ? detail.app.recentDeploys : [];
+  return history.some((record) => typeof record?.deployId === "string");
+}
+
 export type DeployTargetCheck = { reached: true } | { reached: false; failedCheck: string };
 
 /**
@@ -210,6 +267,9 @@ export type DeployTargetCheck = { reached: true } | { reached: false; failedChec
  * (deploy-recovery.ts). Both used to take "the app is healthy" as success,
  * which is also true when the deploy was cut off before the git pull and the
  * old containers still run.
+ *
+ * With `idPathOnly` (recovered rollbacks) the check runs only against an
+ * id-capable relay (see RELAY_DEPLOY_ID_MIN_VERSION) and passes otherwise.
  *
  * Two stages, each a reason the repo state cannot be attributed to this deploy:
  * 1. Any other panel Deploy row for the same app created after this one (a
@@ -224,9 +284,24 @@ export async function checkDeployTarget(
   deploy: { id: string; appId: string; createdAt: Date },
   serverId: string,
   appName: string,
+  options: { idPathOnly?: boolean } = {},
 ): Promise<DeployTargetCheck> {
   let failedCheck = "deploy history lookup failed";
   try {
+    // A recovered rollback is only checked through the id match (its relay
+    // entry carries no duration, so the timing correlation cannot apply), and
+    // only against an id-capable relay: ask the relay first, so a relay that
+    // is not id-capable keeps the health-only verdict whatever else the panel
+    // recorded since.
+    let early: { detail: RelayAppDetail; relayRecordsIds: boolean } | null = null;
+    if (options.idPathOnly) {
+      failedCheck = "relay unreachable or app lookup failed";
+      const detail = await fetchAppDetail(serverId, appName);
+      const relayRecordsIds = await relayReportsIdCapability(serverId);
+      if (!relayRecordsIds && !historyCarriesIds(detail)) return { reached: true };
+      early = { detail, relayRecordsIds };
+      failedCheck = "deploy history lookup failed";
+    }
     const laterDeploy = await prisma.deploy.findFirst({
       where: { appId: deploy.appId, id: { not: deploy.id }, createdAt: { gt: deploy.createdAt } },
       select: { id: true },
@@ -238,11 +313,9 @@ export async function checkDeployTarget(
       };
     }
     failedCheck = "relay unreachable or app lookup failed";
-    const detail = await relayRequest<RelayAppDetail>({
-      serverId,
-      path: `/api/apps/${encodeURIComponent(appName)}`,
-    });
-    const verdict = assessTargetReached(deploy, detail);
+    const detail = early?.detail ?? (await fetchAppDetail(serverId, appName));
+    const relayRecordsIds = early ? early.relayRecordsIds : await relayReportsIdCapability(serverId);
+    const verdict = assessTargetReached(deploy, detail, { relayRecordsIds });
     if (verdict.reached) return { reached: true };
     return { reached: false, failedCheck: `target not reached: ${verdict.reason}` };
   } catch {

@@ -11,7 +11,12 @@ vi.mock("../src/lib/relay.js", () => ({
 }));
 
 import { relayRequest } from "../src/lib/relay.js";
-import { assessTargetReached, checkDeployTarget } from "../src/lib/deploy-target.js";
+import {
+  assessTargetReached,
+  checkDeployTarget,
+  relayVersionSupportsDeployIds,
+  RELAY_DEPLOY_ID_MIN_VERSION,
+} from "../src/lib/deploy-target.js";
 
 const mRelay = relayRequest as unknown as ReturnType<typeof vi.fn>;
 
@@ -121,5 +126,45 @@ describe("checkDeployTarget passes the panel's deploy id to the relay verdict", 
   it("missing field (older relay): reached by the timing correlation", async () => {
     mRelay.mockResolvedValue(detail([entry()]));
     expect(await checkDeployTarget(full, "srv", "my-app")).toEqual({ reached: true });
+  });
+});
+
+describe("relay deploy-id capability", () => {
+  it("an id-capable relay (options) with no entry carrying the id is not reached, even when no entry has an id", () => {
+    const verdict = assessTargetReached(deploy, detail([entry()]), { relayRecordsIds: true });
+    expect(verdict.reached).toBe(false);
+    if (!verdict.reached) expect(verdict.reason).toContain(OWN_ID);
+  });
+
+  it("without the capability option and without ids in history the timing correlation still applies", () => {
+    expect(assessTargetReached(deploy, detail([entry()]))).toEqual({ reached: true });
+  });
+
+  it("relayVersionSupportsDeployIds gates on the minimum release", () => {
+    expect(relayVersionSupportsDeployIds("0.5.0")).toBe(false);
+    expect(relayVersionSupportsDeployIds("0.5.9")).toBe(false);
+    expect(relayVersionSupportsDeployIds(RELAY_DEPLOY_ID_MIN_VERSION)).toBe(true);
+    expect(relayVersionSupportsDeployIds("0.6.1")).toBe(true);
+    expect(relayVersionSupportsDeployIds("v1.0.0")).toBe(true);
+    expect(relayVersionSupportsDeployIds("unknown")).toBe(false);
+    expect(relayVersionSupportsDeployIds(undefined)).toBe(false);
+  });
+
+  it("checkDeployTarget reads the relay version from /health", async () => {
+    mRelay.mockImplementation(async ({ path }: { path: string }) =>
+      path === "/health" ? { status: "ok", version: "0.6.0" } : detail([entry()]),
+    );
+    const verdict = await checkDeployTarget({ id: OWN_ID, appId: "a1", createdAt: START }, "srv", "thd");
+    expect(mRelay.mock.calls.map((c) => c[0].path)).toContain("/health");
+    expect(verdict.reached).toBe(false);
+  });
+
+  it("checkDeployTarget falls back to the history when /health is unreadable", async () => {
+    mRelay.mockImplementation(async ({ path }: { path: string }) => {
+      if (path === "/health") throw new Error("down");
+      return detail([entry()]);
+    });
+    const verdict = await checkDeployTarget({ id: OWN_ID, appId: "a1", createdAt: START }, "srv", "thd");
+    expect(verdict.reached).toBe(true);
   });
 });

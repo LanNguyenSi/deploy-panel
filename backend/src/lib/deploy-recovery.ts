@@ -195,11 +195,14 @@ const RECOVERY_INTERVAL_MS = 12_000;
  * deploy has not recorded its history entry yet and the row ends
  * `interrupted` even if the deploy completes later (fail closed).
  *
- * `kind: "rollback"` (both rollback routes) skips that check: the relay
- * records a rollback entry without a duration, which the check's timing path
- * rejects, so without an id-bearing history it would end it `interrupted`.
- * A recovered rollback therefore keeps the health-only verdict (a rollback
- * that never ran while the old version stays healthy still ends `success`).
+ * `kind: "rollback"` (both rollback routes) runs the check through the id
+ * match only: the relay records a rollback entry without a duration, which
+ * the check's timing path rejects. Against an id-capable relay (its /health
+ * version, or an id in its history) the rollback's own entry, matched by the
+ * id the route sent, must be a success whose commitAfter is the repo HEAD, or
+ * the row ends `interrupted`. A relay that is not id-capable keeps the
+ * health-only verdict (a rollback that never ran while the old version stays
+ * healthy still ends `success`).
  */
 export async function recoverBrokenDeploy(
   deployId: string,
@@ -277,11 +280,13 @@ async function recoverBrokenDeployBody(
   // A start time that could not be read means the check cannot run, which is
   // a failed check, never a pass.
   let target: DeployTargetCheck | null = null;
-  if (verdict.healthy && !hasRollbackOrFailure && kind !== "rollback") {
+  if (verdict.healthy && !hasRollbackOrFailure) {
     const startedAt = existingDeploy?.createdAt;
     target =
       startedAt instanceof Date
-        ? await checkDeployTarget({ id: deployId, appId, createdAt: startedAt }, serverId, appName)
+        ? await checkDeployTarget({ id: deployId, appId, createdAt: startedAt }, serverId, appName, {
+            idPathOnly: kind === "rollback",
+          })
         : { reached: false, failedCheck: "the deploy start time could not be read, so the relay history cannot be tied to this deploy" };
   }
 
