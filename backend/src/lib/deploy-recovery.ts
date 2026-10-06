@@ -1,5 +1,6 @@
 import { prisma } from "./prisma.js";
 import { verifyDeployHealth } from "./post-deploy-gate.js";
+import { checkDeployTarget, type DeployTargetCheck } from "./deploy-target.js";
 
 export type LoggedStep = { name: string; status: string; durationMs?: number; [k: string]: unknown };
 
@@ -177,6 +178,25 @@ const RECOVERY_INTERVAL_MS = 12_000;
  * evidence the OLD version came back up, not that the new one is running —
  * so that combination is recorded failed, with a message saying so, instead
  * of the optimistic success verdict this function used to hand out.
+ *
+ * Likewise, a healthy probe does not by itself mean the deploy reached its
+ * target: a relay that stopped before the git pull leaves the OLD containers
+ * running and healthy. For a deploy (`kind: "deploy"`, the default) success
+ * therefore also needs the stuck-sweep's proof (checkDeployTarget: no later
+ * panel row for the app, exactly one matching relay success entry whose
+ * commitAfter is the repo HEAD). Healthy without that proof ends
+ * `interrupted`, with the failed check named in the `recovery` step, and the
+ * app card stays `healthy` (the old version really is up) without moving
+ * `lastDeployAt`. The panel's own app gets no exemption here, unlike the
+ * sweep: the sweep runs in the recreated panel, whereas this function only
+ * reaches the check while the process is still alive, i.e. while the panel's
+ * containers have not been replaced by this deploy.
+ *
+ * `kind: "rollback"` (both rollback routes) skips that check: the relay
+ * records a rollback entry without a duration, which the check rejects by
+ * design, so applying it would end every recovered rollback `interrupted`.
+ * A recovered rollback therefore keeps the health-only verdict (a rollback
+ * that never ran while the old version stays healthy still ends `success`).
  */
 export async function recoverBrokenDeploy(
   deployId: string,
@@ -184,6 +204,7 @@ export async function recoverBrokenDeploy(
   serverId: string,
   appName: string,
   error: string,
+  kind: "deploy" | "rollback" = "deploy",
 ) {
   // Registers itself (try/finally) independently of whatever the caller
   // already did: streamDeploy registers deployId before this is ever
@@ -198,7 +219,7 @@ export async function recoverBrokenDeploy(
   // never removes a hold some OTHER caller still needs.
   registerActiveDeploy(deployId);
   try {
-    await recoverBrokenDeployBody(deployId, appId, serverId, appName, error);
+    await recoverBrokenDeployBody(deployId, appId, serverId, appName, error, kind);
   } finally {
     releaseActiveDeploy(deployId);
   }
@@ -210,6 +231,7 @@ async function recoverBrokenDeployBody(
   serverId: string,
   appName: string,
   error: string,
+  kind: "deploy" | "rollback",
 ) {
   console.log(`[deploy-recovery] Connection lost for deploy ${deployId} (${appName}). Verifying health...`);
 
@@ -223,7 +245,7 @@ async function recoverBrokenDeployBody(
     });
 
   const existingDeploy = await prisma.deploy
-    .findUnique({ where: { id: deployId }, select: { log: true } })
+    .findUnique({ where: { id: deployId }, select: { log: true, createdAt: true } })
     .catch((err) => {
       // Same degrade-don't-abort posture as the liveUrl lookup above: fall
       // back to an empty accumulated-steps array (readExistingSteps' own
@@ -247,6 +269,19 @@ async function recoverBrokenDeployBody(
 
   const noteSuffix = verdict.notes?.length ? ` [${verdict.notes.join("; ")}]` : "";
 
+  // A healthy probe is not proof this deploy ran (see recoverBrokenDeploy):
+  // only a deploy that is otherwise about to be recorded success is checked.
+  // A start time that could not be read means the check cannot run, which is
+  // a failed check, never a pass.
+  let target: DeployTargetCheck | null = null;
+  if (verdict.healthy && !hasRollbackOrFailure && kind === "deploy") {
+    const startedAt = existingDeploy?.createdAt;
+    target =
+      startedAt instanceof Date
+        ? await checkDeployTarget({ id: deployId, appId, createdAt: startedAt }, serverId, appName)
+        : { reached: false, failedCheck: "the deploy start time could not be read, so the relay history cannot be tied to this deploy" };
+  }
+
   if (verdict.healthy && hasRollbackOrFailure) {
     console.log(`[deploy-recovery] ${appName} probe healthy but the log already shows a rollback/failure — refusing the optimistic success verdict`);
     await prisma.deploy.update({
@@ -269,6 +304,29 @@ async function recoverBrokenDeployBody(
     await prisma.app.update({
       where: { id: appId },
       data: { status: "healthy", lastDeployAt: new Date() },
+    }).catch(() => {});
+  } else if (target && !target.reached) {
+    console.log(`[deploy-recovery] ${appName} probe healthy but the deploy's target was not reached, marking deploy interrupted: ${target.failedCheck}`);
+    await prisma.deploy.update({
+      where: { id: deployId },
+      data: {
+        status: "interrupted",
+        log: JSON.stringify([
+          ...existingSteps,
+          {
+            name: "recovery",
+            status: "failure",
+            durationMs: 0,
+            output: `Connection lost during deploy: ${error}. The app is healthy, but that does not show this deploy ran (the previous version may still be running); check failed: ${target.failedCheck}${noteSuffix}`,
+          },
+        ]),
+      },
+    }).catch(() => {});
+    // The app itself really is up (the old version): reflect that on the app
+    // card, but no deploy happened, so lastDeployAt stays as it was.
+    await prisma.app.update({
+      where: { id: appId },
+      data: { status: "healthy" },
     }).catch(() => {});
   } else if (verdict.healthy) {
     console.log(`[deploy-recovery] ${appName} verified healthy — marking deploy success`);

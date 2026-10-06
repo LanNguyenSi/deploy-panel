@@ -8,9 +8,14 @@ vi.mock("../src/lib/prisma.js", () => ({
     },
     deploy: {
       findUnique: vi.fn().mockResolvedValue({ log: null }),
+      findFirst: vi.fn().mockResolvedValue(null),
       update: vi.fn().mockResolvedValue({}),
     },
   },
+}));
+
+vi.mock("../src/lib/relay.js", () => ({
+  relayRequest: vi.fn(),
 }));
 
 vi.mock("../src/lib/post-deploy-gate.js", () => ({
@@ -19,6 +24,7 @@ vi.mock("../src/lib/post-deploy-gate.js", () => ({
 
 import { prisma } from "../src/lib/prisma.js";
 import { verifyDeployHealth } from "../src/lib/post-deploy-gate.js";
+import { relayRequest } from "../src/lib/relay.js";
 import {
   recoverBrokenDeploy,
   isActiveDeploy,
@@ -31,17 +37,42 @@ import {
 const mDeployFindUnique = (prisma.deploy as any).findUnique as ReturnType<typeof vi.fn>;
 const mDeployUpdate = (prisma.deploy as any).update as ReturnType<typeof vi.fn>;
 const mAppUpdate = (prisma.app as any).update as ReturnType<typeof vi.fn>;
+const mDeployFindFirst = (prisma.deploy as any).findFirst as ReturnType<typeof vi.fn>;
 const mGate = verifyDeployHealth as unknown as ReturnType<typeof vi.fn>;
+const mRelay = relayRequest as unknown as ReturnType<typeof vi.fn>;
+
+// The panel stamps the Deploy row before it calls the relay; the relay's own
+// history entry for that deploy ends later and carries a positive duration.
+const DEPLOY_START = new Date("2026-10-06T10:00:00.000Z");
+const HEAD = "abc1234";
+
+const relayEntry = (over: Record<string, unknown> = {}) => ({
+  status: "success",
+  commitAfter: HEAD,
+  createdAt: new Date(DEPLOY_START.getTime() + 150_000).toISOString(),
+  durationMs: 140_000,
+  triggeredBy: "api",
+  ...over,
+});
+
+const mockRelayDetail = (detail: { commit?: string; recentDeploys?: Array<Record<string, unknown>> }) => {
+  mRelay.mockResolvedValue({ app: { name: "thd", containers: "[]", ...detail } });
+};
+
+/** The relay proves this deploy ran: one matching success entry whose commitAfter is HEAD. */
+const mockTargetReached = () => mockRelayDetail({ commit: HEAD, recentDeploys: [relayEntry()] });
 
 const lastCall = (m: ReturnType<typeof vi.fn>) => m.mock.calls[m.mock.calls.length - 1][0];
 
 describe("recoverBrokenDeploy", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mDeployFindUnique.mockResolvedValue({ log: null });
+    mDeployFindUnique.mockResolvedValue({ log: null, createdAt: DEPLOY_START });
+    mDeployFindFirst.mockResolvedValue(null);
+    mockTargetReached();
   });
 
-  it("marks the recovered deploy success/healthy when the gate confirms health", async () => {
+  it("marks the recovered deploy success/healthy when the gate confirms health and the relay proves the target was reached", async () => {
     mGate.mockResolvedValue({ healthy: true });
 
     await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
@@ -53,6 +84,7 @@ describe("recoverBrokenDeploy", () => {
   it("appends to the deploy's existing log instead of replacing it", async () => {
     mDeployFindUnique.mockResolvedValue({
       log: JSON.stringify([{ name: "provision-secrets", status: "success", durationMs: 0 }]),
+      createdAt: DEPLOY_START,
     });
     mGate.mockResolvedValue({ healthy: true });
 
@@ -64,7 +96,7 @@ describe("recoverBrokenDeploy", () => {
   });
 
   it("falls back to an empty accumulated-steps array when the existing log is unparseable, instead of throwing", async () => {
-    mDeployFindUnique.mockResolvedValue({ log: "not json" });
+    mDeployFindUnique.mockResolvedValue({ log: "not json", createdAt: DEPLOY_START });
     mGate.mockResolvedValue({ healthy: true });
 
     await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
@@ -121,6 +153,7 @@ describe("recoverBrokenDeploy", () => {
 
     await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
 
+    expect(lastCall(mDeployUpdate).data.status).toBe("success");
     const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
     expect(steps.at(-1).output).toContain("route probe skipped");
   });
@@ -138,6 +171,140 @@ describe("recoverBrokenDeploy", () => {
         requireHealthyEvidence: true,
       }),
     );
+  });
+});
+
+// A healthy probe is also true when the relay was cut off before the git
+// pull: the old containers keep running, so the deploy never happened. The
+// connection-lost recovery therefore applies the same target check as the
+// stuck sweep (see startup-recovery.test.ts for the check's own cases): no
+// later panel row for the app, and exactly one matching relay success entry
+// whose commitAfter is the repo HEAD. These tests pin that wiring.
+describe("recoverBrokenDeploy: a healthy probe needs proof the target was reached", () => {
+  const OLD_HEAD = "0ld1234";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mDeployFindUnique.mockResolvedValue({ log: null, createdAt: DEPLOY_START });
+    mDeployFindFirst.mockResolvedValue(null);
+    mGate.mockResolvedValue({ healthy: true });
+  });
+
+  it("incident shape: relay stopped before git pull, old containers healthy, no relay entry since the start -> interrupted with a named failed check", async () => {
+    // The relay's only history entry predates the deploy: the old commit still runs.
+    mockRelayDetail({
+      commit: OLD_HEAD,
+      recentDeploys: [relayEntry({ createdAt: new Date(DEPLOY_START.getTime() - 3_600_000).toISOString(), commitAfter: OLD_HEAD })],
+    });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps.at(-1)).toMatchObject({ name: "recovery", status: "failure" });
+    expect(steps.at(-1).output).toContain("check failed: target not reached: the relay recorded no deploy since");
+    expect(steps.at(-1).output).toContain("socket hang up");
+    // The old version really is up: app card healthy, but no deploy happened.
+    expect(lastCall(mAppUpdate).data).toEqual({ status: "healthy" });
+    expect(mRelay).toHaveBeenCalledWith(expect.objectContaining({ serverId: "srv-a", path: "/api/apps/thd" }));
+  });
+
+  it("real success path: one matching relay success entry whose commitAfter is HEAD -> success, lastDeployAt moves", async () => {
+    mockTargetReached();
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("success");
+    expect(lastCall(mAppUpdate).data.status).toBe("healthy");
+    expect(lastCall(mAppUpdate).data.lastDeployAt).toBeInstanceOf(Date);
+  });
+
+  it("a relay success entry whose commitAfter is not the repo HEAD -> interrupted", async () => {
+    mockRelayDetail({ commit: OLD_HEAD, recentDeploys: [relayEntry({ commitAfter: HEAD })] });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps.at(-1).output).toContain("does not match the target commit");
+  });
+
+  it("a relay entry that ended failed -> interrupted", async () => {
+    mockRelayDetail({ commit: HEAD, recentDeploys: [relayEntry({ status: "failed" })] });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+  });
+
+  it("another panel deploy row of the app created after this one -> interrupted, naming that row, and the relay is not asked", async () => {
+    mockTargetReached();
+    mDeployFindFirst.mockResolvedValue({ id: "later-deploy" });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps.at(-1).output).toContain("later-deploy");
+    expect(mRelay).not.toHaveBeenCalled();
+    expect(mDeployFindFirst).toHaveBeenCalledWith({
+      where: { appId: "a1", id: { not: "d1" }, createdAt: { gt: DEPLOY_START } },
+      select: { id: true },
+    });
+  });
+
+  it("relay unreachable for the history lookup -> interrupted, not success", async () => {
+    mRelay.mockRejectedValue(new Error("ECONNREFUSED"));
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps.at(-1).output).toContain("check failed: relay unreachable or app lookup failed");
+  });
+
+  it("a deploy row whose start time cannot be read -> interrupted (the check cannot run), the relay is not asked", async () => {
+    mockTargetReached();
+    mDeployFindUnique.mockResolvedValue({ log: null });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps.at(-1).output).toContain("start time could not be read");
+    expect(mRelay).not.toHaveBeenCalled();
+  });
+
+  it("an unhealthy verdict stays failed and never reaches the target check", async () => {
+    mGate.mockResolvedValue({ healthy: false, reason: "service web is restarting" });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    expect(mRelay).not.toHaveBeenCalled();
+    expect(mDeployFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("a healthy probe over a log that already shows a rollback stays failed and never reaches the target check", async () => {
+    mDeployFindUnique.mockResolvedValue({
+      log: JSON.stringify([{ name: "rollback: compose up", status: "success", durationMs: 300 }]),
+      createdAt: DEPLOY_START,
+    });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    expect(mRelay).not.toHaveBeenCalled();
+  });
+
+  it("kind rollback keeps the health-only verdict: the relay history is not consulted (a rollback entry has no duration the check could accept)", async () => {
+    mRelay.mockRejectedValue(new Error("must not be called"));
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up", "rollback");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("success");
+    expect(mRelay).not.toHaveBeenCalled();
+    expect(mDeployFindFirst).not.toHaveBeenCalled();
   });
 });
 
