@@ -499,6 +499,27 @@ describe("recoverBrokenDeploy: a healthy probe needs proof the target was reache
     expect(lastCall(mDeployUpdate).data.status).toBe("success");
   });
 
+  it("omitted to_commit on an id-capable relay: an id-matched deploy-shaped entry that moved the repo -> interrupted", async () => {
+    mockRelayWithHealth({ status: "ok", version: "0.6.0" }, { commit: HEAD, recentDeploys: [relayEntry({ ...MOVED, deployId: "d1" })] });
+
+    await recoverRollback(undefined);
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("is a deploy");
+  });
+
+  it("omitted to_commit on an id-capable relay: an id-matched entry not triggered by the panel -> interrupted", async () => {
+    mockRelayWithHealth(
+      { status: "ok", version: "0.6.0" },
+      { commit: HEAD, recentDeploys: [rollbackEntry({ ...MOVED, deployId: "d1", triggeredBy: "mcp" })] },
+    );
+
+    await recoverRollback(undefined);
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("not by the panel");
+  });
+
   it("omitted to_commit on an id-capable relay, commitAfter equals commitBefore (the repo did not move) -> interrupted", async () => {
     mockRelayWithHealth(
       { status: "ok", version: "0.6.0" },
