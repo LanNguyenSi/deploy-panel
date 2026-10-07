@@ -195,15 +195,18 @@ const RECOVERY_INTERVAL_MS = 12_000;
  * deploy has not recorded its history entry yet and the row ends
  * `interrupted` even if the deploy completes later (fail closed).
  *
- * `kind: "rollback"` (both rollback routes) runs the check through the id
- * match only: the relay records a rollback entry without a duration, which
- * the check's timing path rejects. Against an id-capable relay (its /health
- * version, or an id in its history) the rollback's own entry, matched by the
- * id the route sent, must be a success whose commitAfter is the repo HEAD, or
- * the row ends `interrupted`. A relay that is not id-capable keeps the
- * health-only verdict (a rollback that never ran while the old version stays
- * healthy still ends `success`). Fail closed: when the relay cannot be asked
- * for the app (the lookup throws) or the row's start time cannot be read, a
+ * `kind: "rollback"` (both rollback routes) is held to a rollback-specific
+ * proof instead of the deploy one (the relay's rollback entry carries no
+ * duration, so the timing correlation cannot apply): no later panel row for the
+ * app, and exactly one relay entry since the start, shaped like a rollback,
+ * carrying this row's deploy id when the relay is id-capable, a success whose
+ * commitAfter equals both the repo HEAD and `requestedCommit`, the commit sha
+ * the route asked for (see assessRollbackReached). Without that proof the row
+ * ends `interrupted`, naming the failed check, and the app card is set
+ * `healthy` without moving `lastDeployAt`; a rollback that never ran while the
+ * old version stays healthy no longer ends `success`, on any relay. Fail
+ * closed: when the relay cannot be asked for the app (the lookup throws), the
+ * row's start time cannot be read, or the request named no commit sha, a
  * recovered rollback ends `interrupted` rather than `success`.
  */
 export async function recoverBrokenDeploy(
@@ -213,6 +216,7 @@ export async function recoverBrokenDeploy(
   appName: string,
   error: string,
   kind: "deploy" | "rollback" = "deploy",
+  requestedCommit?: string | null,
 ) {
   // Registers itself (try/finally) independently of whatever the caller
   // already did: streamDeploy registers deployId before this is ever
@@ -227,7 +231,7 @@ export async function recoverBrokenDeploy(
   // never removes a hold some OTHER caller still needs.
   registerActiveDeploy(deployId);
   try {
-    await recoverBrokenDeployBody(deployId, appId, serverId, appName, error, kind);
+    await recoverBrokenDeployBody(deployId, appId, serverId, appName, error, kind, requestedCommit);
   } finally {
     releaseActiveDeploy(deployId);
   }
@@ -240,6 +244,7 @@ async function recoverBrokenDeployBody(
   appName: string,
   error: string,
   kind: "deploy" | "rollback",
+  requestedCommit?: string | null,
 ) {
   console.log(`[deploy-recovery] Connection lost for deploy ${deployId} (${appName}). Verifying health...`);
 
@@ -287,7 +292,7 @@ async function recoverBrokenDeployBody(
     target =
       startedAt instanceof Date
         ? await checkDeployTarget({ id: deployId, appId, createdAt: startedAt }, serverId, appName, {
-            idPathOnly: kind === "rollback",
+            rollback: kind === "rollback" ? { requestedCommit } : undefined,
           })
         : { reached: false, failedCheck: "the deploy start time could not be read, so the relay history cannot be tied to this deploy" };
   }

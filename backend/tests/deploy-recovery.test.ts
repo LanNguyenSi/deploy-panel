@@ -307,75 +307,158 @@ describe("recoverBrokenDeploy: a healthy probe needs proof the target was reache
     );
   };
 
-  it("kind rollback against a relay that is not id-capable keeps the health-only verdict (no ids in history, no version)", async () => {
-    mRelay.mockImplementation(async ({ path }: { path: string }) =>
-      path === "/health" ? { status: "ok" } : { app: { name: "thd", containers: "[]", commit: HEAD, recentDeploys: [relayEntry()] } },
+  // A connection-lost rollback is judged by a rollback-specific proof: exactly
+  // one relay entry since the start, shaped like a rollback, carrying the
+  // row's id on an id-capable relay, a success whose commitAfter equals both
+  // the repo HEAD and the commit the request named.
+  const REQUESTED = "abc1234";
+  const rollbackEntry = (over: Record<string, unknown> = {}) =>
+    relayEntry({ durationMs: 0, commitAfter: HEAD, ...over });
+  const recoverRollback = (...args: [] | [string | null | undefined]) =>
+    recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up", "rollback", args.length ? args[0] : REQUESTED);
+  const lastOutput = () => JSON.parse(lastCall(mDeployUpdate).data.log).at(-1).output as string;
+
+  it("real rollback success on a relay that is not id-capable: one rollback entry on HEAD == requested commit -> success, lastDeployAt moves", async () => {
+    mockRelayWithHealth({ status: "ok" }, { commit: HEAD, recentDeploys: [rollbackEntry()] });
+
+    await recoverRollback();
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("success");
+    expect(lastCall(mAppUpdate).data.status).toBe("healthy");
+    expect(lastCall(mAppUpdate).data.lastDeployAt).toBeInstanceOf(Date);
+  });
+
+  it("real rollback success on an id-capable relay: the rollback's own id-matched entry on HEAD == requested commit -> success", async () => {
+    mockRelayWithHealth(
+      { status: "ok", version: "0.6.0" },
+      { commit: HEAD, recentDeploys: [rollbackEntry({ deployId: "d1" })] },
     );
 
-    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up", "rollback");
+    await recoverRollback();
 
     expect(lastCall(mDeployUpdate).data.status).toBe("success");
   });
 
-  it("kind rollback whose start time cannot be read -> interrupted (fail closed), even against a relay that is not id-capable", async () => {
-    mDeployFindUnique.mockResolvedValue({ log: "[]", createdAt: null });
-    mRelay.mockImplementation(async ({ path }: { path: string }) =>
-      path === "/health" ? { status: "ok", version: "0.5.0" } : { app: { name: "thd", containers: "[]", commit: HEAD, recentDeploys: [relayEntry()] } },
+  it("incident shape: connection lost, the rollback never ran, no relay entry since the start -> interrupted, app healthy, lastDeployAt unchanged", async () => {
+    mockRelayWithHealth(
+      { status: "ok", version: "0.5.0" },
+      { commit: "0ld1234", recentDeploys: [rollbackEntry({ createdAt: new Date(DEPLOY_START.getTime() - 3_600_000).toISOString() })] },
     );
 
-    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up", "rollback");
+    await recoverRollback();
 
     expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
-    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
-    expect(steps.at(-1).output).toContain("start time could not be read");
+    expect(lastOutput()).toContain("check failed: target not reached: the relay recorded no rollback since");
+    expect(lastCall(mAppUpdate).data).toEqual({ status: "healthy" });
   });
 
-  it("kind rollback keeps the health-only verdict even with a later panel row when the relay is not id-capable", async () => {
+  it("a deploy entry instead of a rollback entry since the start -> interrupted", async () => {
+    mockRelayWithHealth({ status: "ok" }, { commit: HEAD, recentDeploys: [relayEntry()] });
+
+    await recoverRollback();
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("is a deploy");
+    expect(lastCall(mAppUpdate).data).toEqual({ status: "healthy" });
+  });
+
+  it("two relay entries since the start -> interrupted as ambiguous, even if one is the rollback", async () => {
+    mockRelayWithHealth({ status: "ok" }, { commit: HEAD, recentDeploys: [rollbackEntry(), relayEntry()] });
+
+    await recoverRollback();
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("2 deploys or rollbacks since");
+  });
+
+  it("a rollback entry whose commitAfter is not the requested commit -> interrupted", async () => {
+    mockRelayWithHealth({ status: "ok" }, { commit: HEAD, recentDeploys: [rollbackEntry()] });
+
+    await recoverRollback("def5678");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("not on the requested commit def5678");
+  });
+
+  it("a rollback entry whose commitAfter is not the repo HEAD -> interrupted", async () => {
+    mockRelayWithHealth({ status: "ok" }, { commit: "0ld1234", recentDeploys: [rollbackEntry()] });
+
+    await recoverRollback();
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("does not match the target commit");
+  });
+
+  it("a failed rollback entry -> interrupted", async () => {
+    mockRelayWithHealth({ status: "ok" }, { commit: HEAD, recentDeploys: [rollbackEntry({ status: "failed" })] });
+
+    await recoverRollback();
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+  });
+
+  it("a request that named no commit sha (none, or a symbolic ref) -> interrupted, never proof", async () => {
+    mockRelayWithHealth({ status: "ok" }, { commit: HEAD, recentDeploys: [rollbackEntry()] });
+
+    await recoverRollback(undefined);
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("not a commit sha");
+
+    await recoverRollback("HEAD~1");
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain('"HEAD~1" is not a commit sha');
+  });
+
+  it("an entry triggered by something other than the panel's api call -> interrupted", async () => {
+    mockRelayWithHealth({ status: "ok" }, { commit: HEAD, recentDeploys: [rollbackEntry({ triggeredBy: "mcp" })] });
+
+    await recoverRollback();
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("triggered by");
+  });
+
+  it("id-capable relay: a lone rollback-shaped entry carrying someone else's id -> interrupted", async () => {
+    mockRelayWithHealth(
+      { status: "ok", version: "0.6.0" },
+      { commit: HEAD, recentDeploys: [rollbackEntry({ deployId: "someone-else" })] },
+    );
+
+    await recoverRollback();
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("does not carry this rollback's id");
+  });
+
+  it("id-capable relay (ids in history only): a lone entry with no id -> interrupted", async () => {
+    mockRelayWithHealth(
+      { status: "ok" },
+      { commit: HEAD, recentDeploys: [rollbackEntry(), rollbackEntry({ deployId: "old", createdAt: new Date(DEPLOY_START.getTime() - 60_000).toISOString() })] },
+    );
+
+    await recoverRollback();
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+  });
+
+  it("a later panel row of the app -> interrupted, naming that row, on any relay", async () => {
     mDeployFindFirst.mockResolvedValue({ id: "later" });
-    mRelay.mockImplementation(async ({ path }: { path: string }) =>
-      path === "/health" ? { status: "ok", version: "0.5.0" } : { app: { name: "thd", containers: "[]", commit: HEAD, recentDeploys: [] } },
-    );
+    mockRelayWithHealth({ status: "ok", version: "0.5.0" }, { commit: HEAD, recentDeploys: [rollbackEntry()] });
 
-    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up", "rollback");
+    await recoverRollback();
 
-    expect(lastCall(mDeployUpdate).data.status).toBe("success");
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("later");
   });
 
-  it("kind rollback against an id-capable relay (version) is success only when the rollback's own id-matched entry succeeded on HEAD", async () => {
-    mockRelayWithHealth(
-      { status: "ok", version: "0.6.0" },
-      { commit: HEAD, recentDeploys: [relayEntry({ deployId: "d1", durationMs: 0 })] },
-    );
+  it("kind rollback whose start time cannot be read -> interrupted (fail closed)", async () => {
+    mDeployFindUnique.mockResolvedValue({ log: "[]", createdAt: null });
+    mockRelayWithHealth({ status: "ok", version: "0.5.0" }, { commit: HEAD, recentDeploys: [rollbackEntry()] });
 
-    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up", "rollback");
+    await recoverRollback();
 
-    expect(lastCall(mDeployUpdate).data.status).toBe("success");
-  });
-
-  it("kind rollback against an id-capable relay with no entry carrying its id ends interrupted, naming the failed check", async () => {
-    mockRelayWithHealth(
-      { status: "ok", version: "0.6.0" },
-      { commit: HEAD, recentDeploys: [relayEntry({ deployId: "someone-else" })] },
-    );
-
-    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up", "rollback");
-
-    const call = lastCall(mDeployUpdate);
-    expect(call.data.status).toBe("interrupted");
-    expect(JSON.parse(call.data.log).at(-1).output).toContain("target not reached");
-  });
-
-  it("kind rollback against an id-capable relay (version) whose history entries carry no ids at all, and none of its own, ends interrupted", async () => {
-    mockRelayWithHealth(
-      { status: "ok", version: "0.6.0" },
-      { commit: HEAD, recentDeploys: [relayEntry(), relayEntry({ status: "failed" })] },
-    );
-
-    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up", "rollback");
-
-    const call = lastCall(mDeployUpdate);
-    expect(call.data.status).toBe("interrupted");
-    expect(JSON.parse(call.data.log).at(-1).output).toContain("target not reached");
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("start time could not be read");
   });
 
   it("kind rollback ends interrupted (fail closed) when the app lookup at the relay throws", async () => {
@@ -384,22 +467,10 @@ describe("recoverBrokenDeploy: a healthy probe needs proof the target was reache
       throw new Error("relay down");
     });
 
-    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up", "rollback");
-
-    const call = lastCall(mDeployUpdate);
-    expect(call.data.status).toBe("interrupted");
-    expect(JSON.parse(call.data.log).at(-1).output).toContain("relay unreachable or app lookup failed");
-  });
-
-  it("kind rollback against an id-capable relay (ids in history only) whose matched entry failed ends interrupted", async () => {
-    mockRelayWithHealth(
-      { status: "ok" },
-      { commit: HEAD, recentDeploys: [relayEntry({ deployId: "d1", status: "failed" })] },
-    );
-
-    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up", "rollback");
+    await recoverRollback();
 
     expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("relay unreachable or app lookup failed");
   });
 });
 
