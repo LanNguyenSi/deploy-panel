@@ -392,7 +392,7 @@ appsRouter.post("/:name/rollback", async (c) => {
     // (e.g. verifyDeployHealth itself rejecting) would otherwise become an
     // unhandled rejection. Node >=20 treats that as fatal by default and
     // prod runs this as a single container under restart: unless-stopped.
-    recoverBrokenDeploy(deploy.id, app.id, serverId, name, errMsg, "rollback").catch((recoveryErr) => {
+    recoverBrokenDeploy(deploy.id, app.id, serverId, name, errMsg, "rollback", body.to_commit).catch((recoveryErr) => {
       console.error(`[stuck-sweep] recoverBrokenDeploy failed for ${deploy.id} (${name}):`, recoveryErr);
     });
     if (err instanceof RelayError) return c.json({ error: "relay_error", message: err.message }, err.status as any);

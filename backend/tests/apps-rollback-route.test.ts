@@ -258,7 +258,7 @@ describe("POST /:name/rollback — RelayError from the relay call itself", () =>
     const res = await app().request("/servers/srv-a/apps/my-app/rollback", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
+      body: JSON.stringify({ to_commit: "abc1234" }),
     });
 
     expect(res.status).toBe(500);
@@ -267,10 +267,24 @@ describe("POST /:name/rollback — RelayError from the relay call itself", () =>
     expect(body.message).toContain("boom");
 
     expect(mRecoverBrokenDeploy).toHaveBeenCalledTimes(1);
-    // A rollback is recovered by health alone: the relay records no duration
-    // for a rollback, which the deploy target check rejects by design.
+    // A recovered rollback is judged against the commit the request named.
     expect(mRecoverBrokenDeploy.mock.calls[0][5]).toBe("rollback");
+    expect(mRecoverBrokenDeploy.mock.calls[0][6]).toBe("abc1234");
     expect(mDeployUpdate).not.toHaveBeenCalled();
+  });
+
+  it("5xx RelayError with to_commit omitted (the UI button and MCP client default): recoverBrokenDeploy receives undefined as the requested commit", async () => {
+    mRelay.mockRejectedValueOnce(new RelayError("Relay error (500): boom", 500));
+
+    await app().request("/servers/srv-a/apps/my-app/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    expect(mRecoverBrokenDeploy).toHaveBeenCalledTimes(1);
+    expect(mRecoverBrokenDeploy.mock.calls[0][5]).toBe("rollback");
+    expect(mRecoverBrokenDeploy.mock.calls[0][6]).toBeUndefined();
   });
 });
 
