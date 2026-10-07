@@ -427,7 +427,139 @@ describe("recoverBrokenDeploy: a healthy probe needs proof the target was reache
     await recoverRollback();
 
     expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
-    expect(lastOutput()).toContain("does not carry this rollback's id");
+    expect(lastOutput()).toContain("none of its recent entries carries this rollback's id");
+  });
+
+  it("version-capable relay (/health 0.6.0), lone rollback-shaped entry without a deployId, no ids in history -> interrupted", async () => {
+    mockRelayWithHealth({ status: "ok", version: "0.6.0" }, { commit: HEAD, recentDeploys: [rollbackEntry()] });
+
+    await recoverRollback();
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("none of its recent entries carries this rollback's id");
+    expect(lastCall(mAppUpdate).data).toEqual({ status: "healthy" });
+  });
+
+  it("id-capable relay: the id-matched entry is chosen without the since-start window or the exactly-one rule", async () => {
+    mockRelayWithHealth(
+      { status: "ok", version: "0.6.0" },
+      {
+        commit: HEAD,
+        recentDeploys: [
+          rollbackEntry({ deployId: "d1", createdAt: new Date(DEPLOY_START.getTime() - 1_000).toISOString() }),
+          relayEntry({ deployId: "other" }),
+        ],
+      },
+    );
+
+    await recoverRollback();
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("success");
+  });
+
+  it("id-capable relay: a later entry that moved HEAD away from the id-matched rollback's commit -> interrupted", async () => {
+    mockRelayWithHealth(
+      { status: "ok", version: "0.6.0" },
+      { commit: "fed9876", recentDeploys: [relayEntry({ deployId: "later" }), rollbackEntry({ deployId: "d1" })] },
+    );
+
+    await recoverRollback();
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("does not match the target commit");
+  });
+
+  it("id-capable relay: a deploy-shaped entry carrying this id -> interrupted", async () => {
+    mockRelayWithHealth({ status: "ok", version: "0.6.0" }, { commit: HEAD, recentDeploys: [relayEntry({ deployId: "d1" })] });
+
+    await recoverRollback();
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("is a deploy");
+  });
+
+  // The UI button and the MCP client send no to_commit, so an omitted target is
+  // the main path: provable only by an id-matched entry that moved the repo.
+  const MOVED = { commitBefore: "f".repeat(40), commitAfter: HEAD };
+
+  it("omitted to_commit on an id-capable relay: id-matched success entry on HEAD that moved the repo -> success", async () => {
+    mockRelayWithHealth({ status: "ok", version: "0.6.0" }, { commit: HEAD, recentDeploys: [rollbackEntry({ ...MOVED, deployId: "d1" })] });
+
+    await recoverRollback(undefined);
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("success");
+    expect(lastCall(mAppUpdate).data.lastDeployAt).toBeInstanceOf(Date);
+  });
+
+  it("symbolic to_commit (HEAD~1) on an id-capable relay: the same moved-the-repo proof -> success", async () => {
+    mockRelayWithHealth({ status: "ok", version: "0.6.0" }, { commit: HEAD, recentDeploys: [rollbackEntry({ ...MOVED, deployId: "d1" })] });
+
+    await recoverRollback("HEAD~1");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("success");
+  });
+
+  it("omitted to_commit on an id-capable relay, commitAfter equals commitBefore (the repo did not move) -> interrupted", async () => {
+    mockRelayWithHealth(
+      { status: "ok", version: "0.6.0" },
+      { commit: HEAD, recentDeploys: [rollbackEntry({ commitBefore: HEAD, commitAfter: HEAD, deployId: "d1" })] },
+    );
+
+    await recoverRollback(undefined);
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("the repo did not move");
+  });
+
+  it("omitted to_commit on an id-capable relay, entry records no commitBefore -> interrupted", async () => {
+    mockRelayWithHealth({ status: "ok", version: "0.6.0" }, { commit: HEAD, recentDeploys: [rollbackEntry({ commitAfter: HEAD, deployId: "d1" })] });
+
+    await recoverRollback(undefined);
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("records no commit before");
+  });
+
+  it("omitted to_commit on an id-capable relay, id-matched entry failed or off HEAD -> interrupted", async () => {
+    mockRelayWithHealth({ status: "ok", version: "0.6.0" }, { commit: HEAD, recentDeploys: [rollbackEntry({ ...MOVED, deployId: "d1", status: "failed" })] });
+    await recoverRollback(undefined);
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+
+    mockRelayWithHealth({ status: "ok", version: "0.6.0" }, { commit: "0ld1234", recentDeploys: [rollbackEntry({ ...MOVED, deployId: "d1" })] });
+    await recoverRollback(undefined);
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+  });
+
+  it("omitted to_commit on a relay that is NOT id-capable stays unprovable, even with a lone rollback entry that moved the repo", async () => {
+    mockRelayWithHealth({ status: "ok", version: "0.5.0" }, { commit: HEAD, recentDeploys: [rollbackEntry(MOVED)] });
+
+    await recoverRollback(undefined);
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("does not record deploy ids");
+  });
+
+  // Realistic sha shapes: the relay records `git rev-parse HEAD` (40 chars) as
+  // commitAfter, app.commit is the short HEAD, the request may carry either.
+  const FULL = "abc1234" + "d".repeat(33);
+  it("realistic sha shapes: relay commitAfter full, app.commit short, requested short or full -> success", async () => {
+    for (const requested of ["abc1234", FULL, "ABC1234D"]) {
+      mDeployUpdate.mockClear();
+      mockRelayWithHealth({ status: "ok" }, { commit: "abc1234", recentDeploys: [rollbackEntry({ commitAfter: FULL })] });
+
+      await recoverRollback(requested);
+
+      expect(lastCall(mDeployUpdate).data.status).toBe("success");
+    }
+  });
+
+  it("realistic sha shapes: a requested sha that differs after the shared prefix is not a match -> interrupted", async () => {
+    mockRelayWithHealth({ status: "ok" }, { commit: "abc1234", recentDeploys: [rollbackEntry({ commitAfter: FULL })] });
+
+    await recoverRollback("abc1234" + "e".repeat(33));
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastOutput()).toContain("not on the requested commit");
   });
 
   it("id-capable relay (ids in history only): a lone entry with no id -> interrupted", async () => {

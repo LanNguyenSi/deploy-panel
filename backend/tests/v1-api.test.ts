@@ -817,6 +817,23 @@ describe("v1 POST /rollback: RelayError from the relay call itself", () => {
     expect(vi.mocked(recoverBrokenDeploy).mock.calls[0][6]).toBe("abc1234");
     expect(mDeploy.update).not.toHaveBeenCalled();
   });
+
+  it("5xx RelayError with to_commit omitted (the MCP client default): recoverBrokenDeploy receives undefined as the requested commit", async () => {
+    vi.mocked(relayRequest).mockRejectedValue(new RelayError("Relay error (500): boom", 500));
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: "my-app" }),
+    });
+
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(recoverBrokenDeploy).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(recoverBrokenDeploy).mock.calls[0][5]).toBe("rollback");
+    expect(vi.mocked(recoverBrokenDeploy).mock.calls[0][6]).toBeUndefined();
+  });
 });
 
 // A blocked or failed rollback must leave the app card consistent with the

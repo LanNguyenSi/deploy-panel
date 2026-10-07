@@ -198,16 +198,19 @@ const RECOVERY_INTERVAL_MS = 12_000;
  * `kind: "rollback"` (both rollback routes) is held to a rollback-specific
  * proof instead of the deploy one (the relay's rollback entry carries no
  * duration, so the timing correlation cannot apply): no later panel row for the
- * app, and exactly one relay entry since the start, shaped like a rollback,
- * carrying this row's deploy id when the relay is id-capable, a success whose
- * commitAfter equals both the repo HEAD and `requestedCommit`, the commit sha
- * the route asked for (see assessRollbackReached). Without that proof the row
- * ends `interrupted`, naming the failed check, and the app card is set
- * `healthy` without moving `lastDeployAt`; a rollback that never ran while the
- * old version stays healthy no longer ends `success`, on any relay. Fail
- * closed: when the relay cannot be asked for the app (the lookup throws), the
- * row's start time cannot be read, or the request named no commit sha, a
- * recovered rollback ends `interrupted` rather than `success`.
+ * app, and a relay entry shaped like a rollback that is a success whose
+ * commitAfter is the repo HEAD (see assessRollbackReached). On an id-capable
+ * relay the entry is the one carrying this row's deploy id; otherwise it must
+ * be the only entry since the start. With an explicit `requestedCommit` sha the
+ * entry's commitAfter must equal it; an omitted or symbolic target (what the UI
+ * button and the MCP client send) is proven only on an id-capable relay, by the
+ * id-matched entry having moved the repo (commitAfter differs from commitBefore).
+ * Without that proof the row ends `interrupted`, naming the failed check, and
+ * the app card is set `healthy` without moving `lastDeployAt`; a rollback that
+ * never ran while the old version stays healthy no longer ends `success`, on
+ * any relay. Fail closed: when the relay cannot be asked for the app (the
+ * lookup throws) or the row's start time cannot be read, a recovered rollback
+ * ends `interrupted` rather than `success`.
  */
 export async function recoverBrokenDeploy(
   deployId: string,

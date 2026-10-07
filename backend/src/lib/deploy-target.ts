@@ -10,6 +10,8 @@ import { relayRequest } from "./relay.js";
  */
 interface RelayDeployRecord {
   status?: string;
+  /** Repo HEAD before the call; rollbackApp records it too (apps.ts, `commitBefore` of the outcome). */
+  commitBefore?: string;
   commitAfter?: string;
   /** ISO time the relay RECORDED the entry, i.e. when the deploy ended (history.ts:74). */
   createdAt?: string;
@@ -232,28 +234,34 @@ export function assessTargetReached(
   return assessEntryOutcome(entry, head);
 }
 
-/** A full or abbreviated commit sha, the only requested rollback target the check can compare. */
+/** A full or abbreviated commit sha, the only explicit rollback target the check can compare. */
 const COMMIT_SHA_PATTERN = /^[0-9a-f]{7,40}$/i;
 
 /**
  * Decides whether a rollback (recovered after a lost relay connection) really
- * ran to the commit the operator asked for, from the relay's history. A
- * healthy probe cannot show it: a rollback that never ran leaves the old
- * version up and healthy.
+ * ran, from the relay's history. A healthy probe cannot show it: a rollback
+ * that never ran leaves the old version up and healthy.
  *
- * Proof needed, all of it:
- * - the request named a commit sha (a symbolic ref such as HEAD~1 cannot be
- *   compared with what the relay recorded, so it is never proof);
- * - exactly ONE relay history entry was recorded at or after the rollback's
- *   start (none: it never ran; several: ambiguous);
- * - that entry has the shape of a relay rollback: triggeredBy "api" and no
- *   positive durationMs (agent-relay's rollbackApp outcome carries no
- *   duration, a deploy always does), so a deploy entry in the window is not
- *   taken for the rollback;
- * - when the relay is id-capable (options.relayRecordsIds, or an id in its
- *   history) that entry carries this rollback's own deploy id;
- * - the entry is a success and its commitAfter equals both the repo HEAD and
- *   the requested commit.
+ * The entry is picked by capability:
+ * - id-capable relay (options.relayRecordsIds from its /health version, or an
+ *   id in its history): the entry carrying this rollback's own deploy id is
+ *   THE entry; no time window or exactly-one rule is applied, because no other
+ *   call can be mistaken for it, and the HEAD equality below still catches a
+ *   later entry that moved HEAD. No entry with the id means it never ran.
+ * - otherwise: exactly ONE relay history entry was recorded at or after the
+ *   rollback's start (none: it never ran; several: ambiguous).
+ * Either way the entry must have the shape of a relay rollback (triggeredBy
+ * "api", no positive durationMs: agent-relay's rollbackApp outcome carries no
+ * duration, a deploy always does) and be a success whose commitAfter equals
+ * the repo HEAD.
+ *
+ * What the entry must show about the target depends on the request:
+ * - an explicit commit sha (full or abbreviated): commitAfter equals it;
+ * - an omitted or symbolic target (HEAD~1; what the UI button and the MCP
+ *   client send): the requested commit cannot be compared, so the proof is
+ *   the id-matched entry whose commitAfter differs from its commitBefore (the
+ *   rollback moved the repo). That needs an id-capable relay: on any other
+ *   relay such a request is never proof.
  */
 export function assessRollbackReached(
   deploy: { id?: string; createdAt: Date },
@@ -264,59 +272,81 @@ export function assessRollbackReached(
   if (!head) return { reached: false, reason: "the relay reported no repo HEAD for the app" };
 
   const requested = typeof options.requestedCommit === "string" ? options.requestedCommit.trim() : "";
-  if (!COMMIT_SHA_PATTERN.test(requested)) {
-    return {
-      reached: false,
-      reason: `the rollback target ${requested ? `"${requested}"` : "(none named)"} is not a commit sha, so the relay's recorded commit cannot be compared with it`,
-    };
-  }
+  const explicitCommit = COMMIT_SHA_PATTERN.test(requested);
 
   const history = Array.isArray(detail.app?.recentDeploys) ? detail.app.recentDeploys : [];
-  const startMs = deploy.createdAt.getTime();
-  const sinceStart = history.filter((record) => Date.parse(record?.createdAt ?? "") >= startMs);
-  if (sinceStart.length === 0) {
+  const idCapable =
+    Boolean(deploy.id) &&
+    (options.relayRecordsIds === true || history.some((record) => typeof record?.deployId === "string"));
+
+  if (!explicitCommit && !idCapable) {
     return {
       reached: false,
-      reason: `the relay recorded no rollback since ${deploy.createdAt.toISOString()}, so the rollback did not run (repo HEAD is ${head})`,
-    };
-  }
-  if (sinceStart.length > 1) {
-    return {
-      reached: false,
-      reason: `the relay recorded ${sinceStart.length} deploys or rollbacks since ${deploy.createdAt.toISOString()}, so none can be tied to this rollback (repo HEAD is ${head})`,
+      reason: `the rollback target ${requested ? `"${requested}"` : "(none named)"} is not a commit sha and the relay does not record deploy ids, so neither the requested commit nor this rollback's entry can be established`,
     };
   }
 
-  const entry = sinceStart[0];
+  let entry: RelayDeployRecord;
+  if (idCapable) {
+    const own = history.find((record) => record?.deployId === deploy.id);
+    if (!own) {
+      return {
+        reached: false,
+        reason: `the relay reports deploy ids but none of its recent entries carries this rollback's id (${deploy.id}), so the rollback left no entry`,
+      };
+    }
+    entry = own;
+  } else {
+    const startMs = deploy.createdAt.getTime();
+    const sinceStart = history.filter((record) => Date.parse(record?.createdAt ?? "") >= startMs);
+    if (sinceStart.length === 0) {
+      return {
+        reached: false,
+        reason: `the relay recorded no rollback since ${deploy.createdAt.toISOString()}, so the rollback did not run (repo HEAD is ${head})`,
+      };
+    }
+    if (sinceStart.length > 1) {
+      return {
+        reached: false,
+        reason: `the relay recorded ${sinceStart.length} deploys or rollbacks since ${deploy.createdAt.toISOString()}, so none can be tied to this rollback (repo HEAD is ${head})`,
+      };
+    }
+    entry = sinceStart[0];
+  }
+
   if (entry.triggeredBy !== PANEL_RELAY_TRIGGER) {
     return {
       reached: false,
-      reason: `the relay entry since the start was triggered by ${typeof entry.triggeredBy === "string" ? `"${entry.triggeredBy}"` : "nothing it recorded"}, not by the panel's own rollback call`,
+      reason: `the relay entry for this rollback was triggered by ${typeof entry.triggeredBy === "string" ? `"${entry.triggeredBy}"` : "nothing it recorded"}, not by the panel's own rollback call`,
     };
   }
   if (typeof entry.durationMs === "number" && Number.isFinite(entry.durationMs) && entry.durationMs > 0) {
     return {
       reached: false,
-      reason: "the relay entry since the start is a deploy (it carries a duration, a rollback records none), not this rollback",
-    };
-  }
-
-  const relayReportsIds =
-    options.relayRecordsIds === true || history.some((record) => typeof record?.deployId === "string");
-  if (relayReportsIds && deploy.id && entry.deployId !== deploy.id) {
-    return {
-      reached: false,
-      reason: `the relay reports deploy ids but the entry since the start does not carry this rollback's id (${deploy.id}), so it is not this rollback`,
+      reason: "the relay entry for this rollback is a deploy (it carries a duration, a rollback records none), not this rollback",
     };
   }
 
   const outcome = assessEntryOutcome(entry, head);
   if (!outcome.reached) return outcome;
   const target = entry.commitAfter?.trim() ?? "";
-  if (!commitsMatch(target, requested)) {
+  if (explicitCommit) {
+    if (!commitsMatch(target, requested)) {
+      return {
+        reached: false,
+        reason: `the relay rollback ended on ${target}, not on the requested commit ${requested}`,
+      };
+    }
+    return { reached: true };
+  }
+  const before = entry.commitBefore?.trim() ?? "";
+  if (!before) {
+    return { reached: false, reason: "the relay rollback entry records no commit before, so it cannot be shown that the rollback moved the repo" };
+  }
+  if (commitsMatch(target, before)) {
     return {
       reached: false,
-      reason: `the relay rollback ended on ${target}, not on the requested commit ${requested}`,
+      reason: `the relay rollback entry ended on ${target}, the commit it started from, so the repo did not move`,
     };
   }
   return { reached: true };
@@ -357,9 +387,9 @@ export type DeployTargetCheck = { reached: true } | { reached: false; failedChec
  * old containers still run.
  *
  * With `rollback` (recovered rollbacks) the relay entry is judged by
- * assessRollbackReached against the requested commit instead of
- * assessTargetReached, since a rollback entry carries no duration and its
- * target is the commit the operator asked for.
+ * assessRollbackReached instead of assessTargetReached, since a rollback
+ * entry carries no duration and its target is the commit the operator asked
+ * for (or, when none is named, the move away from its commitBefore).
  *
  * Two stages, each a reason the repo state cannot be attributed to this deploy:
  * 1. Any other panel Deploy row for the same app created after this one (a
