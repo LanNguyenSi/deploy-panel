@@ -71,7 +71,15 @@ thousands of characters and overflow an MCP client's tool-result limit.
 `durationMs`. A failing step (`failure`, `failed`, `error`, `timeout`) also
 carries `outputTail`, its last 20 lines capped at 1500 characters. A step
 with an unrecognised shape is returned as a `raw` excerpt of at most 1000
-characters; more than 40 steps are cut off with a `stepsOmitted` count.
+characters (including a trailing `...` when cut). A preflight-blocked deploy
+(its only step is the relay preflight report) is projected to
+`preflight: { passed: false, failingChecks: [{ name, message }] }`, at most 20
+failing checks with each text capped at 300 characters. Step `name` and
+`status` are capped at 120 characters. More than 40 steps are cut off with a
+`stepsOmitted` count. The `outputTail`, `raw` and failing-check text across all
+steps share a budget of about 8000 characters; once it is spent, further steps
+carry only name, status and duration, and the response sets
+`detailsTruncated: true`.
 Pass `verbose: true` for the full deploy object, or call `deploy_status` with
 the deploy id afterwards. `wait: false` is unchanged. Only the MCP response
 changes; `POST /api/v1/deploy` and `GET /api/v1/deploy/:id` still return the
