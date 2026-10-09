@@ -77,9 +77,10 @@ characters (including a trailing `...` when cut). A preflight-blocked deploy
 failing checks with each text capped at 300 characters. Step `name` and
 `status` are capped at 120 characters. More than 40 steps are cut off with a
 `stepsOmitted` count. The `outputTail`, `raw` and failing-check text across all
-steps share a budget of about 8000 characters; once it is spent, further steps
-carry only name, status and duration, and the response sets
-`detailsTruncated: true`.
+steps share a budget of about 8000 characters (counted before JSON escaping);
+a detail that no longer fits the remaining budget is dropped, so its step
+carries only name, status and duration, a later smaller detail can still fit,
+and the response sets `detailsTruncated: true`.
 Pass `verbose: true` for the full deploy object, or call `deploy_status` with
 the deploy id afterwards. `wait: false` is unchanged. Only the MCP response
 changes; `POST /api/v1/deploy` and `GET /api/v1/deploy/:id` still return the
