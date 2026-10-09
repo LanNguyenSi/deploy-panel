@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **next 15.5.27** (GHSA-mcj8-r9mp-w47p, GHSA-4jqv-mc3x-m676): the lockfile resolves 15.5.27 with its matching `@next/env` and `@next/swc-*` packages and the `next` dependency floor is now `^15.5.27`.
 - **`@modelcontextprotocol/sdk` 1.32.1** (GHSA-6qxp-vccf-f47h, task aff72e2b): the lockfile resolves 1.32.1 and the `mcp/` dependency range is now `^1.32.1`, so consumers cannot resolve an affected version. Since 1.30.1 the SDK's HTTP server transports apply a 4 MiB default request-body limit and a 100-message batch cap.
 
 ### Added
