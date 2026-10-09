@@ -450,6 +450,42 @@ describe("deploy_app", () => {
       expect(f[0]).toEqual({ name: "late-critical", message: "m", critical: true });
     });
 
+    it("projects the real JSON-blocked log shape: relay preflight step tail plus the report's failing checks", async () => {
+      const relayStep = {
+        name: "preflight (pre-pull)",
+        status: "failure",
+        durationMs: 12,
+        output: "✗ disk: disk almost full\n✓ git: clean\n✗ memory: memory low",
+      };
+      const report = {
+        passed: false,
+        checks: [
+          { name: "memory", passed: false, message: "memory low", critical: false },
+          { name: "disk", passed: false, message: "disk almost full", critical: true },
+          { name: "git", passed: true, message: "clean", critical: false },
+        ],
+      };
+      mockDeploy({ status: "failed", steps: [relayStep, report] });
+      const body = textOf(await cb({ server: "s", app: "a" }));
+      expect(body.steps).toHaveLength(2);
+      expect(body.steps[0]).toEqual({
+        name: "preflight (pre-pull)",
+        status: "failure",
+        durationMs: 12,
+        outputTail: "✗ disk: disk almost full\n✓ git: clean\n✗ memory: memory low",
+      });
+      expect(body.steps[1]).toEqual({
+        preflight: {
+          passed: false,
+          failingChecks: [
+            { name: "disk", message: "disk almost full", critical: true },
+            { name: "memory", message: "memory low", critical: false },
+          ],
+        },
+      });
+      expect(body.detailsTruncated).toBeUndefined();
+    });
+
     it("charges failing-check text at its escaped length: raw fits the budget, escaped does not", async () => {
       // 20 checks of 300 quote characters: about 6050 raw (under 8000),
       // but each quote escapes to two characters, so the escaped total is over it.

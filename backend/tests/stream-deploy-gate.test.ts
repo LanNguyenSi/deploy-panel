@@ -320,7 +320,7 @@ describe("streamDeploy: relay response handling", () => {
       name: "preflight (pre-pull)",
       status: "failure",
       durationMs: 12,
-      output: "FAIL disk: disk almost full\nok   git: clean",
+      output: "✗ disk: disk almost full\n✓ git: clean",
     };
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse({
