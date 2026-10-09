@@ -72,7 +72,8 @@ thousands of characters and overflow an MCP client's tool-result limit.
 carries `outputTail`, its last 20 lines capped at 1500 characters. A step
 with an unrecognised shape is returned as a `raw` excerpt of at most 1000
 characters (including a trailing `...` when cut). A preflight-blocked deploy
-(its only step is the relay preflight report) is projected to
+(the relay preflight report is its last step, and its only step on the
+streaming path) is projected to
 `preflight: { passed: false, failingChecks: [{ name, message, critical? }] }`, at most 20
 failing checks with each text capped at 300 characters. `critical` is carried
 when the check reports a boolean, and critical failures are listed first (a

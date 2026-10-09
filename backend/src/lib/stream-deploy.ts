@@ -216,9 +216,9 @@ export async function streamDeploy(opts: {
       // A non-streaming preflight-blocked relay response carries the relay's own
       // steps (including the failing preflight step) and nests the structured
       // report as `result.preflight`. Keep the relay's steps and append the
-      // report, as the streaming `blocked` event does, so the per-check
-      // verdicts (with their critical flags) survive in the deploy log. With no
-      // steps the report is the only step.
+      // report (the streaming `blocked` event, by contrast, stores the report
+      // alone), so the per-check verdicts (with their critical flags) survive
+      // in the deploy log. With no steps the report is the only step.
       const blockedPreflight =
         data?.result?.blocked === true && data.result.preflight && typeof data.result.preflight === "object"
           ? data.result.preflight

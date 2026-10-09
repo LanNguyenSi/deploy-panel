@@ -48,8 +48,9 @@ interface PreflightReport {
   checks: unknown[];
 }
 
-// A preflight-blocked deploy stores the relay preflight report as its only
-// step, either as an object or as a JSON string.
+// A preflight-blocked deploy stores the relay preflight report as its last
+// step (its only step on the streaming path), either as an object or as a
+// JSON string.
 function asBlockedPreflight(step: unknown): PreflightReport | undefined {
   let value = step;
   if (typeof value === "string") {

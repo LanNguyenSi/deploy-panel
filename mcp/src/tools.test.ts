@@ -451,7 +451,7 @@ describe("deploy_app", () => {
     });
 
     it("charges failing-check text at its escaped length: raw fits the budget, escaped does not", async () => {
-      // 20 checks of 300 quote characters: 20 * (2 + 300) raw = 6040 (under 8000),
+      // 20 checks of 300 quote characters: about 6050 raw (under 8000),
       // but each quote escapes to two characters, so the escaped total is over it.
       const checks = Array.from({ length: 20 }, (_, i) => ({ name: `c${i}`, passed: false, message: '"'.repeat(300) }));
       mockDeploy({ status: "failed", steps: [{ passed: false, checks }] });
