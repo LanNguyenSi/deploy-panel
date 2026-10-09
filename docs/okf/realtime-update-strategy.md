@@ -3,7 +3,7 @@ type: overview
 title: Realtime update strategy — three coexisting mechanisms, not one
 description: backend-to-relay deploy streaming is real SSE parsed manually; backend-to-browser install-relay progress is SSE-shaped but sent over POST because EventSource only supports GET; everything else (deploy/app status in the browser) is plain interval polling.
 tags: [sse, polling, realtime, overview]
-timestamp: 2026-10-09T14:16:30Z
+timestamp: 2026-10-09T14:21:38Z
 sources:
   - backend/src/lib/stream-deploy.ts
   - backend/src/routes/servers.ts
