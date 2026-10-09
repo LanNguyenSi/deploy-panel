@@ -244,6 +244,182 @@ describe("deploy_app", () => {
     expect(textOf(result).status).toBe("success");
   });
 
+  describe("compact result", () => {
+    const longLog = Array.from({ length: 3000 }, (_, i) => `docker build line ${i}`).join("\n");
+    const mockDeploy = (deploy: Record<string, unknown>) =>
+      vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(jsonResponse({ deploy: { id: "d1", status: "running", server: "s", app: "a" } }))
+        .mockResolvedValueOnce(jsonResponse({ deploy: { id: "d1", server: "s", app: "a", createdAt: "x", ...deploy } }));
+
+    const okSteps = [
+      { name: "pull", status: "success", durationMs: 120, output: longLog },
+      { name: "build", status: "success", durationMs: 90000, output: longLog },
+    ];
+
+    it("default response for a long-log successful deploy is compact and omits step output", async () => {
+      mockDeploy({ status: "success", duration: 90, commitBefore: "a1", commitAfter: "b2", steps: okSteps });
+      const result = await cb({ server: "s", app: "a" });
+      expect(result.content[0].text.length).toBeLessThan(4000);
+      const body = textOf(result);
+      expect(body).toMatchObject({ id: "d1", status: "success", commitBefore: "a1", commitAfter: "b2", duration: 90 });
+      expect(body.steps).toEqual([
+        { name: "pull", status: "success", durationMs: 120 },
+        { name: "build", status: "success", durationMs: 90000 },
+      ]);
+      expect(body.note).toContain("deploy_status");
+    });
+
+    it("verbose: true returns the full deploy including step output", async () => {
+      mockDeploy({ status: "success", steps: okSteps });
+      const result = await cb({ server: "s", app: "a", verbose: true });
+      const body = textOf(result);
+      expect(body.steps[0].output).toBe(longLog);
+    });
+
+    it("a failing step includes a bounded tail of its output", async () => {
+      mockDeploy({ status: "failed", steps: [okSteps[0], { name: "build", status: "failure", durationMs: 5, output: longLog }] });
+      const result = await cb({ server: "s", app: "a" });
+      const body = textOf(result);
+      expect(body.steps[0].outputTail).toBeUndefined();
+      const tail: string = body.steps[1].outputTail;
+      expect(tail.endsWith("docker build line 2999")).toBe(true);
+      expect(tail).not.toContain("docker build line 0\n");
+      expect(tail.split("\n").length).toBeLessThanOrEqual(20);
+      expect(tail.length).toBeLessThanOrEqual(1500);
+    });
+
+    it("caps the failing-step tail by characters when lines are very long", async () => {
+      mockDeploy({ status: "failed", steps: [{ name: "build", status: "FAILED", output: `HEAD${"y".repeat(9000)}END` }] });
+      const body = textOf(await cb({ server: "s", app: "a" }));
+      expect(body.steps[0].outputTail.length).toBe(1500);
+      expect(body.steps[0].outputTail.endsWith("END")).toBe(true);
+      expect(body.steps[0].outputTail).not.toContain("HEAD");
+    });
+
+    it("omits the tail for a failed step without output and tolerates missing steps", async () => {
+      mockDeploy({ status: "failed", steps: [{ name: "build", status: "failure" }, { name: "x", status: "failure", output: "" }] });
+      const body = textOf(await cb({ server: "s", app: "a" }));
+      expect(body.steps.every((s: Record<string, unknown>) => s.outputTail === undefined)).toBe(true);
+      mockDeploy({ status: "failed", steps: undefined });
+      expect(textOf(await cb({ server: "s", app: "a" })).steps).toEqual([]);
+    });
+
+    it("cuts off more than 40 steps and reports how many were omitted", async () => {
+      const many = Array.from({ length: 45 }, (_, i) => ({ name: `s${i}`, status: "success", durationMs: 1 }));
+      mockDeploy({ status: "success", steps: many });
+      const body = textOf(await cb({ server: "s", app: "a" }));
+      expect(body.steps).toHaveLength(40);
+      expect(body.stepsOmitted).toBe(5);
+    });
+
+    it("keeps exactly 40 steps without an omitted count and reports one omitted at 41", async () => {
+      const mk = (n: number) => Array.from({ length: n }, (_, i) => ({ name: `s${i}`, status: "success", durationMs: 1 }));
+      mockDeploy({ status: "success", steps: mk(40) });
+      const at40 = textOf(await cb({ server: "s", app: "a" }));
+      expect(at40.steps).toHaveLength(40);
+      expect(at40.stepsOmitted).toBeUndefined();
+      mockDeploy({ status: "success", steps: mk(41) });
+      expect(textOf(await cb({ server: "s", app: "a" })).stepsOmitted).toBe(1);
+    });
+
+    it("projects a preflight-blocked report to its failing checks only", async () => {
+      const checks = Array.from({ length: 9 }, (_, i) => ({
+        name: `check${i}`,
+        passed: i !== 7,
+        message: i === 7 ? `disk almost full ${"m".repeat(600)}` : `fine ${"p".repeat(200)}`,
+        critical: true,
+      }));
+      const report = { passed: false, checks };
+      expect(JSON.stringify(report).indexOf("check7")).toBeGreaterThan(1000);
+      for (const step of [report, JSON.stringify(report)]) {
+        mockDeploy({ status: "failed", steps: [step] });
+        const result = await cb({ server: "s", app: "a" });
+        const body = textOf(result);
+        expect(body.steps[0].raw).toBeUndefined();
+        expect(body.steps[0].preflight.passed).toBe(false);
+        expect(body.steps[0].preflight.failingChecks).toHaveLength(1);
+        const f = body.steps[0].preflight.failingChecks[0];
+        expect(f.name).toBe("check7");
+        expect(f.message.startsWith("disk almost full")).toBe(true);
+        expect(f.message.length).toBeLessThanOrEqual(300);
+        expect(result.content[0].text).not.toContain("check3");
+      }
+    });
+
+    it("ignores a non-report string step and a report without a checks array", async () => {
+      mockDeploy({ status: "failed", steps: ["not json", "{bad", { passed: false }, "blocked by preflight"] });
+      const body = textOf(await cb({ server: "s", app: "a" }));
+      expect(body.steps[0].raw).toBe('"not json"');
+      expect(body.steps[2].raw).toBe('{"passed":false}');
+    });
+
+    it("tolerates malformed checks, caps the failing-check count, and handles non-object JSON strings", async () => {
+      const checks: unknown[] = [null, "x", { passed: false }];
+      for (let i = 0; i < 30; i++) checks.push({ name: `c${i}`, passed: false, message: "m" });
+      mockDeploy({ status: "failed", steps: [{ passed: false, checks }, "5", { name: "k", status: 3 }] });
+      const body = textOf(await cb({ server: "s", app: "a" }));
+      const f = body.steps[0].preflight.failingChecks;
+      expect(f).toHaveLength(20);
+      expect(f[0]).toEqual({ name: "", message: "" });
+      expect(body.steps[1].raw).toBe('"5"');
+      expect(body.steps[2].status).toBe(3);
+    });
+
+    it("drops preflight and raw details once the budget is spent", async () => {
+      const big = { passed: false, checks: Array.from({ length: 20 }, (_, i) => ({ name: `c${i}`, passed: false, message: "q".repeat(290) })) };
+      const steps = [
+        { name: "b", status: "failure", output: "z".repeat(1500) },
+        { name: "b", status: "failure", output: "z".repeat(1500) },
+        { name: "b", status: "failure", output: "z".repeat(1500) },
+        { name: "b", status: "failure", output: "z".repeat(1500) },
+        { name: "b", status: "failure", output: "z".repeat(1500) },
+        big,
+        { weird: "w".repeat(2000) },
+      ];
+      mockDeploy({ status: "failed", steps });
+      const body = textOf(await cb({ server: "s", app: "a" }));
+      expect(body.steps[5]).toEqual({ preflight: { passed: false } });
+      expect(body.steps[6]).toEqual({});
+      expect(body.detailsTruncated).toBe(true);
+    });
+
+    it("caps long step names and statuses", async () => {
+      mockDeploy({ status: "failed", steps: [{ name: "n".repeat(500), status: "s".repeat(500) }] });
+      const body = textOf(await cb({ server: "s", app: "a" }));
+      expect(body.steps[0].name.length).toBe(120);
+      expect(body.steps[0].status.length).toBe(120);
+    });
+
+    it("stops emitting step details once the total budget is spent and flags it", async () => {
+      const bad = Array.from({ length: 45 }, (_, i) => ({ name: `s${i}`, status: "failure", durationMs: 1, output: "z".repeat(5000) }));
+      mockDeploy({ status: "failed", steps: bad });
+      const result = await cb({ server: "s", app: "a" });
+      expect(result.content[0].text.length).toBeLessThan(12000);
+      const body = textOf(result);
+      expect(body.detailsTruncated).toBe(true);
+      expect(body.steps[0].outputTail).toBeDefined();
+      expect(body.steps[39].outputTail).toBeUndefined();
+      expect(body.steps[39].name).toBe("s39");
+      mockDeploy({ status: "failed", steps: [bad[0]] });
+      expect(textOf(await cb({ server: "s", app: "a" })).detailsTruncated).toBeUndefined();
+    });
+
+    it("keeps a short raw step unabridged", async () => {
+      mockDeploy({ status: "failed", steps: [{ note: "n" }, { name: 7, status: 1 }] });
+      const body = textOf(await cb({ server: "s", app: "a" }));
+      expect(body.steps[0].raw).toBe('{"note":"n"}');
+    });
+
+    it("keeps unrecognised step shapes as a bounded raw excerpt", async () => {
+      mockDeploy({ status: "failed", steps: [{ result: { blocked: true, pad: "x".repeat(5000) } }] });
+      const body = textOf(await cb({ server: "s", app: "a" }));
+      expect(body.steps[0].raw).toContain("blocked");
+      expect(body.steps[0].raw.length).toBe(1000);
+      expect(body.steps[0].raw.endsWith("...")).toBe(true);
+    });
+  });
+
   it("wraps a failed deploy POST into an isError result instead of throwing", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ message: "boom" }, 500));
 

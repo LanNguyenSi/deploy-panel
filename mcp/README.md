@@ -56,11 +56,37 @@ allowed to manage.
 |-----------------------|--------------------------------------------------------------------------------------|
 | `deploy_list_servers` | List all servers with their status and app count.                                    |
 | `deploy_list_apps`    | List apps across servers (optional `server` filter by name or ID). 404s if `server` doesn't resolve to a server you own. |
-| `deploy_app`          | Deploy an app (`server`, `app`, optional `force`, `ref`, `wait`); polls until completion unless `wait` is `false`. |
+| `deploy_app`          | Deploy an app (`server`, `app`, optional `force`, `ref`, `wait`, `verbose`); polls until completion unless `wait` is `false`. Returns a compact result by default (see below). |
 | `deploy_status`       | Get the status of a deploy by `deploy_id`.                                           |
 | `deploy_list`         | List past deploys, most recent first (optional `app`, `server`, `status`, `limit`, default `limit` 10, max `limit` 200). Use this to find a `deploy_id` for `deploy_status`. |
 | `deploy_preflight`    | Run preflight checks for an app without deploying.                                   |
 | `deploy_rollback`     | Roll an app back to its previous version (`server`, `app`, optional `wait`); polls until completion unless `wait` is `false`. |
+
+### `deploy_app`: compact result by default
+
+A deploy's steps carry the full build output, which can run to tens of
+thousands of characters and overflow an MCP client's tool-result limit.
+`deploy_app` therefore returns `id`, `status`, `server`, `app`,
+`commitBefore`, `commitAfter`, `duration` and, per step, `name`, `status` and
+`durationMs`. A failing step (`failure`, `failed`, `error`, `timeout`) also
+carries `outputTail`, its last 20 lines capped at 1500 characters. A step
+with an unrecognised shape is returned as a `raw` excerpt of at most 1000
+characters (including a trailing `...` when cut). A preflight-blocked deploy
+(its only step is the relay preflight report) is projected to
+`preflight: { passed: false, failingChecks: [{ name, message }] }`, at most 20
+failing checks with each text capped at 300 characters. Step `name` and
+`status` are capped at 120 characters. More than 40 steps are cut off with a
+`stepsOmitted` count. The `outputTail`, `raw` and failing-check text across all
+steps share a budget of about 8000 characters (counted before JSON escaping);
+a detail that no longer fits the remaining budget is dropped, so its step
+carries only name, status and duration, a later smaller detail can still fit,
+and the response sets `detailsTruncated: true`.
+Pass `verbose: true` for the full deploy object, or call `deploy_status` with
+the deploy id afterwards. `wait: false` is unchanged. Only the MCP response
+changes; `POST /api/v1/deploy` and `GET /api/v1/deploy/:id` still return the
+full steps. `deploy_rollback` still returns the full result (its relay output
+is small by comparison and a blocked rollback nests its payload in
+`steps[0]`).
 
 ### `deploy_list`: `app` filter is resolved client-side
 
