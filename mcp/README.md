@@ -80,7 +80,9 @@ forced deploy is gated only on critical checks, so they are the blocking ones). 
 `status` are capped at 120 characters. More than 40 steps are cut off with a
 `stepsOmitted` count. The `outputTail`, `raw` and failing-check text across all
 steps share a budget of about 8000 characters, counted at their JSON-escaped length
-(ANSI and control characters expand up to six-fold when serialized);
+(ANSI and control characters expand up to six-fold when serialized); only these
+details are budgeted at escaped length, while step `name` and `status` are capped
+at 120 characters raw and are not charged to the budget;
 a detail that no longer fits the remaining budget is dropped, so its step
 carries only name, status and duration, a later smaller detail can still fit,
 and the response sets `detailsTruncated: true`.

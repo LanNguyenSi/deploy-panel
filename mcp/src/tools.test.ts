@@ -450,6 +450,27 @@ describe("deploy_app", () => {
       expect(f[0]).toEqual({ name: "late-critical", message: "m", critical: true });
     });
 
+    it("charges failing-check text at its escaped length: raw fits the budget, escaped does not", async () => {
+      // 20 checks of 300 quote characters: 20 * (2 + 300) raw = 6040 (under 8000),
+      // but each quote escapes to two characters, so the escaped total is over it.
+      const checks = Array.from({ length: 20 }, (_, i) => ({ name: `c${i}`, passed: false, message: '"'.repeat(300) }));
+      mockDeploy({ status: "failed", steps: [{ passed: false, checks }] });
+      const body = textOf(await cb({ server: "s", app: "a" }));
+      expect(body.steps[0]).toEqual({ preflight: { passed: false } });
+      expect(body.detailsTruncated).toBe(true);
+    });
+
+    it("charges raw step excerpts at their escaped length: raw fits the budget, escaped does not", async () => {
+      // Seven 1000-character excerpts are 7000 raw (under 8000); backslashes and
+      // quotes double when escaped, so only some of them fit.
+      const weird = Array.from({ length: 7 }, () => ({ w: '\\"'.repeat(400) }));
+      mockDeploy({ status: "failed", steps: weird });
+      const body = textOf(await cb({ server: "s", app: "a" }));
+      expect(body.steps[0].raw.length).toBe(1000);
+      expect(body.steps[6]).toEqual({});
+      expect(body.detailsTruncated).toBe(true);
+    });
+
     it("keeps a short raw step unabridged", async () => {
       mockDeploy({ status: "failed", steps: [{ note: "n" }, { name: 7, status: 1 }] });
       const body = textOf(await cb({ server: "s", app: "a" }));
