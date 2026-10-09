@@ -18,8 +18,14 @@ const RAW_STEP_MAX_CHARS = 1000;
 const FIELD_MAX_CHARS = 120;
 const CHECK_TEXT_MAX_CHARS = 300;
 const MAX_FAILING_CHECKS = 20;
-// Total characters of outputTail / raw / failing-check text emitted across all steps.
+// Total characters of outputTail / raw / failing-check text emitted across all
+// steps, charged at their JSON-escaped length: the response is serialized as
+// JSON, where ANSI and other control characters expand up to six-fold.
 const DETAILS_BUDGET_CHARS = 8000;
+
+function escapedLength(value: string): number {
+  return JSON.stringify(value).length - 2;
+}
 
 function tailOf(output: string): string {
   const lines = output.split("\n");
@@ -60,19 +66,28 @@ function asBlockedPreflight(step: unknown): PreflightReport | undefined {
   return undefined;
 }
 
+interface FailingCheck {
+  name: string;
+  message: string;
+  critical?: boolean;
+}
+
 function failingChecksOf(report: PreflightReport) {
-  const failing: Array<{ name: string; message: string }> = [];
+  const critical: FailingCheck[] = [];
+  const other: FailingCheck[] = [];
   for (const c of report.checks) {
     if (c && typeof c === "object" && (c as { passed?: unknown }).passed === false) {
-      const { name, message } = c as { name?: unknown; message?: unknown };
-      failing.push({
+      const { name, message, critical: isCritical } = c as { name?: unknown; message?: unknown; critical?: unknown };
+      const entry: FailingCheck = {
         name: capField(name ?? "", CHECK_TEXT_MAX_CHARS),
         message: capField(message ?? "", CHECK_TEXT_MAX_CHARS),
-      });
-      if (failing.length >= MAX_FAILING_CHECKS) break;
+        ...(typeof isCritical === "boolean" ? { critical: isCritical } : {}),
+      };
+      (isCritical === true ? critical : other).push(entry);
     }
   }
-  return failing;
+  // Under a forced deploy only critical failures block, so list them first.
+  return [...critical, ...other].slice(0, MAX_FAILING_CHECKS);
 }
 
 interface Budget {
@@ -94,7 +109,7 @@ function compactStep(step: unknown, budget: Budget) {
   const preflight = asBlockedPreflight(step);
   if (preflight) {
     const failingChecks = failingChecksOf(preflight);
-    const size = failingChecks.reduce((n, c) => n + c.name.length + c.message.length, 0);
+    const size = failingChecks.reduce((n, c) => n + escapedLength(c.name) + escapedLength(c.message), 0);
     return spend(budget, size) ? { preflight: { passed: false, failingChecks } } : { preflight: { passed: false } };
   }
   if (step && typeof step === "object" && typeof (step as { name?: unknown }).name === "string") {
@@ -106,14 +121,14 @@ function compactStep(step: unknown, budget: Budget) {
     };
     if (isFailedStatus(s.status) && typeof s.output === "string" && s.output.length > 0) {
       const tail = tailOf(s.output);
-      if (spend(budget, tail.length)) out.outputTail = tail;
+      if (spend(budget, escapedLength(tail))) out.outputTail = tail;
     }
     return out;
   }
   // Unrecognised shape (for example a relay-blocked rollback payload): keep a bounded raw excerpt.
   const raw = String(JSON.stringify(step));
   const excerpt = raw.length > RAW_STEP_MAX_CHARS ? `${raw.slice(0, RAW_STEP_MAX_CHARS - 3)}...` : raw;
-  return spend(budget, excerpt.length) ? { raw: excerpt } : {};
+  return spend(budget, escapedLength(excerpt)) ? { raw: excerpt } : {};
 }
 
 // Compact projection of a finished deploy: per-step name/status/duration plus a

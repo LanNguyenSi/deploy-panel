@@ -405,6 +405,51 @@ describe("deploy_app", () => {
       expect(textOf(await cb({ server: "s", app: "a" })).detailsTruncated).toBeUndefined();
     });
 
+    it("charges the JSON-escaped length, so escape-heavy output for 40 failing steps stays bounded", async () => {
+      const line = "\u001b[31merror\u001b[0m\u0007\u0000";
+      const output = Array.from({ length: 20 }, () => line.repeat(8)).join("\n");
+      const bad = Array.from({ length: 40 }, (_, i) => ({ name: `s${i}`, status: "failure", durationMs: 1, output }));
+      mockDeploy({ status: "failed", steps: bad });
+      const result = await cb({ server: "s", app: "a" });
+      expect(result.content[0].text.length).toBeLessThan(12000);
+      const body = textOf(result);
+      expect(body.detailsTruncated).toBe(true);
+      expect(body.steps[0].outputTail).toBeDefined();
+      expect(body.steps[39].outputTail).toBeUndefined();
+    });
+
+    it("keeps the critical flag on failing checks and lists critical failures first", async () => {
+      const report = {
+        passed: false,
+        checks: [
+          { name: "a-soft", passed: false, message: "m1", critical: false },
+          { name: "b-unflagged", passed: false, message: "m2" },
+          { name: "c-odd", passed: false, message: "m3", critical: "yes" },
+          { name: "d-hard", passed: false, message: "m4", critical: true },
+          { name: "e-ok", passed: true, message: "m5", critical: true },
+          { name: "f-hard", passed: false, message: "m6", critical: true },
+        ],
+      };
+      mockDeploy({ status: "failed", steps: [report] });
+      const f = textOf(await cb({ server: "s", app: "a" })).steps[0].preflight.failingChecks;
+      expect(f).toEqual([
+        { name: "d-hard", message: "m4", critical: true },
+        { name: "f-hard", message: "m6", critical: true },
+        { name: "a-soft", message: "m1", critical: false },
+        { name: "b-unflagged", message: "m2" },
+        { name: "c-odd", message: "m3" },
+      ]);
+    });
+
+    it("keeps a critical failure beyond the 20-check cap", async () => {
+      const checks: unknown[] = Array.from({ length: 25 }, (_, i) => ({ name: `s${i}`, passed: false, message: "m", critical: false }));
+      checks.push({ name: "late-critical", passed: false, message: "m", critical: true });
+      mockDeploy({ status: "failed", steps: [{ passed: false, checks }] });
+      const f = textOf(await cb({ server: "s", app: "a" })).steps[0].preflight.failingChecks;
+      expect(f).toHaveLength(20);
+      expect(f[0]).toEqual({ name: "late-critical", message: "m", critical: true });
+    });
+
     it("keeps a short raw step unabridged", async () => {
       mockDeploy({ status: "failed", steps: [{ note: "n" }, { name: 7, status: 1 }] });
       const body = textOf(await cb({ server: "s", app: "a" }));

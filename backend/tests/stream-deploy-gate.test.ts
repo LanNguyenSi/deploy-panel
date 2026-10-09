@@ -296,4 +296,33 @@ describe("streamDeploy: relay response handling", () => {
 
     fetchSpy.mockRestore();
   });
+  it("JSON-blocked relay response: stores the preflight report as the step, like the streaming blocked event", async () => {
+    mProvision.mockResolvedValue({ provisionedKeys: [], wrote: false, missing: [] });
+    const preflight = {
+      passed: false,
+      checks: [
+        { name: "disk", passed: false, message: "disk almost full", critical: true },
+        { name: "git", passed: true, message: "clean", critical: false },
+      ],
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: {} as any,
+      headers: new Headers({ "content-type": "application/json" }),
+      json: async () => ({
+        result: { success: false, blocked: true, preflight, durationMs: 3, commitBefore: "a", commitAfter: "a", steps: [] },
+      }),
+    } as unknown as Response);
+
+    await streamDeploy(baseOpts);
+
+    const update = lastCall(mDeployUpdate);
+    expect(update.data.status).toBe("failed");
+    expect(lastCall(mAppUpdate).data.status).toBe("unhealthy");
+    const steps = JSON.parse(update.data.log);
+    expect(steps).toContainEqual(preflight);
+
+    fetchSpy.mockRestore();
+  });
 });

@@ -73,11 +73,14 @@ carries `outputTail`, its last 20 lines capped at 1500 characters. A step
 with an unrecognised shape is returned as a `raw` excerpt of at most 1000
 characters (including a trailing `...` when cut). A preflight-blocked deploy
 (its only step is the relay preflight report) is projected to
-`preflight: { passed: false, failingChecks: [{ name, message }] }`, at most 20
-failing checks with each text capped at 300 characters. Step `name` and
+`preflight: { passed: false, failingChecks: [{ name, message, critical? }] }`, at most 20
+failing checks with each text capped at 300 characters. `critical` is carried
+when the check reports a boolean, and critical failures are listed first (a
+forced deploy is gated only on critical checks, so they are the blocking ones). Step `name` and
 `status` are capped at 120 characters. More than 40 steps are cut off with a
 `stepsOmitted` count. The `outputTail`, `raw` and failing-check text across all
-steps share a budget of about 8000 characters (counted before JSON escaping);
+steps share a budget of about 8000 characters, counted at their JSON-escaped length
+(ANSI and control characters expand up to six-fold when serialized);
 a detail that no longer fits the remaining budget is dropped, so its step
 carries only name, status and duration, a later smaller detail can still fit,
 and the response sets `detailsTruncated: true`.
