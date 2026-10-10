@@ -38,11 +38,11 @@ interface RelayAppDetail {
 
 /**
  * First agent-relay release that records a caller-supplied deploy id in its
- * history (the X-Deploy-Id support added after 0.5.0). The relay reports its
+ * history (the X-Deploy-Id support): agent-relay 0.6.0. The relay reports its
  * version on the public GET /health ({ status, version }, agent-relay
  * src/index.ts), so the capability is read per check instead of being inferred
- * from history, and survives a panel restart. Update this if the release that
- * ships the id support is numbered differently.
+ * from history, and survives a panel restart. Confirmed against the 0.6.0
+ * release.
  */
 export const RELAY_DEPLOY_ID_MIN_VERSION = "0.6.0";
 
