@@ -143,6 +143,12 @@ describe("relay deploy-id capability", () => {
   it("relayVersionSupportsDeployIds gates on the minimum release", () => {
     expect(relayVersionSupportsDeployIds("0.5.0")).toBe(false);
     expect(relayVersionSupportsDeployIds("0.5.9")).toBe(false);
+    expect(relayVersionSupportsDeployIds("0.5.99")).toBe(false);
+    expect(relayVersionSupportsDeployIds("v0.5.12")).toBe(false);
+    expect(relayVersionSupportsDeployIds("0.6.0")).toBe(true);
+    expect(relayVersionSupportsDeployIds("0.6")).toBe(false);
+    expect(relayVersionSupportsDeployIds("")).toBe(false);
+    expect(relayVersionSupportsDeployIds(6)).toBe(false);
     expect(relayVersionSupportsDeployIds(RELAY_DEPLOY_ID_MIN_VERSION)).toBe(true);
     expect(relayVersionSupportsDeployIds("0.6.1")).toBe(true);
     expect(relayVersionSupportsDeployIds("v1.0.0")).toBe(true);
