@@ -96,7 +96,7 @@ The frontend is client-side code: the browser calls the backend directly at `NEX
 
 ## App secrets
 
-Per-app secrets (e.g. an app's `METRICS_API_TOKEN`) are stored encrypted in the panel's own database, not in the app's untracked `.env` on the VPS — that file is wiped by `git clean -fdx` / re-clone, which is exactly the failure mode this replaces (see the 2026-06-07 triologue-health-dashboard incident: a required token was never provisioned outside a hand-written `.env`, so a clean re-deploy silently crashlooped).
+Per-app secrets (e.g. an app's `METRICS_API_TOKEN`) are stored encrypted in the panel's own database, not in the app's untracked `.env` on the VPS. That file is wiped by `git clean -fdx` / re-clone, which is exactly the failure mode this replaces: a required token that lived only in a hand-written `.env` is lost on a clean re-deploy and the app crashloops.
 
 - `PUT /api/servers/:serverId/apps/:name/secrets/:key` with `{ "value": "..." }` sets (or updates) one secret. Write-only: no route ever returns a value once set, only the key name and whether it's set (`GET .../secrets`).
 - `PUT /api/servers/:serverId/apps/:name/required-env-keys` with `{ "keys": [...] }` declares which env keys the app requires to run.

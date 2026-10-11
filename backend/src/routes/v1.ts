@@ -256,8 +256,8 @@ v1Router.get("/deploys", async (c) => {
 // asynchronously. The terminal outcome is only readable by polling
 // GET /api/v1/deploy/:id until `status` leaves `running`: `rolled_back` or
 // `failed` (written from the relay's answer, with the commits and the relay
-// payload in `steps`), or `success`/`failed` when the 5xx recovery path
-// finalized the row. The 202 status code is part of the contract: do not
+// payload in `steps`), or `success`/`failed`/`interrupted` when the recovery
+// path finalized the row. The 202 status code is part of the contract: do not
 // turn this into a synchronous response.
 // App.status: blocked-by-preflight and relay-reported success:false set
 // `unhealthy`; a relay-reported success writes `healthy` only after the

@@ -15,9 +15,9 @@ jobs:
     steps:
       - uses: LanNguyenSi/deploy-panel/action@main
         with:
-          url: https://deploy-panel.opentriologue.ai
+          url: https://panel.example.com
           api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
-          server: "VPS-01 (Stone)"
+          server: prod-1
           app: myapp
 ```
 
@@ -50,7 +50,7 @@ jobs:
   with:
     url: ${{ vars.DEPLOY_PANEL_URL }}
     api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
-    server: VPS-01
+    server: prod-1
     app: myapp
     preflight: true
 ```
@@ -64,7 +64,7 @@ The preflight step still runs and prints its checks, but a failed preflight no l
   with:
     url: ${{ vars.DEPLOY_PANEL_URL }}
     api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
-    server: VPS-01
+    server: prod-1
     app: myapp
     force: true
 ```
@@ -76,7 +76,7 @@ The preflight step still runs and prints its checks, but a failed preflight no l
   with:
     url: ${{ vars.DEPLOY_PANEL_URL }}
     api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
-    server: VPS-01
+    server: prod-1
     app: myapp
     preflight: false
 ```
@@ -88,7 +88,7 @@ The preflight step still runs and prints its checks, but a failed preflight no l
   with:
     url: ${{ vars.DEPLOY_PANEL_URL }}
     api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
-    server: VPS-01
+    server: prod-1
     app: myapp
     wait: false
 ```

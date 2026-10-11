@@ -18,6 +18,9 @@ The authoritative reference is
 `migration.sql` files under this directory are schema-history documentation
 only. Nothing in this repo's actual deploy or dev path reads or applies
 them — it is current against main and deliberately not restated here.
+The README also states that the record is incomplete (no baseline for the
+initial tables, and several later tables and columns have no migration), so
+the folder cannot be replayed onto an empty database as is.
 
 The two call sites that actually mutate a live database schema, both running
 `prisma db push` against `prisma/schema.prisma` directly:
