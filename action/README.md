@@ -15,9 +15,9 @@ jobs:
     steps:
       - uses: LanNguyenSi/deploy-panel/action@main
         with:
-          url: https://deploy-panel.opentriologue.ai
+          url: https://panel.example.com
           api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
-          server: "VPS-01 (Stone)"
+          server: prod-1
           app: myapp
 ```
 
@@ -39,7 +39,7 @@ jobs:
 | Output | Description |
 |--------|-------------|
 | `deploy-id` | Deploy UUID |
-| `status` | Final status: `success`, `failed`, `timeout`, `running` |
+| `status` | Final deploy status when `wait` is true (`success`, `failed`, `interrupted`) or `timeout`; empty when `wait` is false. When waiting, the job fails for any value other than `success` |
 
 ## Examples
 
@@ -50,21 +50,35 @@ jobs:
   with:
     url: ${{ vars.DEPLOY_PANEL_URL }}
     api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
-    server: VPS-01
+    server: prod-1
     app: myapp
     preflight: true
 ```
 
-### Force deploy (skip preflight)
+### Force deploy (preflight still runs; failures do not block)
+
+The preflight step still runs and prints its checks, but a failed preflight no longer fails the job. `force: true` is also sent with the deploy request.
 
 ```yaml
 - uses: LanNguyenSi/deploy-panel/action@main
   with:
     url: ${{ vars.DEPLOY_PANEL_URL }}
     api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
-    server: VPS-01
+    server: prod-1
     app: myapp
     force: true
+```
+
+### Skip preflight
+
+```yaml
+- uses: LanNguyenSi/deploy-panel/action@main
+  with:
+    url: ${{ vars.DEPLOY_PANEL_URL }}
+    api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
+    server: prod-1
+    app: myapp
+    preflight: false
 ```
 
 ### Fire and forget
@@ -74,7 +88,7 @@ jobs:
   with:
     url: ${{ vars.DEPLOY_PANEL_URL }}
     api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
-    server: VPS-01
+    server: prod-1
     app: myapp
     wait: false
 ```

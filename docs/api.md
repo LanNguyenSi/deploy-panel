@@ -23,7 +23,7 @@ All endpoints are served by the Hono backend on `PORT` (default `3001`) and pref
 | GET    | `/api/servers/:id/system`         | Get system info (CPU, memory, disk) from relay       |
 | POST   | `/api/servers/:serverId/sync`     | Sync apps list from relay to local database          |
 | POST   | `/api/servers/install-relay`      | Onboard a new VPS: installs agent-relay over SSH and creates the server row on success. Streams progress as SSE (`progress`, `error`, `done` events); one install at a time per actor (429 otherwise), 409 if the host is already registered |
-| POST   | `/api/servers/:id/install-relay`  | Install or reinstall agent-relay on the VPS over SSH (long-running; locks per server and per actor) |
+| POST   | `/api/servers/:id/install-relay`  | Install or reinstall agent-relay on the VPS over SSH (long-running; locks per server and per actor). Streams progress as SSE |
 
 ## Apps
 
@@ -61,15 +61,15 @@ All app endpoints are nested under a server: `/api/servers/:serverId/apps`.
 
 | Method | Path          | Description                                                        |
 |--------|---------------|--------------------------------------------------------------------|
-| GET    | `/api/audit`  | List audit log entries. Supports `limit` and `offset` query params; response includes `total` for pagination. |
+| GET    | `/api/audit`  | List audit log entries. Supports `action`, `limit` (default 100, max 500) and `offset`; response includes `total`. Non-admin callers see only their own entries. |
 
 ## Scheduled deploys
 
 | Method | Path                 | Description                        |
 |--------|----------------------|------------------------------------|
-| GET    | `/api/scheduled`     | List all scheduled deploy entries  |
-| POST   | `/api/scheduled`     | Create a new scheduled deploy      |
-| DELETE | `/api/scheduled/:id` | Delete a scheduled deploy          |
+| GET    | `/api/scheduled`     | List scheduled deploys (`status` query: `pending` by default, `all` for every status; at most 50, soonest first) |
+| POST   | `/api/scheduled`     | Schedule a one-time deploy; body `{ server, app, scheduledFor, force? }` (`server` is a name or id; `scheduledFor` must be in the future) |
+| DELETE | `/api/scheduled/:id` | Cancel a pending scheduled deploy (sets status `cancelled`; 404 once triggered) |
 
 ## API v1 (CI/CD pipeline integration)
 
@@ -81,10 +81,19 @@ All v1 endpoints are prefixed with `/api/v1` and authenticated with a Bearer cre
 | GET    | `/api/v1/apps`        | List all apps (optionally filtered by `server_id`, which accepts a server name or id). `server_id` set to a server you don't own, or that doesn't resolve, answers 404 rather than an empty list |
 | POST   | `/api/v1/deploy`      | Trigger a deploy for a given app                                   |
 | GET    | `/api/v1/deploy/:id`  | Get status of a specific deploy                                    |
-| GET    | `/api/v1/deploys`     | List deploys with `offset` / `total` pagination, optionally filtered by `server_id` (accepts a server name or id), `app_id`, `status`. `server_id` set to a server you don't own, or that doesn't resolve, answers 404 rather than an empty list. `app_id` is an app id only (app names are unique per server, not globally) |
-| POST   | `/api/v1/rollback`    | Trigger a rollback for a given app. Answers `202` with `deploy.status: "running"` and finishes asynchronously: poll `GET /api/v1/deploy/:id` until `status` leaves `running` (`rolled_back`, `failed`, or `success`/`failed` when the 5xx recovery path finalized the row). App status: blocked by preflight or a relay-reported `success: false` sets `unhealthy`; a relay-reported success sets `healthy` only after the post-deploy health gate passes, `unhealthy` otherwise (the app status can lag the polled row by the length of the gate). A relay 4xx marks the row `failed`; the relay tags its rollback error with a `phase`, and an `after_reset` 4xx (the relay attempted `git reset --hard`, e.g. `Rebuild failed` or a reset that failed part-way) sets the app `unhealthy`, while a `before_reset` 4xx (bad ref, unknown app; HEAD did not move) or an untagged one from an older relay leaves the app status untouched |
+| GET    | `/api/v1/deploys`     | List deploys with `limit` (default 50, max 200) and `offset` / `total` pagination, optionally filtered by `server_id` (accepts a server name or id), `app_id`, `status`. `server_id` set to a server you don't own, or that doesn't resolve, answers 404 rather than an empty list. `app_id` is an app id only (app names are unique per server, not globally) |
+| POST   | `/api/v1/rollback`    | Trigger a rollback for a given app. Answers `202` with `deploy.status: "running"` and finishes asynchronously: poll `GET /api/v1/deploy/:id` until `status` leaves `running` (`rolled_back` or `failed` from the relay's answer, or `success`, `failed` or `interrupted` when connection-lost recovery finalized the row; a rollback the panel cannot prove ran ends `interrupted`). App status: blocked by preflight or a relay-reported `success: false` sets `unhealthy`; a relay-reported success sets `healthy` only after the post-deploy health gate passes, `unhealthy` otherwise (the app status can lag the polled row by the length of the gate). A relay 4xx marks the row `failed`; the relay tags its rollback error with a `phase`, and an `after_reset` 4xx (the relay attempted `git reset --hard`, e.g. `Rebuild failed` or a reset that failed part-way) sets the app `unhealthy`, while a `before_reset` 4xx (bad ref, unknown app; HEAD did not move) or an untagged one from an older relay leaves the app status untouched |
 | GET    | `/api/v1/logs`        | Fetch logs for a given app                                         |
 | POST   | `/api/v1/preflight`   | Run preflight checks for a given app                               |
+
+### Request parameters
+
+`server` is a server name or id in every route below.
+
+- `POST /api/v1/deploy`: body `{ server, app, force?, ref? }`. `app` must already be known to the panel (see `POST /api/servers/:serverId/sync` above), otherwise 404; this route does not create apps. `ref` is passed to the relay as the branch. Answers 422 when the server has no relay, and 202 with `{ deploy: { id, status, server, app, triggeredBy } }` on success.
+- `POST /api/v1/rollback`: body `{ server, app, to_commit? }`. As with deploy, an app the panel does not know answers 404.
+- `GET /api/v1/logs`: query `server`, `app`, `lines` (1 to 1000, default 50).
+- `POST /api/v1/preflight`: body `{ server, app }`. Returns the relay's `{ passed, checks }`, including the panel's required-env check when the app declares required keys.
 
 Example: trigger a deploy from a CI job.
 
@@ -92,15 +101,15 @@ Example: trigger a deploy from a CI job.
 curl -X POST https://panel.example.com/api/v1/deploy \
   -H "Authorization: Bearer $PANEL_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"server": "srv_abc", "app": "web-prod"}'
+  -d '{"server": "prod-1", "app": "web-prod"}'
 ```
 
-The response includes a deploy id you can poll via `GET /api/v1/deploy/:id` to wait for `success` / `failed` / `rolled_back` / `interrupted` (the relay connection was lost and the panel could not prove the deploy reached its target).
+The response includes a deploy id you can poll via `GET /api/v1/deploy/:id` to wait for `success` / `failed` / `interrupted` (the relay connection was lost and the panel could not prove the deploy reached its target).
 
 ## Other endpoints
 
 The backend also exposes endpoints that the panel UI itself uses. They are not part of the stable CI/CD (`/api/v1`) surface and may change:
 
-- `/api/auth/*`: email/password login, GitHub OAuth (`/github/config`, `/github/start`, `/github/callback`), the identity-broker registration endpoint (`POST /api/auth/register-from-project-pilot`), and `/api/auth/check`. See [configuration.md#authentication](configuration.md#authentication).
+- `/api/auth/*`: admin token login and logout (`POST /login`, `POST /logout`), GitHub OAuth (`/github/config`, `/github/start`, `/github/callback`), the identity-broker registration endpoint (`POST /api/auth/register-from-project-pilot`), and `/api/auth/check`. See [configuration.md#authentication](configuration.md#authentication).
 - `/api/api-keys`: create, list, and revoke `dp_` API keys (panel-session auth only; rejects API-key auth).
-- `/api/servers/probe-vps` and `/api/servers/:id/update-relay-image`: VPS provisioning helpers used by the server-management UI.
+- `/api/servers/probe-vps` and `/api/servers/:id/update-relay-image`: VPS provisioning helpers used by the server-management UI. `update-relay-image` also streams progress as SSE.

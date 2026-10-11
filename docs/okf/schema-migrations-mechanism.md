@@ -3,7 +3,7 @@ type: overview
 title: Schema migrations mechanism — pointer to the migrations README
 description: Pointer doc — backend/prisma/migrations/README.md is the authoritative statement that migration.sql files are documentation-only; every path that actually applies the schema (Docker entrypoint, local `make db-push`) runs `prisma db push`, never `prisma migrate deploy`.
 tags: [prisma, migrations, pointer]
-timestamp: 2026-07-16T05:46:15Z
+timestamp: 2026-10-11T12:55:37Z
 sources:
   - backend/prisma/migrations/README.md
   - backend/backend-entrypoint.sh
@@ -18,6 +18,9 @@ The authoritative reference is
 `migration.sql` files under this directory are schema-history documentation
 only. Nothing in this repo's actual deploy or dev path reads or applies
 them — it is current against main and deliberately not restated here.
+The README also states that the record is incomplete (no baseline for the
+initial tables, and several later tables and columns have no migration), so
+the folder cannot be replayed onto an empty database as is.
 
 The two call sites that actually mutate a live database schema, both running
 `prisma db push` against `prisma/schema.prisma` directly:

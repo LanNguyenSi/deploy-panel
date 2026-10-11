@@ -15,7 +15,18 @@ So when `schema.prisma` changes, add a migration folder here anyway (one per
 schema-affecting change, named `YYYYMMDD_description`, following the
 existing folders) — it's the reviewable, human-readable record of what
 changed and why, and it's what a future move to `prisma migrate deploy`
-would replay. Just don't expect `prisma migrate dev/deploy` to have been run
+would replay.
+
+The record is incomplete: there is no baseline for the initial tables
+(`servers`, `apps`, `deploys`), and the `users` and `sessions` tables, the
+ownership columns (`servers.userId`, `api_keys.userId`,
+`audit_logs.actorUserId`), `api_keys.revokedAt`, `apps.tag` and
+`apps.liveUrl` have no migration. The folder cannot be replayed onto an empty
+database as is (`20260408_add_scheduled_deploys` already references
+`servers`); a move to `prisma migrate deploy` first needs a baseline generated
+from `schema.prisma`.
+
+Don't expect `prisma migrate dev/deploy` to have been run
 against a live database as part of authoring one of these; verify a new
 migration's SQL by inspection (and, ideally, by running it against a local
 Postgres once one is available) rather than assuming CI or prod applies it.
