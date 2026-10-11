@@ -50,7 +50,7 @@ sequenceDiagram
   end
 ```
 
-The diagram leaves out a preflight-blocked relay answer and an unparseable JSON body, which `streamDeploy` writes `failed` directly, and a relay error while the secrets are written, which also goes to `recoverBrokenDeploy`. The sections below state each step and its code location.
+The diagram leaves out a streamed `blocked` or `error` event and an unparseable JSON body, which `streamDeploy` writes `failed` directly, and a relay error while the secrets are written, which also goes to `recoverBrokenDeploy`. The sections below state each step and its code location.
 
 ## Relay success is a claim, not a verdict
 
