@@ -3,7 +3,7 @@ type: overview
 title: Schema migrations mechanism — pointer to the migrations README
 description: Pointer doc — backend/prisma/migrations/README.md is the authoritative statement that migration.sql files are documentation-only; every path that actually applies the schema (Docker entrypoint, local `make db-push`) runs `prisma db push`, never `prisma migrate deploy`.
 tags: [prisma, migrations, pointer]
-timestamp: 2026-07-16T05:46:15Z
+timestamp: 2026-10-11T12:55:37Z
 sources:
   - backend/prisma/migrations/README.md
   - backend/backend-entrypoint.sh
