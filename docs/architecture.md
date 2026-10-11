@@ -4,22 +4,41 @@ How deploy-panel turns a fleet of VPS boxes into a single web UI plus a CI-frien
 
 ## Layers
 
-```
-   Browser
-      |
-      v
- [Next.js 15 frontend]   (React 19, app router, port 3000)
-      |
-      v
- [Hono backend]          (Node 20+, port 3001, /api and /api/v1)
-      |    |
-      |    +--> [PostgreSQL 16]   servers, apps, deploys, audit, scheduled
-      |
-      v
- [agent-relay on each VPS]  (HTTP, deploy / rollback / logs / preflight)
+The diagram shows the network edges of a running panel: the clients that call the backend, the stores and hosts the backend talks to, and the scheduler that runs inside the backend process.
+
+```mermaid
+flowchart TD
+  subgraph clients["Clients"]
+    B["Browser"]
+    CI["GitHub Action or CI job"]
+    M["MCP server (mcp/)"]
+  end
+  subgraph proc["backend process"]
+    H["Hono backend :3001<br/>/api and /api/v1"]
+    S["Scheduler and<br/>stuck-deploy sweep"]
+  end
+  D[("PostgreSQL 16")]
+  F["Next.js 15 frontend :3000"]
+  subgraph ext["Fleet and external services"]
+    R["agent-relay on each VPS"]
+    V["VPS host"]
+    G["GitHub"]
+    L["App liveUrl"]
+  end
+  B -->|"fetch /api, with cookies"| H
+  B -->|page load| F
+  CI -->|"/api/v1, Bearer token"| H
+  M -->|"/api/v1, Bearer dp_ key"| H
+  H -->|Prisma| D
+  S -->|Prisma| D
+  H -->|"HTTP, Bearer relayToken"| R
+  S -->|"HTTP: scheduled deploys,<br/>stuck-deploy checks"| R
+  H -->|"SSH: probe, install,<br/>re-install, image update"| V
+  H -->|"HTTPS: OAuth, user lookup"| G
+  H -->|post-deploy route probe| L
 ```
 
-The frontend is a thin client over the backend's REST API. The backend owns all persistence (Prisma + PostgreSQL) and is the only thing that talks to relays. There is no direct browser-to-relay path: every relay call is proxied through the backend so the panel can record audit entries, attach the right `relayToken`, and update deploy status in one place.
+The frontend serves pages and client-side code; the browser calls the backend's REST API directly, so the backend must be reachable from the browser (same origin under `/api` in `docker-compose.prod.yml`). The backend owns all persistence (Prisma + PostgreSQL) and is the only component that talks to relays (HTTP) and to VPS hosts (SSH, for relay onboarding and maintenance). There is no direct browser-to-relay path: every relay call is proxied through the backend so the panel can record audit entries, attach the right `relayToken`, and update deploy status in one place.
 
 ## Stack
 
@@ -29,6 +48,7 @@ The frontend is a thin client over the backend's REST API. The backend owns all 
 | Backend  | Hono, Prisma, Zod, Node.js 20+          |
 | Database | PostgreSQL 16                            |
 | Relay    | HTTP client proxying to agent-relay APIs |
+| Provisioning | SSH client (relay probe, install, re-install, image update) |
 
 ## Relay integration
 
@@ -38,15 +58,39 @@ Each `Server` row stores a `relayUrl` (e.g. `http://vps-ip:3002`) and an optiona
 2. Forwards the request to the agent-relay HTTP API (e.g. `POST /api/apps/:name/deploy`, `POST /api/apps/:name/rollback`, `GET /api/apps/:name/logs`, `GET /api/apps/:name/preflight`).
 3. Records the result in the `deploys` table and updates the app status.
 
-Relay calls use per-operation timeouts: 5 seconds for connectivity and system-info checks, 5 minutes for standard relay operations (rollback, logs, preflight), and 10 minutes for streaming deploys. If the relay is unreachable or returns an error, the deploy is marked as failed unless the post-deploy health gate positively confirms the app is healthy (connection-loss recovery) — see `docs/okf/deploy-outcome-trust-chain.md` for the full mechanism — and the outcome is visible in deploy history either way.
+The backend also calls the relay for env reads and writes, app listing and detail (sync and the upstream check), and the relay `/health` version check.
+
+Relay calls use per-operation timeouts: 5 seconds for connectivity and system-info checks, 5 minutes for standard relay operations (rollback, logs, preflight), and 10 minutes for streaming deploys. A relay 4xx or a relay-reported failure marks the deploy failed. When the connection is lost or the relay answers 5xx, connection-loss recovery marks the deploy success only when the post-deploy health gate confirms the app and the relay history shows this deploy reached its target, interrupted when the app is healthy but that proof is missing, and failed otherwise; see `docs/okf/deploy-outcome-trust-chain.md` for the full mechanism. The outcome is visible in deploy history either way.
 
 ## Data model
 
 - **Server**: a VPS instance with host, optional SSH key path, relay URL/token, and connection status (`unknown`, `online`, `offline`, `no-relay`).
-- **App**: a deployed application per server with health status (`unknown`, `healthy`, `unhealthy`, `deploying`); unique per `(serverId, name)`.
-- **Deploy**: deployment history with commit SHAs (before / after), status (`pending`, `running`, `success`, `failed`, `rolled_back`, `interrupted`), duration, logs, and trigger source.
+- **App**: a deployed application per server with health status (`unknown`, `healthy`, `unhealthy`, `deploying`); unique per `(serverId, name)`. Apps enter the panel through relay sync (only apps the relay reports as configured; the server page syncs on every load) or on the first panel action that names the app: a UI deploy, bulk deploy or rollback, an env, secret or required-env edit, or a scheduled deploy. `/api/v1` never creates apps and answers 404 for an app the panel does not know yet.
+- **Deploy**: deployment history with commit SHAs (before / after), status (`running`, `success`, `failed`, `rolled_back`, `interrupted`), duration, logs, and trigger source. Every writer creates a row as `running`; `pending` is only the column default and is never written.
 - **Audit**: append-only audit trail of user-initiated actions (deploy, rollback, server changes, etc.).
-- **Scheduled**: scheduled deploy entries for cron-like recurring deploys.
+- **ScheduledDeploy**: a one-time deploy queued for a future `scheduledFor` time (`pending`, then `triggered` or `cancelled`); the backend checks for due entries every 60 seconds.
+- **User**: a GitHub identity, created by the native OAuth login or the identity broker. A user acts as a non-admin actor.
+- **Session**: hashed GitHub login sessions.
+- **ApiKey**: hashed `dp_` keys. A key bound to a user acts as that user (the identity broker issues these); a key without a user binding acts as admin.
+- **AppSecret**: per-app secrets encrypted with `APP_SECRETS_KEY`.
+- **EnvVarChange**: history of env keys edited through the panel (no values).
+
+`Server.userId` is null for admin-shared servers and set for servers a non-admin user created; see [okf/auth-and-ownership-model.md](okf/auth-and-ownership-model.md).
+
+The state diagram shows how a deploy row moves from `running` to its final status and which code path decides each one.
+
+```mermaid
+stateDiagram-v2
+  [*] --> running
+  running --> failed: missing required env, relay 4xx, relay failure or health gate fails
+  running --> success: relay success and health gate pass, or recovery or stuck sweep proves the target
+  running --> rolled_back: rollback route, relay success
+  running --> interrupted: recovery or stuck sweep cannot prove the target
+  success --> [*]
+  failed --> [*]
+  rolled_back --> [*]
+  interrupted --> [*]
+```
 
 ## Frontend pages
 
@@ -57,9 +101,9 @@ Relay calls use per-operation timeouts: 5 seconds for connectivity and system-in
 | `/servers/[id]`    | App Management   | View apps on a server; deploy, rollback, view logs, run preflight checks     |
 | `/deploys`         | Deploy History   | Filterable table of all deployments with status, commit, duration, timestamp |
 | `/audit`           | Audit Log        | Filterable audit trail of user actions                                       |
-| `/scheduled`       | Scheduled Deploys| Fleet-wide overview of upcoming scheduled (cron-like) deploys; cancel or reschedule |
+| `/scheduled`       | Scheduled Deploys| Fleet-wide list of upcoming one-time scheduled deploys; cancel a pending one |
 | `/login`           | Login            | Authentication page                                                          |
-| `/settings`        | Settings         | Panel configuration and user preferences                                     |
+| `/settings`        | Settings         | Create, list and revoke `dp_` API keys; shows example API and MCP invocations |
 | `/styleguide`      | Styleguide       | Design-token and component reference; an unlinked dev route (not in the navigation), dark-only palette; not gated: it is a static page served in production builds too, and needs no login |
 
 ## Why proxy instead of direct browser-to-relay?

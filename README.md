@@ -4,7 +4,7 @@ Web control panel for VPS deployments, paired with [agent-relay](https://github.
 
 [![CI](https://github.com/LanNguyenSi/deploy-panel/actions/workflows/ci.yml/badge.svg)](https://github.com/LanNguyenSi/deploy-panel/actions/workflows/ci.yml)
 
-deploy-panel is a Next.js + Hono app that drives a fleet of VPS servers running [agent-relay](https://github.com/LanNguyenSi/agent-relay). It tracks servers, apps, and deploy history in PostgreSQL via Prisma, and proxies deploy / rollback / logs / preflight requests to each VPS's relay over HTTP. Built so a small team (or solo operator) can ship to a handful of boxes without juggling SSH tabs.
+deploy-panel is a Next.js + Hono app that drives a fleet of VPS servers running [agent-relay](https://github.com/LanNguyenSi/agent-relay). It tracks servers, apps, and deploy history in PostgreSQL via Prisma, proxies deploy / rollback / logs / preflight requests to each VPS's relay over HTTP, and installs or updates the relay on a VPS over SSH. Built so a small team (or solo operator) can ship to a handful of boxes without juggling SSH tabs.
 
 ![deploy-panel Servers view: a VPS's registered apps, each with a health badge and Deploy, Rollback, Logs, Preflight, Schedule, and Env actions.](docs/img/servers.png)
 
@@ -12,9 +12,9 @@ deploy-panel is a Next.js + Hono app that drives a fleet of VPS servers running 
 
 - Web dashboard for a fleet of VPS servers: per-app health badges and Deploy, Rollback, Logs, Preflight, Schedule, and Env actions.
 - `/api/v1` REST API for CI/CD (deploy, rollback), authenticated with a `PANEL_TOKEN` or a `dp_` API key.
-- Deploy and rollback history recorded in PostgreSQL via Prisma, per server, plus a panel-wide audit log (deploys, rollbacks, server/app changes, logins, API key issuance/revocation).
+- Deploy and rollback history recorded in PostgreSQL via Prisma, per server, plus a panel-wide audit log (deploys, rollbacks, schedules, server creation and deletion, VPS probes, relay installs and relay image updates, app env, secret, required-env and live-URL changes, GitHub OAuth logins, API key issuance and revocation).
 - Per-app secrets stored encrypted in the panel's own database (not in an untracked `.env` on the VPS), gated by a required-env check that hard-fails a deploy if a declared key is still unset.
-- GitHub OAuth login, plus an identity-broker flow for provisioning users from a trusted upstream (e.g. [project-pilot](https://github.com/LanNguyenSi/project-pilot)).
+- GitHub OAuth login, plus a public identity-broker endpoint for provisioning users from an upstream such as [project-pilot](https://github.com/LanNguyenSi/project-pilot) (see the security model in [docs/configuration.md](docs/configuration.md#security-model)).
 - MCP server so an AI agent can drive deploys directly; see [mcp/README.md](mcp/README.md).
 - `scripts/smoke-check.sh` to verify auth, DB-backed queries, and fleet reachability against a live instance.
 
@@ -61,7 +61,7 @@ API v1 deploy from a CI job:
 curl -X POST https://panel.example.com/api/v1/deploy \
   -H "Authorization: Bearer $PANEL_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"server": "srv_abc", "app": "web-prod"}'
+  -d '{"server": "prod-1", "app": "web-prod"}'
 ```
 
 ## Documentation

@@ -1,6 +1,6 @@
 # Configuration
 
-deploy-panel is configured entirely via environment variables. Neither the backend nor the frontend load `.env` themselves when run on the host (`make dev`, `npm run dev`, or the bare Prisma CLI from inside `backend/`): the shell running them needs the repo-root `.env` (see `.env.example`) already exported, for example `set -a; . ./.env; set +a`, or a tool like direnv. Running the Prisma CLI from the repo root with `--schema backend/prisma/schema.prisma` is the one exception: Prisma's own dotenv loading then picks up the root `.env` file directly, without a shell export (see "Local development" below). `docker compose` loads the repo-root `.env` into containers on its own, no export needed.
+deploy-panel is configured entirely via environment variables. Neither the backend nor the frontend load `.env` themselves when run on the host (`make dev`, `npm run dev`, or the bare Prisma CLI from inside `backend/`): the shell running them needs the repo-root `.env` (see `.env.example`) already exported, for example `set -a; . ./.env; set +a`, or a tool like direnv. Running the Prisma CLI from the repo root with `--schema backend/prisma/schema.prisma` is the one exception: Prisma's own dotenv loading then picks up the root `.env` file directly, without a shell export (see "Local development" below). `docker compose` reads the repo-root `.env` only to fill the `${...}` placeholders in the compose file; a container receives only the variables listed under its `environment:` key (see "Docker deployment" below).
 
 ## Prerequisites
 
@@ -13,19 +13,19 @@ deploy-panel is configured entirely via environment variables. Neither the backe
 | Variable                | Required | Default                          | Description                          |
 |-------------------------|----------|----------------------------------|--------------------------------------|
 | `DATABASE_URL`          | Yes      | (none)                           | PostgreSQL connection string         |
-| `SESSION_SECRET`        | Yes      | (none)                           | Session signing secret, min 16 chars |
-| `PANEL_TOKEN`           | No       | (none)                           | Bearer token for `/api/v1` (CI/CD) endpoints |
+| `SESSION_SECRET`        | Yes      | (none)                           | Required by the startup config check (min 16 chars). Not used to sign anything at present: GitHub sessions are random tokens stored hashed in the `sessions` table, and the admin `panel_session` cookie carries the `PANEL_TOKEN` itself |
+| `PANEL_TOKEN`           | No       | (none)                           | Admin credential: the UI login token and a Bearer token for the authenticated API routes, including `/api/v1`. Required when `NODE_ENV=production` (see below) |
 | `PORT`                  | No       | `3001`                           | Backend port                         |
 | `CORS_ORIGINS`          | No       | `http://localhost:3000`          | Allowed CORS origins (comma-separated) |
-| `FRONTEND_URL`          | No       | `http://localhost:3000`          | Frontend URL (used for redirects, CSRF) |
+| `FRONTEND_URL`          | No       | `http://localhost:3000`          | Frontend URL the GitHub OAuth callback redirects to after login or on error |
 | `BACKEND_URL`           | No       | `http://localhost:3001`          | Absolute backend URL, used to build the OAuth callback redirect |
-| `NODE_ENV`              | No       | `development`                    | Node environment                     |
+| `NODE_ENV`              | No       | `development` (host run); `production` under `docker-compose.yml` unless `.env` sets it | Node environment. `.env.example` sets `development` |
 | `GITHUB_CLIENT_ID`      | No       | (empty)                          | GitHub OAuth App client ID. When unset (or `GITHUB_CLIENT_SECRET` unset), `/api/auth/github/*` returns 503 and the frontend hides the button |
 | `GITHUB_CLIENT_SECRET`  | No       | (empty)                          | GitHub OAuth App client secret. Pair with `GITHUB_CLIENT_ID` to enable the standalone GitHub login flow |
-| `ALLOWED_GITHUB_LOGINS` | No       | (empty)                          | Comma-separated GitHub logins allowed via the identity-broker endpoint. Empty means "any verified GitHub user" (back-compat) |
+| `ALLOWED_GITHUB_LOGINS` | No       | (empty)                          | Comma-separated GitHub logins allowed through the native OAuth login and the identity-broker endpoint. Empty means "any verified GitHub user" (back-compat) |
 | `PANEL_SELF_APP_NAME`   | No       | `deploy-panel`                   | Relay app name the panel is registered under. The stuck-deploy sweep keeps the preflight-only recovery verdict for this app (a self-deploy replaces the panel itself); every other app needs relay proof that the deploy reached its target before it is recovered as `success`. The match is by app name only (no other signal identifies the panel), and `docker-compose.yml` / `docker-compose.prod.yml` forward the var to the backend (empty means the default) |
 | `APP_SECRETS_KEY`       | No*      | (dev-only insecure fallback)     | Encryption key for per-app secrets stored in the panel's own DB (see "App secrets" below). Running the backend directly on the host (`make dev`) falls back to a fixed, insecure key with a console warning when unset; the backend throws on first use if unset with `NODE_ENV=production`. `docker-compose.yml` has no fallback default for this var at all (unlike `SESSION_SECRET`), so an unset key fails the WHOLE backend's startup validation under `docker compose up`, not just secret operations — see "App secrets" below. Independent of `SESSION_SECRET` on purpose — rotating the session secret must not brick stored app secrets. |
-| `NEXT_PUBLIC_API_URL`   | No       | `http://localhost:3001`          | API URL the frontend calls           |
+| `NEXT_PUBLIC_API_URL`   | No       | `http://localhost:3001`          | Backend origin the browser calls (no `/api` suffix). Inlined into the frontend at build time: after changing it, rebuild the frontend (for Docker, `docker compose up -d --build frontend`) |
 | `POSTGRES_USER`         | No       | `deploy_panel`                   | PostgreSQL user (Docker)             |
 | `POSTGRES_PASSWORD`     | No       | `deploy_panel`                   | PostgreSQL password (Docker)         |
 | `POSTGRES_DB`           | No       | `deploy_panel`                   | PostgreSQL database name (Docker)    |
@@ -35,14 +35,14 @@ deploy-panel is configured entirely via environment variables. Neither the backe
 
 ## Authentication
 
-deploy-panel supports two GitHub-backed paths to a panel session, on top of the email/password flow that ships out of the box:
+The admin login is the `PANEL_TOKEN`: the login page posts it to `POST /api/auth/login` (`{ "token": "<PANEL_TOKEN>" }`), which sets an HttpOnly `panel_session` cookie for 24 hours. Two GitHub-backed paths give non-admin users access on top of that:
 
 1. **Standalone GitHub OAuth login.** Set `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` from a [GitHub OAuth App](https://github.com/settings/developers); set `BACKEND_URL` for any non-localhost deployment so the callback URL resolves to the public host. The callback URL registered on the OAuth App must be `${BACKEND_URL}/api/auth/github/callback`. With client ID/secret unset, `/api/auth/github/*` returns 503 and the frontend hides the "Sign in with GitHub" button.
-2. **Identity-broker registration.** A trusted upstream like [project-pilot](https://github.com/LanNguyenSi/project-pilot) calls `POST /api/auth/register-from-project-pilot` with a user's GitHub access token; deploy-panel re-verifies the token against `api.github.com/user` (it does not blindly trust the broker) and mints a `dp_...` API token.
+2. **Identity-broker registration.** An identity broker such as [project-pilot](https://github.com/LanNguyenSi/project-pilot) (or any caller holding a user's GitHub token; the endpoint is public) calls `POST /api/auth/register-from-project-pilot` with a user's GitHub access token; deploy-panel re-verifies the token against `api.github.com/user` (it does not blindly trust the broker) and mints a `dp_...` API token.
 
 `ALLOWED_GITHUB_LOGINS` applies to both paths: if set, the verified GitHub login must appear in the comma-separated list, otherwise the broker request is rejected with 403 and the OAuth callback redirects to `/login?error=forbidden_github_login`. Leave it empty to allow any verified user (back-compat).
 
-Both paths share the same `SESSION_SECRET` and underlying user record, so a user can sign in via either path and end up on the same account.
+Both paths resolve to the same User row (matched by GitHub id), so a user ends up on one account either way. To sign out admin cookies, rotate `PANEL_TOKEN`; to revoke GitHub sessions, delete the user's rows from the `sessions` table.
 
 ## Local development
 
@@ -74,19 +74,25 @@ cp .env.example .env
 #     for docker compose specifically: unlike SESSION_SECRET, this var has
 #     no fallback default in docker-compose.yml, so the backend refuses to
 #     start at all without it (see "App secrets" below)
-#   NEXT_PUBLIC_API_URL to the public URL where the backend will be reachable
-#   PANEL_TOKEN if you want CI/CD endpoints
+#   NEXT_PUBLIC_API_URL to the public origin where the browser reaches the
+#     backend (no /api suffix)
+#   NODE_ENV=production (.env.example sets development, which would override
+#     the compose default)
 
 docker compose up -d --build
 ```
 
+`docker-compose.yml` forwards only `DATABASE_URL`, `PORT`, `SESSION_SECRET`, `APP_SECRETS_KEY`, `CORS_ORIGINS`, `FRONTEND_URL`, `NODE_ENV` and `PANEL_SELF_APP_NAME` to the backend. `PANEL_TOKEN` and the GitHub OAuth variables (`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `BACKEND_URL`, `ALLOWED_GITHUB_LOGINS`) set in `.env` do not reach the container: add them to the backend's `environment:` in an override file, as `docker-compose.ci.yml` does for `PANEL_TOKEN`, or take them from `docker-compose.prod.yml`, which forwards them. Without `PANEL_TOKEN`, a backend in development mode treats every request as admin, and a backend in production mode answers 500 on every authenticated route.
+
 Container behaviour:
 
 - `db`: PostgreSQL 16 Alpine, persistent volume `pgdata`, healthcheck via `pg_isready`, published on 127.0.0.1:5433 (loopback only) for host-run dev tooling.
-- `backend`: multi-stage build, runs `prisma db push` to sync the schema on startup, exposes `:3001` internally. Healthcheck hits `/api/health`. Not published to the host by default.
+- `backend`: multi-stage build, runs `prisma db push` to sync the schema on startup, exposes `:3001` internally. Healthcheck hits `/api/health`. Not published to the host by default. Reachable only from the compose network; route `/api` to it from your proxy.
 - `frontend`: multi-stage build with Next.js standalone output, published on `${FRONTEND_PORT:-3000}`.
 
-The backend waits for the db health check before starting, and the frontend waits for the backend health check. Put a real reverse proxy (Caddy, nginx, Cloudflare Tunnel) in front of the frontend container for TLS.
+The backend waits for the db health check before starting, and the frontend waits for the backend health check.
+
+The frontend is client-side code: the browser calls the backend directly at `NEXT_PUBLIC_API_URL`, with cookies. `docker-compose.yml` does not publish the backend, so the reverse proxy (Caddy, nginx, Cloudflare Tunnel) that terminates TLS must serve both containers, for example `/api` to `backend:3001` and everything else to `frontend:3000` on the same host. That requires the proxy on the compose network or a published backend port. `NEXT_PUBLIC_API_URL` is then that public origin without a trailing `/api`, and `CORS_ORIGINS` lists the frontend origin. `docker-compose.prod.yml` shows this layout with Traefik labels and is the template to copy; replace its hostnames and the external `traefik` network.
 
 ## App secrets
 
@@ -97,12 +103,40 @@ Per-app secrets (e.g. an app's `METRICS_API_TOKEN`) are stored encrypted in the 
 - Every **deploy** (panel button, bulk-deploy, `/api/v1/deploy`, and scheduled deploys — all of them funnel through the same `streamDeploy()`) re-applies the app's stored secrets into the relay's `.env` before compose runs (idempotent — a no-op write if nothing changed), then hard-fails the deploy (and `GET .../preflight`) if a declared-required key still resolves empty/unset.
 - **Rollback is exempt.** `POST /api/servers/:serverId/apps/:name/rollback` and `POST /api/v1/rollback` do NOT provision secrets or run the required-env gate — a rollback restarts a previously-deployed commit's containers in place, reusing whatever `.env` is already on disk, rather than pulling a new git ref and re-running compose from a possibly-cleaned working tree. If a rollback target predates when a required key was declared, provisioning it is out of scope for this mechanism; re-run a forward deploy to provision and gate.
 
+## Security model
+
+### Credentials
+
+- `PANEL_TOKEN` is the admin credential. It is accepted as a Bearer token, and the UI login stores it in the `panel_session` cookie (HttpOnly, SameSite=Strict, 24 hours). The cookie holds the token itself, so rotating `PANEL_TOKEN` signs out every admin browser.
+- `dp_` API keys are Bearer credentials. A key bound to a user (the identity broker issues these) acts as that user; a key without a user binding acts as admin.
+- A native GitHub OAuth login creates a non-admin session: a random token in the `user_session` cookie (HttpOnly, SameSite=Lax), stored as a SHA-256 hash in the `sessions` table and valid for 30 days.
+- There is no CSRF token. Cross-site requests are limited by `CORS_ORIGINS` and the cookies' SameSite attribute (Strict for the admin cookie, Lax for GitHub sessions).
+
+### Visibility
+
+Non-admin actors (GitHub sessions and user-bound API keys) see only the servers they created, and the apps, deploys and scheduled deploys on them. Servers an admin created have no owner (`Server.userId` is null) and stay invisible to non-admin actors. Details: [okf/auth-and-ownership-model.md](okf/auth-and-ownership-model.md).
+
+### Public endpoints
+
+`/api/health` and everything under `/api/auth` answer without authentication. That includes the identity-broker endpoint `POST /api/auth/register-from-project-pilot`, which accepts any caller holding a valid GitHub token. With `ALLOWED_GITHUB_LOGINS` empty (the default), any GitHub account can create a non-admin user through the OAuth login or the broker endpoint, so set it on any panel reachable from the internet.
+
+### Data at rest
+
+- Relay tokens are stored in plaintext in the `servers` table (`relayToken`).
+- App secrets are encrypted with `APP_SECRETS_KEY` (AES-256-GCM).
+- Session tokens and API keys are stored as SHA-256 hashes.
+
+### Relay install
+
+The install wizard sends the SSH password or private key to the backend with the request; the backend uses it for that connection and does not store it. On the target, the wizard runs agent-relay's `install.sh` from that repository's `main` branch with `sudo -E bash`. Details: [okf/vps-onboarding-relay-provisioning.md](okf/vps-onboarding-relay-provisioning.md).
+
 ## Production checklist
 
 - `SESSION_SECRET` set to a strong random value (not the placeholder).
-- `APP_SECRETS_KEY` set to a strong random value if you use per-app secrets (see above) — without it the backend refuses to store or read them.
-- `NEXT_PUBLIC_API_URL` points at the public backend URL, not `localhost`.
+- `APP_SECRETS_KEY` set to a strong random value (`openssl rand -hex 32`). Both compose files pass it without a default, so the backend does not start without it; a host-run backend refuses to store or read app secrets without it.
+- `NEXT_PUBLIC_API_URL` points at the public backend URL, not `localhost`, and the frontend image was rebuilt after setting it.
 - `CORS_ORIGINS` lists exactly the origins you want to allow (comma-separated, no trailing slashes).
-- `PANEL_TOKEN` set if any CI/CD pipeline calls `/api/v1`.
+- `PANEL_TOKEN` set: in production every authenticated route and the UI login need it, not only `/api/v1`.
+- `ALLOWED_GITHUB_LOGINS` set when the panel is reachable from the internet (see "Security model").
 - TLS terminated at the reverse proxy.
 - `scripts/smoke-check.sh` runs green against the deployed URL (see README "Development" section).

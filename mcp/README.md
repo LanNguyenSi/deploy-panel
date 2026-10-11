@@ -1,9 +1,9 @@
 # @deploy-panel/mcp
 
 MCP (Model Context Protocol) server for [deploy-panel](../README.md). It lets an
-AI agent deploy, inspect, and roll back apps across your fleet by calling the
-panel's `/api/v1` API over stdio for all seven tools. Every tool parameter
-described as "Server name or ID" (`deploy_app`, `deploy_preflight`,
+AI agent deploy, inspect, and roll back apps across your fleet. It speaks MCP
+over stdio and calls the panel's `/api/v1` HTTP API for all seven tools.
+Every tool parameter described as "Server name or ID" (`deploy_app`, `deploy_preflight`,
 `deploy_rollback`, and `deploy_list_apps`'s and `deploy_list`'s optional
 `server` filter) resolves either form on the backend the same way
 (`findOwnedServerByIdOrName` in `backend/src/lib/ownership.ts`). `deploy_list`'s
@@ -16,12 +16,19 @@ backend's `GET /api/v1/deploys` only accepts an app ID (see the note under
 The package ships a `deploy-panel-mcp` binary that speaks MCP over stdio:
 
 ```bash
+cd mcp
 npm install
 npm run build        # compiles src/ to dist/
 DEPLOY_PANEL_URL=https://panel.example.com \
 DEPLOY_PANEL_API_KEY=dp_... \
 node dist/index.js
 ```
+
+`mcp/` is not part of the root npm workspaces, so these commands run inside
+`mcp/`. This repository does not publish the package to the npm registry: `deploy-panel-mcp`
+is on `PATH` only after `npm link` (or a global install) from `mcp/`.
+Otherwise configure the client with `"command": "node"` and
+`"args": ["/absolute/path/to/deploy-panel/mcp/dist/index.js"]`.
 
 Or wire it into an MCP client (for example, Claude Desktop):
 
