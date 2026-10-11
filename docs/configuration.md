@@ -46,7 +46,7 @@ Both paths resolve to the same User row (matched by GitHub id), so a user ends u
 
 ## Local development
 
-The `.env.example` already wires everything to the docker-compose defaults; for local dev you typically only edit `SESSION_SECRET` to something non-default and (if you want CI/CD endpoints) `PANEL_TOKEN`.
+The `.env.example` already wires everything to the docker-compose defaults, and its `SESSION_SECRET` passes the 16-character startup check, so for local dev you typically edit nothing. Set `PANEL_TOKEN` only to exercise authentication (the UI token login and Bearer calls): without it, a development backend treats every request as admin.
 
 ```bash
 cp .env.example .env

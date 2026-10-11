@@ -101,7 +101,7 @@ stateDiagram-v2
 | `/servers/[id]`    | App Management   | View apps on a server; deploy, rollback, view logs, run preflight checks     |
 | `/deploys`         | Deploy History   | Filterable table of all deployments with status, commit, duration, timestamp |
 | `/audit`           | Audit Log        | Filterable audit trail of user actions                                       |
-| `/scheduled`       | Scheduled Deploys| Fleet-wide list of upcoming one-time scheduled deploys; cancel a pending one |
+| `/scheduled`       | Scheduled Deploys| Fleet-wide list of upcoming one-time scheduled deploys; reschedule one (opens the schedule dialog to pick a new time; the old entry stays until cancelled from the dialog's pending list) or cancel a pending one |
 | `/login`           | Login            | Authentication page                                                          |
 | `/settings`        | Settings         | Create, list and revoke `dp_` API keys; shows example API and MCP invocations |
 | `/styleguide`      | Styleguide       | Design-token and component reference; an unlinked dev route (not in the navigation), dark-only palette; not gated: it is a static page served in production builds too, and needs no login |
