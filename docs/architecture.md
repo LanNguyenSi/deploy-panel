@@ -12,12 +12,15 @@ flowchart TD
     B["Browser"]
     CI["GitHub Action or CI job"]
     M["MCP server (mcp/)"]
+    IB["Identity broker (optional)"]
   end
   subgraph proc["backend process"]
     H["Hono backend :3001<br/>/api and /api/v1"]
     S["Scheduler and<br/>stuck-deploy sweep"]
   end
-  D[("PostgreSQL 16")]
+  subgraph db["Database"]
+    D[("PostgreSQL 16")]
+  end
   F["Next.js 15 frontend :3000"]
   subgraph ext["Fleet and external services"]
     R["agent-relay on each VPS"]
@@ -29,6 +32,7 @@ flowchart TD
   B -->|page load| F
   CI -->|"/api/v1, Bearer token"| H
   M -->|"/api/v1, Bearer dp_ key"| H
+  IB -->|"/api/auth, GitHub token"| H
   H -->|Prisma| D
   S -->|Prisma| D
   H -->|"HTTP, Bearer relayToken"| R
@@ -77,13 +81,13 @@ Relay calls use per-operation timeouts: 5 seconds for connectivity and system-in
 
 `Server.userId` is null for admin-shared servers and set for servers a non-admin user created; see [okf/auth-and-ownership-model.md](okf/auth-and-ownership-model.md).
 
-The state diagram shows how a deploy row moves from `running` to its final status and which code path decides each one.
+The state diagram shows how a deploy row moves from `running` to its final status and what decides each one.
 
 ```mermaid
 stateDiagram-v2
   [*] --> running
   running --> failed: missing required env, relay 4xx, relay failure or health gate fails
-  running --> success: relay success and health gate pass, or recovery or stuck sweep proves the target
+  running --> success: relay success and health gate pass, recovery or stuck sweep proves the target, or stuck sweep preflight passes for the panel's own app
   running --> rolled_back: rollback route, relay success
   running --> interrupted: recovery or stuck sweep cannot prove the target
   success --> [*]

@@ -31,7 +31,7 @@ sequenceDiagram
   participant X as recoverBrokenDeploy
   T->>DB: create, status running
   T->>S: start (fire and forget)
-  S->>R: write panel-managed secrets to .env
+  S->>R: read .env, write panel-managed secrets if they change it
   alt required key still missing
     S->>DB: failed
   else required keys resolve
@@ -44,13 +44,13 @@ sequenceDiagram
     else relay call throws (connection lost, 5xx)
       S->>X: recover
       X->>G: verify (strict)
-      X->>R: if healthy, read app history (checkDeployTarget)
+      X->>R: if healthy and the log shows no rollback or failed step,<br/>read app history (checkDeployTarget)
       X->>DB: success, failed or interrupted
     end
   end
 ```
 
-The diagram leaves out a streamed `blocked` or `error` event and an unparseable JSON body, which `streamDeploy` writes `failed` directly, and a relay error while the secrets are written, which also goes to `recoverBrokenDeploy`. The sections below state each step and its code location.
+The diagram leaves out a streamed `blocked` or `error` event and an unparseable JSON body, which `streamDeploy` writes `failed` directly, and a relay error while the `.env` is read or written, which also goes to `recoverBrokenDeploy`. The sections below state each step and its code location.
 
 ## Relay success is a claim, not a verdict
 
@@ -100,7 +100,7 @@ Deploying deploy-panel's own backend kills the backend process mid-HTTP-response
 
 ## Scheduled deploys share the exact same path
 
-`checkScheduled` (`backend/src/lib/scheduler.ts:38-103`) calls `streamDeploy` directly (scheduler.ts:93-101) rather than hitting the relay via a second, divergent call. The comment at scheduler.ts:83-92 documents why: an earlier version called the relay directly from the scheduler and skipped BOTH the pre-deploy secret provisioning and the required-env hard-fail gate, reproducing the exact `METRICS_API_TOKEN`-missing incident for scheduled deploys specifically. Routing scheduled deploys through `streamDeploy` means they get the same secret provisioning, the same three-shape relay handling, and the same trust chain described above — one implementation, not two.
+`checkScheduled` (`backend/src/lib/scheduler.ts:38-103`) calls `streamDeploy` directly (scheduler.ts:93-101) rather than hitting the relay via a second, divergent call. The comment at scheduler.ts:83-92 documents why: an earlier version called the relay directly from the scheduler and skipped BOTH the pre-deploy secret provisioning and the required-env hard-fail gate, so a scheduled deploy could reach the relay with a required key missing. Routing scheduled deploys through `streamDeploy` means they get the same secret provisioning, the same three-shape relay handling, and the same trust chain described above — one implementation, not two.
 
 ## What breaks it
 
