@@ -31,8 +31,10 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-deploy_panel}:${POSTGRES_PASSWORD:-deploy_panel}@db:5432/${POSTGRES_DB:-deploy_panel}
       PORT: 3001
-      SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production-min-16-chars}
-      # Deliberately NO fallback default (unlike SESSION_SECRET above): a
+      # Reserved: nothing reads it today and startup does not require it.
+      # When set it must be at least 16 characters; empty counts as unset.
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      # Deliberately NO fallback default (unlike the optional vars here): a
       # committed placeholder here would mean every fresh clone that never
       # sets APP_SECRETS_KEY encrypts app secrets at rest with a key anyone
       # can read in this repo's history. With no default, an unset host var
@@ -48,6 +50,20 @@ services:
       # Optional: relay app name the panel is registered under (default
       # deploy-panel); the stuck-deploy sweep matches it by app name only.
       PANEL_SELF_APP_NAME: ${PANEL_SELF_APP_NAME:-}
+      # Admin credential (UI login token and Bearer token). Empty counts as
+      # unset: a development backend then treats every request as admin, a
+      # production one rejects authenticated routes.
+      PANEL_TOKEN: ${PANEL_TOKEN:-}
+      # Optional: gates both GitHub paths, the identity-broker register
+      # endpoint and the native OAuth callback. Empty = any verified GitHub
+      # user (back-compat); set it to restrict.
+      ALLOWED_GITHUB_LOGINS: ${ALLOWED_GITHUB_LOGINS:-}
+      # Optional native GitHub OAuth. Empty = disabled (routes 503, frontend
+      # hides the button). Set both ID and secret to enable; BACKEND_URL must
+      # then be the public backend origin so the callback URL resolves.
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      BACKEND_URL: ${BACKEND_URL:-http://localhost:3001}
     healthcheck:
       # Same timing as the HEALTHCHECK in backend/Dockerfile (guarded by
       # backend/tests/dockerfile-healthcheck.test.ts); keep them in sync.

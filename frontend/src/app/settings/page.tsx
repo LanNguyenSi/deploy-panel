@@ -168,13 +168,13 @@ export default function SettingsPage() {
           <div>
             <div style={{ fontWeight: 500, color: "var(--text)", marginBottom: "var(--space-1)" }}>Deploy via API</div>
             <code style={{ fontSize: "var(--text-xs)", color: "var(--muted)", background: "var(--bg-subtle)", padding: "var(--space-2) var(--space-3)", borderRadius: "var(--radius-sm)", display: "block" }}>
-              curl -X POST /api/v1/deploy -H &quot;Authorization: Bearer dp_...&quot; -d &apos;{'{'}&#34;server&#34;:&#34;VPS-01&#34;,&#34;app&#34;:&#34;myapp&#34;{'}'}&#39;
+              curl -X POST /api/v1/deploy -H &quot;Authorization: Bearer dp_...&quot; -d &apos;{'{'}&#34;server&#34;:&#34;my-server&#34;,&#34;app&#34;:&#34;myapp&#34;{'}'}&#39;
             </code>
           </div>
           <div>
             <div style={{ fontWeight: 500, color: "var(--text)", marginBottom: "var(--space-1)" }}>MCP Server</div>
             <code style={{ fontSize: "var(--text-xs)", color: "var(--muted)", background: "var(--bg-subtle)", padding: "var(--space-2) var(--space-3)", borderRadius: "var(--radius-sm)", display: "block" }}>
-              DEPLOY_PANEL_URL=https://deploy-panel.opentriologue.ai DEPLOY_PANEL_API_KEY=dp_... node mcp/dist/index.js
+              DEPLOY_PANEL_URL=https://panel.example.com DEPLOY_PANEL_API_KEY=dp_... node mcp/dist/index.js
             </code>
           </div>
         </div>

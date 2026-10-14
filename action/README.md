@@ -39,7 +39,7 @@ jobs:
 | Output | Description |
 |--------|-------------|
 | `deploy-id` | Deploy UUID |
-| `status` | Final deploy status when `wait` is true (`success`, `failed`, `interrupted`) or `timeout`; empty when `wait` is false. When waiting, the job fails for any value other than `success` |
+| `status` | Final deploy status when `wait` is true (`success`, `failed`, `rolled_back`, `interrupted`) or `timeout`; `running` when `wait` is false. When waiting, the job fails for any value other than `success` |
 
 ## Examples
 

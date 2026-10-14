@@ -13,18 +13,18 @@ deploy-panel is configured entirely via environment variables. Neither the backe
 | Variable                | Required | Default                          | Description                          |
 |-------------------------|----------|----------------------------------|--------------------------------------|
 | `DATABASE_URL`          | Yes      | (none)                           | PostgreSQL connection string         |
-| `SESSION_SECRET`        | Yes      | (none)                           | Required by the startup config check (min 16 chars). Not used to sign anything at present: GitHub sessions are random tokens stored hashed in the `sessions` table, and the admin `panel_session` cookie carries the `PANEL_TOKEN` itself |
-| `PANEL_TOKEN`           | No       | (none)                           | Admin credential: the UI login token and a Bearer token for the authenticated API routes, including `/api/v1`. Required when `NODE_ENV=production` (see below) |
+| `SESSION_SECRET`        | No       | (none)                           | Reserved; nothing reads it at present, so startup does not require it. GitHub sessions are random tokens stored hashed in the `sessions` table, and the admin `panel_session` cookie carries the `PANEL_TOKEN` itself. When set it must be at least 16 characters (a shorter value fails the startup config check); an empty value counts as unset |
+| `PANEL_TOKEN`           | No       | (none)                           | Admin credential (an empty value counts as unset): the UI login token and a Bearer token for the authenticated API routes, including `/api/v1`. Required when `NODE_ENV=production` (see below) |
 | `PORT`                  | No       | `3001`                           | Backend port                         |
 | `CORS_ORIGINS`          | No       | `http://localhost:3000`          | Allowed CORS origins (comma-separated) |
 | `FRONTEND_URL`          | No       | `http://localhost:3000`          | Frontend URL the GitHub OAuth callback redirects to after login or on error |
 | `BACKEND_URL`           | No       | `http://localhost:3001`          | Absolute backend URL, used to build the OAuth callback redirect |
-| `NODE_ENV`              | No       | `development` (host run); `production` under `docker-compose.yml` unless `.env` sets it | Node environment. `.env.example` sets `development` |
+| `NODE_ENV`              | No       | `development` (host run); `production` under `docker-compose.yml` unless `.env` sets it | Node environment. `.env.example` sets `development`, which overrides the compose `production` default when that file is copied to `.env` (remove the line for a `docker compose` run) |
 | `GITHUB_CLIENT_ID`      | No       | (empty)                          | GitHub OAuth App client ID. When unset (or `GITHUB_CLIENT_SECRET` unset), `/api/auth/github/*` returns 503 and the frontend hides the button |
 | `GITHUB_CLIENT_SECRET`  | No       | (empty)                          | GitHub OAuth App client secret. Pair with `GITHUB_CLIENT_ID` to enable the standalone GitHub login flow |
 | `ALLOWED_GITHUB_LOGINS` | No       | (empty)                          | Comma-separated GitHub logins allowed through the native OAuth login and the identity-broker endpoint. Empty means "any verified GitHub user" (back-compat) |
 | `PANEL_SELF_APP_NAME`   | No       | `deploy-panel`                   | Relay app name the panel is registered under. The stuck-deploy sweep keeps the preflight-only recovery verdict for this app (a self-deploy replaces the panel itself); every other app needs relay proof that the deploy reached its target before it is recovered as `success`. The match is by app name only (no other signal identifies the panel), and `docker-compose.yml` / `docker-compose.prod.yml` forward the var to the backend (empty means the default) |
-| `APP_SECRETS_KEY`       | No*      | (dev-only insecure fallback)     | Encryption key for per-app secrets stored in the panel's own DB (see "App secrets" below). Running the backend directly on the host (`make dev`) falls back to a fixed, insecure key with a console warning when unset; the backend throws on first use if unset with `NODE_ENV=production`. `docker-compose.yml` has no fallback default for this var at all (unlike `SESSION_SECRET`), so an unset key fails the WHOLE backend's startup validation under `docker compose up`, not just secret operations — see "App secrets" below. Independent of `SESSION_SECRET` on purpose — rotating the session secret must not brick stored app secrets. |
+| `APP_SECRETS_KEY`       | No*      | (dev-only insecure fallback)     | Encryption key for per-app secrets stored in the panel's own DB (see "App secrets" below). Running the backend directly on the host (`make dev`) falls back to a fixed, insecure key with a console warning when unset; the backend throws on first use if unset with `NODE_ENV=production`. `docker-compose.yml` has no fallback default for this var at all (unlike the optional variables such as `SESSION_SECRET`), so an unset key fails the WHOLE backend's startup validation under `docker compose up`, not just secret operations — see "App secrets" below. Independent of `SESSION_SECRET` on purpose — rotating the session secret must not brick stored app secrets. |
 | `NEXT_PUBLIC_API_URL`   | No       | `http://localhost:3001`          | Backend origin the browser calls (no `/api` suffix). Inlined into the frontend at build time: after changing it, rebuild the frontend (for Docker, `docker compose up -d --build frontend`) |
 | `POSTGRES_USER`         | No       | `deploy_panel`                   | PostgreSQL user (Docker)             |
 | `POSTGRES_PASSWORD`     | No       | `deploy_panel`                   | PostgreSQL password (Docker)         |
@@ -46,7 +46,7 @@ Both paths resolve to the same User row (matched by GitHub id), so a user ends u
 
 ## Local development
 
-The `.env.example` already wires everything to the docker-compose defaults, and its `SESSION_SECRET` passes the 16-character startup check, so for local dev you typically edit nothing. Set `PANEL_TOKEN` only to exercise authentication (the UI token login and Bearer calls): without it, a development backend treats every request as admin.
+The `.env.example` already wires everything to the docker-compose defaults, so for local dev you typically edit nothing (`SESSION_SECRET` is optional and commented out there). Set `PANEL_TOKEN` only to exercise authentication (the UI token login and Bearer calls): without it, a development backend treats every request as admin.
 
 ```bash
 cp .env.example .env
@@ -58,7 +58,7 @@ npx prisma db push --schema backend/prisma/schema.prisma   # run from the repo r
 make dev                                          # backend on :3001, frontend on :3000
 ```
 
-Running `cd backend && npx prisma db push` instead fails with `P1012 Environment variable not found: DATABASE_URL`: Prisma 5.22 looks for `.env` next to `backend/package.json` and the schema, not at the repo root. Run it from the repo root with `--schema backend/prisma/schema.prisma` as shown above. `make dev` exits with an `Invalid config` error for `SESSION_SECRET` unless `.env` was exported into the shell first (see `backend/tests/env-loading-guard.test.ts`); neither `make` nor the `tsx watch` process it starts read `.env` on their own.
+Running `cd backend && npx prisma db push` instead fails with `P1012 Environment variable not found: DATABASE_URL`: Prisma 5.22 looks for `.env` next to `backend/package.json` and the schema, not at the repo root. Run it from the repo root with `--schema backend/prisma/schema.prisma` as shown above. `make dev` does not load `.env` itself: export it into the shell first (see `backend/tests/env-loading-guard.test.ts`), otherwise the backend starts without `DATABASE_URL`, `PANEL_TOKEN` and the other variables; neither `make` nor the `tsx watch` process it starts read `.env` on their own.
 
 `make setup` also exists (install, then `make docker-up` for the full db + backend + frontend Docker stack, then Prisma generate/push), but its Docker stack fails to start the backend container without `APP_SECRETS_KEY` set in `.env` (commented out in `.env.example`; see the "App secrets" section and the `APP_SECRETS_KEY` row above), and once that is set, its frontend container occupies host port 3000, the same port `make dev` binds on the host. Bring up only `db` as shown above for host-run dev with hot reload; use `make setup` / `make docker-up` only when you want the full stack running in containers (see "Docker deployment" below). After pulling a schema change, rerun the two `npx prisma ... --schema backend/prisma/schema.prisma` lines above (or `make db-generate` / `make db-push` after exporting `.env`). For a deeper reset, `make clean` wipes `node_modules` and build output (`backend/dist`, `frontend/.next`) first, then rerun `npm install`.
 
@@ -69,20 +69,20 @@ The `docker-compose.yml` runs PostgreSQL, the backend, and the frontend as conta
 ```bash
 cp .env.example .env
 # at minimum, set:
-#   SESSION_SECRET to a real 32+ char value
 #   APP_SECRETS_KEY to a generated value (openssl rand -hex 32) — REQUIRED
-#     for docker compose specifically: unlike SESSION_SECRET, this var has
-#     no fallback default in docker-compose.yml, so the backend refuses to
-#     start at all without it (see "App secrets" below)
+#     for docker compose specifically: this var has no fallback default in
+#     docker-compose.yml, so the backend refuses to start at all without it
+#     (see "App secrets" below)
 #   NEXT_PUBLIC_API_URL to the public origin where the browser reaches the
 #     backend (no /api suffix)
-#   NODE_ENV=production (.env.example sets development, which would override
-#     the compose default)
+#   NODE_ENV=production, or delete the NODE_ENV line (.env.example sets
+#     development, which would override the compose default)
+#   PANEL_TOKEN to a strong random value, to authenticate the UI and API
 
 docker compose up -d --build
 ```
 
-`docker-compose.yml` forwards only `DATABASE_URL`, `PORT`, `SESSION_SECRET`, `APP_SECRETS_KEY`, `CORS_ORIGINS`, `FRONTEND_URL`, `NODE_ENV` and `PANEL_SELF_APP_NAME` to the backend. `PANEL_TOKEN` and the GitHub OAuth variables (`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `BACKEND_URL`, `ALLOWED_GITHUB_LOGINS`) set in `.env` do not reach the container: add them to the backend's `environment:` in an override file, as `docker-compose.ci.yml` does for `PANEL_TOKEN`, or take them from `docker-compose.prod.yml`, which forwards them. Without `PANEL_TOKEN`, a backend in development mode treats every request as admin, and a backend in production mode answers 500 on every authenticated route.
+`docker-compose.yml` forwards `DATABASE_URL`, `PORT`, `SESSION_SECRET`, `APP_SECRETS_KEY`, `CORS_ORIGINS`, `FRONTEND_URL`, `NODE_ENV`, `PANEL_SELF_APP_NAME`, `PANEL_TOKEN`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `BACKEND_URL` and `ALLOWED_GITHUB_LOGINS` from `.env` to the backend, like `docker-compose.prod.yml`. The optional ones default to empty (`BACKEND_URL` to `http://localhost:3001`), and the backend treats an empty `PANEL_TOKEN` or `SESSION_SECRET` as unset. `docker-compose.ci.yml` only states `PANEL_TOKEN` again without a default for the CI job. Without `PANEL_TOKEN`, a backend in development mode treats every request as admin, and a backend in production mode answers 500 on every authenticated route.
 
 Container behaviour:
 
@@ -132,7 +132,6 @@ The install wizard sends the SSH password or private key to the backend with the
 
 ## Production checklist
 
-- `SESSION_SECRET` set to a strong random value (not the placeholder).
 - `APP_SECRETS_KEY` set to a strong random value (`openssl rand -hex 32`). Both compose files pass it without a default, so the backend does not start without it; a host-run backend refuses to store or read app secrets without it.
 - `NEXT_PUBLIC_API_URL` points at the public backend URL, not `localhost`, and the frontend image was rebuilt after setting it.
 - `CORS_ORIGINS` lists exactly the origins you want to allow (comma-separated, no trailing slashes).

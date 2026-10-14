@@ -1,0 +1,10 @@
+packs:
+  review-slop: true
+
+# docs/okf/log.md is an append-only evidence journal. Two historical entries
+# mention review rounds of the work they record; each pattern below excuses
+# only that matched span, so any new round reference in the log still fires.
+review:
+  allow:
+    - 'review round 2 notes for task 59da7c87'
+    - 'task 9791c995 \(review round 3 fixes\)'

@@ -9,8 +9,8 @@ import { isPrivateOrLoopbackHost } from "../services/probe-guard.js";
  * A deploy that the relay reports as `success` only means `docker compose
  * up` returned 0 and the relay's *internal* health probe (an in-container
  * `fetch('http://localhost…')` against ONE responding service) passed. That
- * leaves two real-world holes the green signal hid on 2026-06-07
- * (triologue-health-dashboard, friction-log id=59):
+ * leaves two real-world holes the green signal hid
+ * (a deploy reported green while a service is down or unreachable):
  *
  *   1. A SIBLING service can crashloop while another answers the internal
  *      probe. The relay's health check stops at the first service that

@@ -29,7 +29,9 @@ services:
     environment:
       DATABASE_URL: postgresql://deploy_panel:${POSTGRES_PASSWORD:-deploy_panel_prod}@deploy-panel-db:5432/deploy_panel
       PORT: 3001
-      SESSION_SECRET: ${SESSION_SECRET}
+      # Reserved: nothing reads it today and startup does not require it.
+      # When set it must be at least 16 characters; empty counts as unset.
+      SESSION_SECRET: ${SESSION_SECRET:-}
       PANEL_TOKEN: ${PANEL_TOKEN}
       # Encrypts per-app secrets at rest (see docs/configuration.md#app-secrets).
       # Required before any AppSecret is stored/read in production — the
@@ -41,8 +43,9 @@ services:
       # Optional: relay app name the panel is registered under (default
       # deploy-panel); the stuck-deploy sweep matches it by app name only.
       PANEL_SELF_APP_NAME: ${PANEL_SELF_APP_NAME:-}
-      # Optional — gates the identity-broker register endpoint. Empty by
-      # default (back-compat accept-any); set in prod .env to restrict.
+      # Optional — gates both GitHub paths: the identity-broker register
+      # endpoint and the native OAuth callback. Empty by default (back-compat
+      # accept-any); set in prod .env to restrict.
       ALLOWED_GITHUB_LOGINS: ${ALLOWED_GITHUB_LOGINS:-}
       # Native GitHub OAuth (pairs with #60 — standalone login). Empty =
       # disabled (routes 503, frontend hides button). Set all three in

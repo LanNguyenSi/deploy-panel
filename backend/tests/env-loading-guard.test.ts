@@ -43,14 +43,12 @@ import { fileURLToPath } from "node:url";
  *           correct; skipped where /proc doesn't exist (e.g. macOS dev
  *           boxes) since the portable check above already runs there.
  *
- *      Reaching the "listening on port" boot line at all additionally
- *      proves SESSION_SECRET (required, no fallback) was delivered through
- *      the same chain. That is evidence the chain propagates *some*
- *      variables; it is an assumption, not a proof, that propagation is
- *      uniform across variable names (i.e. that make/npm/sh/tsx don't
- *      special-case one env var over another); (a) and (b) above are what
- *      actually verify APP_SECRETS_KEY specifically, which is why both
- *      exist rather than relying on the boot line alone.
+ *      Reaching the "listening on port" boot line at all only shows the
+ *      backend started under the injected env; it is no proof that
+ *      propagation is uniform across variable names (i.e. that
+ *      make/npm/sh/tsx don't special-case one env var over another); (a)
+ *      and (b) above are what actually verify APP_SECRETS_KEY specifically,
+ *      which is why both exist rather than relying on the boot line alone.
  */
 
 const repoRoot = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
@@ -314,12 +312,11 @@ describe("make dev-backend: APP_SECRETS_KEY reaches the backend child process", 
     getOutput = spawned.output;
 
     try {
-      // config/index.ts validates SESSION_SECRET (required, no fallback)
-      // at import time, before server.ts logs "listening on port":
-      // reaching that log line proves the full make -> npm run -> tsx
-      // watch chain delivered THIS test's injected env into the backend
-      // process at all. See the module docblock for why that alone isn't
-      // treated as proof APP_SECRETS_KEY specifically got through.
+      // config/index.ts validates the env at import time, before server.ts
+      // logs "listening on port": reaching that log line shows the backend
+      // started under THIS test's injected env. See the module docblock for
+      // why that alone isn't treated as proof APP_SECRETS_KEY specifically
+      // got through.
       //
       // This used to be two sequential waitForOutput calls, one for
       // "listening on port" and a second for "app-secrets: ...". Each
