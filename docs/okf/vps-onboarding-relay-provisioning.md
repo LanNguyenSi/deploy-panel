@@ -3,7 +3,7 @@ type: module
 title: VPS onboarding and relay provisioning — TOFU-then-pin, SSRF-guarded, concurrency-locked
 description: probeVps captures a SHA-256 host-key fingerprint on first contact and install/re-install pin against it (mismatch = host_key_rejected); non-admin probe requests get a 5-req/60s rate limit and both probe and install apply an SSRF guard, while admins may target arbitrary hosts; persisted install metadata on Server drives re-install/update-image so they don't clobber hand-customized setups, guarded by per-server/per-actor concurrency locks.
 tags: [ssh, onboarding, relay, security, module]
-timestamp: 2026-10-14T04:38:14Z
+timestamp: 2026-10-14T04:40:33Z
 sources:
   - backend/src/services/ssh-executor.ts
   - backend/src/services/install-relay.ts
