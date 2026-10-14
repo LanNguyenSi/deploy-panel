@@ -4,9 +4,10 @@
 #   - publish the backend port to the host, so a runner-side script
 #     (scripts/smoke-check.sh) can reach it on localhost without going
 #     through a sidecar or docker exec
-#   - state PANEL_TOKEN explicitly, without a default: the base compose
-#     file already forwards it with an empty default, and the CI job always
-#     exports a value for the smoke check
+#   - inject PANEL_TOKEN into the backend environment, which the base
+#     compose file deliberately does not forward (an empty value fails
+#     config validation); the CI job always exports a value for the
+#     smoke check
 #
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d --build db backend

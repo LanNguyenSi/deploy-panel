@@ -14,7 +14,7 @@ deploy-panel is configured entirely via environment variables. Neither the backe
 |-------------------------|----------|----------------------------------|--------------------------------------|
 | `DATABASE_URL`          | Yes      | (none)                           | PostgreSQL connection string         |
 | `SESSION_SECRET`        | No       | (none)                           | Reserved; nothing reads it at present, so startup does not require it. GitHub sessions are random tokens stored hashed in the `sessions` table, and the admin `panel_session` cookie carries the `PANEL_TOKEN` itself. When set it must be at least 16 characters (a shorter value fails the startup config check); an empty value counts as unset |
-| `PANEL_TOKEN`           | No       | (none)                           | Admin credential (an empty value counts as unset): the UI login token and a Bearer token for the authenticated API routes, including `/api/v1`. Required when `NODE_ENV=production` (see below) |
+| `PANEL_TOKEN`           | No       | (none)                           | Admin credential (an empty value fails startup validation, so leave it unset rather than empty): the UI login token and a Bearer token for the authenticated API routes, including `/api/v1`. Required when `NODE_ENV=production` (see below) |
 | `PORT`                  | No       | `3001`                           | Backend port                         |
 | `CORS_ORIGINS`          | No       | `http://localhost:3000`          | Allowed CORS origins (comma-separated) |
 | `FRONTEND_URL`          | No       | `http://localhost:3000`          | Frontend URL the GitHub OAuth callback redirects to after login or on error |
@@ -77,12 +77,11 @@ cp .env.example .env
 #     backend (no /api suffix)
 #   NODE_ENV=production, or delete the NODE_ENV line (.env.example sets
 #     development, which would override the compose default)
-#   PANEL_TOKEN to a strong random value, to authenticate the UI and API
 
 docker compose up -d --build
 ```
 
-`docker-compose.yml` forwards `DATABASE_URL`, `PORT`, `SESSION_SECRET`, `APP_SECRETS_KEY`, `CORS_ORIGINS`, `FRONTEND_URL`, `NODE_ENV`, `PANEL_SELF_APP_NAME`, `PANEL_TOKEN`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `BACKEND_URL` and `ALLOWED_GITHUB_LOGINS` from `.env` to the backend, like `docker-compose.prod.yml`. The optional ones default to empty (`BACKEND_URL` to `http://localhost:3001`), and the backend treats an empty `PANEL_TOKEN` or `SESSION_SECRET` as unset. `docker-compose.ci.yml` only states `PANEL_TOKEN` again without a default for the CI job. Without `PANEL_TOKEN`, a backend in development mode treats every request as admin, and a backend in production mode answers 500 on every authenticated route.
+`docker-compose.yml` forwards `DATABASE_URL`, `PORT`, `SESSION_SECRET`, `APP_SECRETS_KEY`, `CORS_ORIGINS`, `FRONTEND_URL`, `NODE_ENV`, `PANEL_SELF_APP_NAME`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `BACKEND_URL` and `ALLOWED_GITHUB_LOGINS` from `.env` to the backend. The optional ones default to empty (`BACKEND_URL` to `http://localhost:3001`), and the backend treats an empty `SESSION_SECRET` as unset. `PANEL_TOKEN` is deliberately not forwarded: an empty value fails the startup config check and production requires a token, so an empty default would stop the backend from starting. Add it to the backend's `environment:` in an override file, as `docker-compose.ci.yml` does, or take it from `docker-compose.prod.yml`, which forwards it. Without `PANEL_TOKEN`, a backend in development mode treats every request as admin, and a backend in production mode answers 500 on every authenticated route.
 
 Container behaviour:
 

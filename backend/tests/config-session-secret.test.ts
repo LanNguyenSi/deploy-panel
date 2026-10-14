@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 /**
  * SESSION_SECRET is reserved (nothing reads it), so startup must not require
  * it. A value that is set still has to be at least 16 characters; an empty
- * value counts as unset because compose forwards an unset host variable as "".
+ * value counts as unset.
  *
  * config/index.ts validates at import time and calls process.exit(1) on
  * failure, so each case re-imports the module with a fresh env and a stubbed
@@ -75,10 +75,11 @@ describe("config: SESSION_SECRET is optional", () => {
     expect(config?.SESSION_SECRET).toBe("exactly-16-chars");
   });
 
-  it("treats an empty PANEL_TOKEN as unset, as compose forwards an unset host variable as an empty string", async () => {
-    const { config, exitCalled } = await loadConfig(undefined, "");
-    expect(exitCalled).toBe(false);
-    expect(config?.PANEL_TOKEN).toBeUndefined();
+  it("rejects an empty PANEL_TOKEN so production cannot boot without a real one", async () => {
+    const { config, exitCalled, errors } = await loadConfig(undefined, "");
+    expect(exitCalled).toBe(true);
+    expect(config).toBeUndefined();
+    expect(JSON.stringify(errors.mock.calls)).toContain("PANEL_TOKEN");
   });
 
   it("keeps a non-empty PANEL_TOKEN", async () => {

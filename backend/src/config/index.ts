@@ -14,9 +14,7 @@ const configSchema = z.object({
   CORS_ORIGINS: z.string().default("http://localhost:3000"),
   FRONTEND_URL: z.string().default("http://localhost:3000"),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
-  // Admin credential. An empty value counts as unset, because
-  // docker-compose.yml forwards an unset host variable as "".
-  PANEL_TOKEN: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(1).optional()),
+  PANEL_TOKEN: z.string().min(1).optional(),
   // Comma-separated GitHub logins allowed through both GitHub paths: the
   // identity-broker endpoint and the native OAuth callback (routes/auth.ts).
   // Empty/unset = any verified GitHub user (back-compat). Stop-gap until
