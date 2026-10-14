@@ -16,7 +16,7 @@ export interface ProvisionResult {
  * deploy runs compose, and report whether any declared-required key is still
  * missing afterwards.
  *
- * This is the fix for the 2026-06-07 triologue-health-dashboard incident: a
+ * This fixes a recurring failure mode: a
  * manually-written .env on the VPS is exactly the fragile state being
  * eliminated here — undeclared, undiscoverable, and wiped by `git clean
  * -fdx`. Secrets set via setAppSecret live in the panel's own DB, so this

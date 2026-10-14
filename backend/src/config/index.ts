@@ -2,16 +2,24 @@ import { z } from "zod";
 
 const configSchema = z.object({
   PORT: z.coerce.number().default(3001),
-  SESSION_SECRET: z.string().min(16),
+  // Reserved: nothing reads it today (GitHub sessions are random tokens
+  // stored hashed in the DB, the admin cookie carries PANEL_TOKEN). Startup
+  // no longer requires it; an empty value counts as unset (compose forwards
+  // an unset host variable as ""), and a non-empty value still needs 16+
+  // characters so a future signing use cannot start from a weak secret.
+  SESSION_SECRET: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.string().min(16).optional(),
+  ),
   CORS_ORIGINS: z.string().default("http://localhost:3000"),
   FRONTEND_URL: z.string().default("http://localhost:3000"),
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   PANEL_TOKEN: z.string().min(1).optional(),
-  // Comma-separated GitHub logins allowed to provision via the
-  // identity-broker endpoint. Empty/unset = any verified GitHub user
-  // (back-compat). Stop-gap until per-user data isolation lands; with
-  // real isolation the allowlist becomes optional product policy rather
-  // than a security guardrail.
+  // Comma-separated GitHub logins allowed through both GitHub paths: the
+  // identity-broker endpoint and the native OAuth callback (routes/auth.ts).
+  // Empty/unset = any verified GitHub user (back-compat). Stop-gap until
+  // per-user data isolation lands; with real isolation the allowlist
+  // becomes optional product policy rather than a security guardrail.
   ALLOWED_GITHUB_LOGINS: z.string().default(""),
   // Native GitHub OAuth App for the standalone login flow (distinct
   // from the identity-broker path, which forwards a token from

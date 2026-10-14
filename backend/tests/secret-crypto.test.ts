@@ -37,7 +37,8 @@ describe("secret-crypto", () => {
     // Regression guard for the HIGH finding: secret-crypto.ts is now
     // transitively imported by apps.ts/v1.ts/stream-deploy.ts. If it ever
     // imports the config module again, every test suite that imports those
-    // route/lib modules without SESSION_SECRET set would crash at import
+    // route/lib modules with a half-configured env (e.g. a SESSION_SECRET
+    // shorter than 16 characters) would crash at import
     // (process.exit(1)) instead of failing an assertion.
     const fs = await import("node:fs/promises");
     const url = await import("node:url");

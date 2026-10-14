@@ -3,7 +3,7 @@ type: overview
 title: App secrets config footgun — why secret-crypto.ts reads process.env directly
 description: Pointer doc — docs/configuration.md#app-secrets and docs/api.md are the authoritative, current references for the app-secrets feature; this entry only adds why lib/secret-crypto.ts deliberately reads process.env directly instead of importing config/index.ts, which neither doc states.
 tags: [secrets, config, pointer]
-timestamp: 2026-10-11T16:09:34Z
+timestamp: 2026-10-14T04:40:33Z
 sources:
   - docs/configuration.md
   - docs/api.md
@@ -24,12 +24,12 @@ product behavior: `backend/src/lib/secret-crypto.ts` deliberately reads
 `process.env.APP_SECRETS_KEY` and `process.env.NODE_ENV` directly
 (`keyMaterial`, secret-crypto.ts:34-53) instead of importing
 `config/index.ts`. `config/index.ts`'s top-level `configSchema.safeParse`
-calls `process.exit(1)` when ANY required var — not just
-`APP_SECRETS_KEY`, e.g. `SESSION_SECRET` too — is missing or invalid
-(config/index.ts:35-39). That side effect is correct for the server
-entrypoint, but wrong for a leaf crypto module that other modules
+calls `process.exit(1)` when ANY var is invalid (not just
+`APP_SECRETS_KEY`, e.g. a `SESSION_SECRET` shorter than 16 characters too), see
+`config/index.ts:43-46#"process.exit(1);"`. That side effect is correct for the
+server entrypoint, but wrong for a leaf crypto module that other modules
 (`apps.ts`, `v1.ts`, `stream-deploy.ts` and its transitive importers) pull
-in. A test suite that mocks Prisma/relay but never sets `SESSION_SECRET`
+in. A test suite that mocks Prisma/relay but leaves the env half-configured
 must be able to import `secret-crypto.ts` without the whole process
 exiting under it. The module's own doc comment (secret-crypto.ts:17-25)
 cross-references the same "no silent errors" convention this footgun note

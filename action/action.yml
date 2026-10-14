@@ -6,7 +6,7 @@ branding:
 
 inputs:
   url:
-    description: "Deploy Panel URL (e.g. https://deploy-panel.opentriologue.ai)"
+    description: "Deploy Panel URL (e.g. https://panel.example.com)"
     required: true
   api-key:
     description: "Deploy Panel API key (dp_...)"
@@ -39,8 +39,8 @@ outputs:
     description: "Deploy ID"
     value: ${{ steps.deploy.outputs.deploy_id }}
   status:
-    description: "Final deploy status (success/failed/running)"
-    value: ${{ steps.poll.outputs.status }}
+    description: "Deploy status: with wait true, the final status (success, failed, rolled_back, interrupted) or timeout when the deploy did not finish within the timeout; with wait false, running"
+    value: ${{ steps.poll.outputs.status || steps.nowait.outputs.status }}
 
 runs:
   using: "composite"

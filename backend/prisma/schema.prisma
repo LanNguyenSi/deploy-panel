@@ -211,7 +211,7 @@ model Deploy {
   appId        String
   commitBefore String?
   commitAfter  String?
-  status       String   @default("pending") // pending, running, success, failed, rolled_back
+  status       String   @default("pending") // running, success, failed, rolled_back, interrupted ("pending" is only the column default and is never written)
   duration     Int?     // milliseconds
   log          String?  // full deploy output
   triggeredBy  String?  // "panel", "mcp", "api"
@@ -229,8 +229,8 @@ model Deploy {
 
 model AuditLog {
   id        String   @id @default(uuid())
-  action    String   // deploy, rollback, server.create, server.delete, app.tag, app.hide, login, logout, api_key.create, api_key.revoke
-  target    String?  // e.g. "deploy-panel on VPS-01" or "VPS-01 (Stone)"
+  action    String   // the first argument of audit() (backend/src/lib/audit.ts), e.g. deploy, rollback, server.create, user.login, api_key.create
+  target    String?  // e.g. "myapp on my-server" or "my-server (203.0.113.7)"
   detail    String?  // extra info like commit hash, status, etc.
   actor     String?  // free-form label kept for UI display: "panel", "api:github-actions", "session", "broker:project-pilot/<login>"
   // Structured actor, populated when the triggering credential is bound
