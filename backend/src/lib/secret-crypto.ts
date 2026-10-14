@@ -17,7 +17,7 @@ import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:
  * Deliberately reads `process.env` directly instead of importing
  * `../config/index.js`: that module's top-level `configSchema.safeParse`
  * calls `process.exit(1)` when ANY var (e.g. a SESSION_SECRET shorter than
- * 16 characters) is invalid — a side effect fine for the server entrypoint
+ * 16 characters) is invalid: a side effect fine for the server entrypoint
  * but wrong for a leaf crypto module that apps.ts/v1.ts/stream-deploy.ts now
  * pull in transitively. A test suite that mocks relay/prisma but leaves the
  * env half-configured must be able to import this file without the whole

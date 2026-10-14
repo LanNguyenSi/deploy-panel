@@ -1,6 +1,9 @@
 packs:
   review-slop: true
 
+# Run with: slop-detector check -c slop.config.yml <paths> (the CLI loads
+# a config only with -c).
+#
 # docs/okf/log.md is an append-only evidence journal. Two historical entries
 # mention review rounds of the work they record; each pattern below excuses
 # only that matched span, so any new round reference in the log still fires.
