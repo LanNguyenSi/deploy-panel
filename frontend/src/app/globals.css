@@ -1183,6 +1183,7 @@ a:hover { color: var(--primary-hover); }
 
   .btn,
   .btn-sm,
+  .row-toggle,
   .sidebar-link,
   .mobile-close-btn,
   .mobile-menu-btn {

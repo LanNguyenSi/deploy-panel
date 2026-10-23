@@ -1,4 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
+import { hydrateRoot } from "react-dom/client";
+import { renderToString } from "react-dom/server";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Sidebar from "./Sidebar";
@@ -8,13 +10,28 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
 
+type Listener = (e: { matches: boolean }) => void;
+let listeners: Listener[] = [];
+let currentMatches = false;
+
 function mockViewport(mobile: boolean) {
+  listeners = [];
+  currentMatches = mobile;
   window.matchMedia = ((query: string) => ({
-    matches: mobile,
+    get matches() {
+      return currentMatches;
+    },
     media: query,
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    addEventListener: (_: string, l: Listener) => listeners.push(l),
+    removeEventListener: (_: string, l: Listener) => {
+      listeners = listeners.filter((x) => x !== l);
+    },
   })) as unknown as typeof window.matchMedia;
+}
+
+function fireChange(matches: boolean) {
+  currentMatches = matches;
+  act(() => listeners.forEach((l) => l({ matches })));
 }
 
 afterEach(() => {
@@ -40,5 +57,31 @@ describe("Sidebar inert state", () => {
     mockViewport(false);
     const { container } = render(<Sidebar />);
     expect(container.querySelector("aside")).not.toHaveAttribute("inert");
+  });
+
+  it("follows viewport changes between mobile and desktop", () => {
+    mockViewport(true);
+    const { container } = render(<Sidebar />);
+    const aside = container.querySelector("aside");
+    expect(aside).toHaveAttribute("inert");
+    fireChange(false);
+    expect(aside).not.toHaveAttribute("inert");
+    fireChange(true);
+    expect(aside).toHaveAttribute("inert");
+  });
+
+  it("becomes inert after hydrating server markup on a mobile viewport", async () => {
+    mockViewport(false);
+    const html = renderToString(<Sidebar />);
+    expect(html).not.toMatch(/<aside[^>]*\binert/);
+    mockViewport(true);
+    const host = document.createElement("div");
+    host.innerHTML = html;
+    document.body.appendChild(host);
+    await act(async () => {
+      hydrateRoot(host, <Sidebar />);
+    });
+    expect(host.querySelector("aside")).toHaveAttribute("inert");
+    host.remove();
   });
 });
