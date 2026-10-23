@@ -70,6 +70,16 @@ describe("Sidebar inert state", () => {
     expect(aside).toHaveAttribute("inert");
   });
 
+  it("subscribes once and removes its viewport listener on unmount", () => {
+    mockViewport(true);
+    const { rerender, unmount } = render(<Sidebar />);
+    expect(listeners).toHaveLength(1);
+    rerender(<Sidebar />);
+    expect(listeners).toHaveLength(1);
+    unmount();
+    expect(listeners).toHaveLength(0);
+  });
+
   it("becomes inert after hydrating server markup on a mobile viewport", async () => {
     mockViewport(false);
     const html = renderToString(<Sidebar />);
