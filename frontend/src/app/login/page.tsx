@@ -154,6 +154,8 @@ function LoginForm() {
           <input
             type="password"
             placeholder="Access token"
+            aria-label="Access token"
+            autoComplete="current-password"
             value={token}
             onChange={(e) => setToken(e.target.value)}
             required

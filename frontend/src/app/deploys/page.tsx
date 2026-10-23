@@ -136,7 +136,11 @@ export default function DeploysPage() {
                       className={expandedId === d.id ? "row-expanded" : ""}
                     >
                       <td><StatusBadge status={d.status} /></td>
-                      <td style={{ fontWeight: 500, color: "var(--text)" }}>{d.app.name}</td>
+                      <td style={{ fontWeight: 500, color: "var(--text)" }}>
+                        <button type="button" className="row-toggle" aria-expanded={expandedId === d.id}>
+                          {d.app.name}
+                        </button>
+                      </td>
                       <td style={{ color: "var(--text-secondary)" }}>{d.server.name}</td>
                       <td>
                         <code style={{ fontSize: "var(--text-xs)", color: "var(--text-secondary)", background: "var(--bg-subtle)", padding: "0.125rem 0.375rem", borderRadius: "var(--radius-sm)" }}>
@@ -220,7 +224,7 @@ function DurationChart({ deploys }: { deploys: DeployWithRelations[] }) {
   return (
     <div className="card" style={{ padding: "var(--space-4) var(--space-5)", marginBottom: "var(--space-4)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-3)" }}>
-        <h3 style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--text-secondary)" }}>Deploy Duration Trend</h3>
+        <h2 style={{ fontSize: "var(--text-sm)", fontWeight: 600, color: "var(--text-secondary)" }}>Deploy Duration Trend</h2>
         <div style={{ display: "flex", gap: "var(--space-4)", fontSize: "var(--text-xs)", color: "var(--muted)" }}>
           <span>Avg: <strong style={{ color: "var(--text-secondary)" }}>{avg.toFixed(1)}s</strong></span>
           <span>Min: <strong style={{ color: "var(--success)" }}>{min.toFixed(1)}s</strong></span>

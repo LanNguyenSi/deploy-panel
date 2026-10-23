@@ -186,7 +186,12 @@ export default function DashboardPage() {
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
-                    <span className={`status-dot status-dot-${d.status}`} />
+                    <span
+                      className={`status-dot status-dot-${d.status}`}
+                      role="img"
+                      aria-label={`Status: ${d.status}`}
+                      title={d.status}
+                    />
                     <div>
                       <span style={{ fontWeight: 500, color: "var(--text)" }}>{d.app.name}</span>
                       <span style={{ color: "var(--muted)", marginLeft: "var(--space-2)" }}>
@@ -195,6 +200,7 @@ export default function DashboardPage() {
                     </div>
                   </div>
                   <span style={{ color: "var(--muted)", fontSize: "var(--text-xs)" }}>
+                    <span style={{ textTransform: "capitalize", marginRight: "var(--space-2)" }}>{d.status}</span>
                     {timeAgo(d.createdAt)}
                   </span>
                 </div>

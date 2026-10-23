@@ -268,7 +268,7 @@ export default function ScheduledPage() {
           </div>
         </div>
       ) : (
-        <div className="card" style={{ overflow: "hidden" }}>
+        <div className="card" style={{ overflowX: "auto" }}>
           <table className="table">
             <thead>
               <tr>

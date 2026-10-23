@@ -10,6 +10,18 @@ export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
+  // Mirrors the 768px breakpoint in globals.css: below it the sidebar is an
+  // off-canvas drawer and must leave the tab order while closed.
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia("(max-width: 768px)");
+    setIsMobile(mq.matches);
+    const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
 
   const closeMobile = useCallback(() => setMobileOpen(false), []);
 
@@ -58,7 +70,7 @@ export default function Sidebar() {
       {mobileOpen && <div className="sidebar-overlay" role="presentation" onClick={closeMobile} />}
 
       {/* Sidebar */}
-      <aside className={`sidebar${mobileOpen ? " sidebar-open" : ""}`}>
+      <aside className={`sidebar${mobileOpen ? " sidebar-open" : ""}`} inert={isMobile && !mobileOpen}>
         <div className="sidebar-top">
           <div className="sidebar-brand-row">
             <Link href="/" className="sidebar-brand">
