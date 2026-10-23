@@ -78,16 +78,21 @@ export default function SettingsPage() {
         </p>
 
         <form onSubmit={handleCreate} style={{ display: "flex", gap: "var(--space-2)", marginBottom: "var(--space-4)" }}>
-          <input
-            type="text"
-            placeholder="Key name (e.g. github-actions-prod)"
-            value={newKeyName}
-            onChange={(e) => setNewKeyName(e.target.value)}
-            required
-            className="input"
-            style={{ flex: 1 }}
-          />
-          <button type="submit" disabled={creating} className="btn btn-primary">
+          <div style={{ flex: 1, display: "grid", gap: "var(--space-1)" }}>
+            <label htmlFor="key-name" style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>
+              Key name
+            </label>
+            <input
+              id="key-name"
+              type="text"
+              placeholder="e.g. github-actions-prod"
+              value={newKeyName}
+              onChange={(e) => setNewKeyName(e.target.value)}
+              required
+              className="input"
+            />
+          </div>
+          <button type="submit" disabled={creating} className="btn btn-primary" style={{ alignSelf: "end" }}>
             {creating ? "Creating..." : "Create Key"}
           </button>
         </form>

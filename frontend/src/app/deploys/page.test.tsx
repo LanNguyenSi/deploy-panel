@@ -125,3 +125,46 @@ describe("DeploysPage - stored deploy step output", () => {
     expect(screen.queryByText("Output")).not.toBeInTheDocument();
   });
 });
+
+describe("DeploysPage - keyboard access", () => {
+  const detail = {
+    deploy: {
+      ...DEPLOYS_LIST.deploys[0],
+      app: { name: "my-app", repoUrl: null, branch: "main" },
+      compareUrl: null,
+      steps: [{ name: "docker-compose-up", status: "success", durationMs: 800 }],
+    },
+  };
+
+  it("each row has a keyboard toggle button that expands and collapses it", async () => {
+    const user = await renderPage();
+    mGetDeployDetail.mockResolvedValue(detail);
+    const toggle = screen.getByRole("button", { name: "my-app" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    toggle.focus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "true"));
+
+    await user.keyboard(" ");
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "false"));
+  });
+
+  it("uses h2 for the trend section so heading levels do not skip", async () => {
+    mGetDeploys.mockResolvedValue({
+      deploys: [
+        { ...DEPLOYS_LIST.deploys[0], id: "d1", duration: 1000 },
+        { ...DEPLOYS_LIST.deploys[0], id: "d2", duration: 2000 },
+        { ...DEPLOYS_LIST.deploys[0], id: "d3", duration: 3000 },
+      ],
+      total: 3,
+    });
+    render(
+      <Providers>
+        <DeploysPage />
+      </Providers>,
+    );
+    await screen.findAllByText("my-app");
+    expect(screen.getByRole("heading", { level: 2, name: "Deploy Duration Trend" })).toBeInTheDocument();
+  });
+});

@@ -311,8 +311,26 @@ a:hover { color: var(--primary-hover); }
 }
 
 .btn:focus-visible {
-  outline: none;
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
   box-shadow: var(--glow-primary);
+}
+
+/* Keyboard handle for click-to-expand table rows: looks like the cell text. */
+.row-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.row-toggle:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
 }
 
 .btn:active {
@@ -891,6 +909,7 @@ a:hover { color: var(--primary-hover); }
 
 .action-group-secondary {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
   padding-left: var(--space-2);
@@ -1160,5 +1179,21 @@ a:hover { color: var(--primary-hover); }
     flex-direction: column;
     align-items: flex-start;
     gap: var(--space-3);
+  }
+
+  .btn,
+  .btn-sm,
+  .row-toggle,
+  .sidebar-link,
+  .mobile-close-btn,
+  .mobile-menu-btn {
+    min-height: 44px;
+  }
+
+  .mobile-close-btn,
+  .mobile-menu-btn {
+    min-width: 44px;
+    align-items: center;
+    justify-content: center;
   }
 }

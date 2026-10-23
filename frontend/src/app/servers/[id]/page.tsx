@@ -314,7 +314,7 @@ export default function ServerDetailPage() {
             )}
           </p>
         </div>
-        <div style={{ display: "flex", gap: "var(--space-2)" }}>
+        <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
           <button
             onClick={() => setUpdateImageOpen(true)}
             className="btn btn-ghost"
@@ -416,17 +416,18 @@ export default function ServerDetailPage() {
           <div className="empty-state-text">Deploy an app via agent-relay to see it here.</div>
         </div>
       ) : (
-        <div style={{ display: "grid", gap: "var(--space-3)" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: "var(--space-3)" }}>
           {apps.map((app) => (
             <div key={app.id} className="card" style={{ padding: "var(--space-4) var(--space-5)" }}>
               {/* App header */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-3)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "var(--space-2)", marginBottom: "var(--space-3)" }}>
+                <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--space-3)" }}>
                   {apps.length > 1 && (
                     <input
                       type="checkbox"
                       checked={selected.has(app.name)}
                       onChange={() => toggleSelect(app.name)}
+                      aria-label={`Select ${app.name}`}
                       style={{ accentColor: "var(--primary)" }}
                     />
                   )}
@@ -511,6 +512,7 @@ export default function ServerDetailPage() {
                       await load();
                     }}
                     className="select-native"
+                    aria-label={`Deployment tag for ${app.name}`}
                   >
                     <option value="">No tag</option>
                     <option value="production">Production</option>

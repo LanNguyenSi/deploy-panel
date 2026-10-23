@@ -365,3 +365,25 @@ describe("ServerDetailPage - deploy step output", () => {
     await waitFor(() => expect(screen.queryByText("Output")).not.toBeInTheDocument());
   });
 });
+
+describe("ServerDetailPage - accessible names", () => {
+  it("names each app's selection checkbox and tag select after the app", async () => {
+    await renderPage();
+    mGetServer.mockResolvedValue(SERVER);
+    mGetApps.mockResolvedValue({
+      apps: [APPS.apps[0], { ...APPS.apps[0], id: "app-b", name: "other-app" }],
+    });
+    // Re-render with two apps (checkboxes only show for more than one app).
+    document.body.innerHTML = "";
+    render(
+      <Providers>
+        <ServerDetailPage />
+      </Providers>,
+    );
+    await screen.findByText("other-app");
+    expect(screen.getByRole("checkbox", { name: "Select my-app" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Select other-app" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Deployment tag for my-app" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Deployment tag for other-app" })).toBeInTheDocument();
+  });
+});

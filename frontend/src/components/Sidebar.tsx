@@ -2,14 +2,35 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+
+const MOBILE_QUERY = "(max-width: 768px)";
+
+function getIsMobile(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia(MOBILE_QUERY).matches
+    : false;
+}
+
+function subscribeMobile(onChange: () => void): () => void {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return () => {};
+  const mq = window.matchMedia(MOBILE_QUERY);
+  mq.addEventListener("change", onChange);
+  return () => mq.removeEventListener("change", onChange);
+}
 
 export default function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
+  // Mirrors the 768px breakpoint in globals.css: below it the sidebar is an
+  // off-canvas drawer and must leave the tab order while closed. Read through
+  // useSyncExternalStore so a client render sees the real viewport at once and
+  // hydration of server markup (server snapshot: desktop) re-renders with it
+  // instead of keeping the server's attribute.
+  const isMobile = useSyncExternalStore(subscribeMobile, getIsMobile, () => false);
 
   const closeMobile = useCallback(() => setMobileOpen(false), []);
 
@@ -58,7 +79,7 @@ export default function Sidebar() {
       {mobileOpen && <div className="sidebar-overlay" role="presentation" onClick={closeMobile} />}
 
       {/* Sidebar */}
-      <aside className={`sidebar${mobileOpen ? " sidebar-open" : ""}`}>
+      <aside className={`sidebar${mobileOpen ? " sidebar-open" : ""}`} inert={isMobile && !mobileOpen}>
         <div className="sidebar-top">
           <div className="sidebar-brand-row">
             <Link href="/" className="sidebar-brand">
