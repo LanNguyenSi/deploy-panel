@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Relay self-update no longer marks a healthy server offline.** `POST /api/servers/:id/relay-self-update` answers a relay without `/api/self-update` (`404`/`405`, relay images older than the self-update release) with `422 { kind: "self_update_unsupported" }` and a hint to update once via SSH, a trigger timeout with `504 { kind: "trigger_timeout" }`, and other relay HTTP errors with `502`, all without changing the server status. These cases require that the relay answered its `/health` probe right before the trigger; a relay that did not (for example Traefik answering `404` or `502` for a stopped container) gets `502 { kind: "relay_down" }` and is set `offline`, as is an unreachable relay or one that does not come back after the trigger.
+
 ### Security
 
 - **zod 4.6.7** (GHSA-mrhx-c7xc-m3w5): `backend` and `mcp/` migrated from zod 3 to the zod 4 core API (the `zod/v3` compatibility subpath is not used anywhere), and both lockfiles now resolve 4.6.7, so neither reports the advisory. `@hono/zod-validator` moves 0.4.3 -> 0.9.1 with it; the 400 validation bodies now come from one shared hook (`backend/src/lib/validator.ts`) that keeps the base 400 status and the base envelope `{ success: false, error: { issues, name } }`, which the validator's default hook would lose under zod 4 because `issues` is no longer enumerable; each issue is reduced to `code`, `path` and `message` and carries zod 4's issue codes and texts (for example `invalid_string` became `invalid_format`). Schemas keep the zod 3 accept sets (pinned by tests) and the zod 3 output values: `.url()` in zod 4 returns a cleaned value (leading/trailing whitespace trimmed, ASCII tabs and newlines removed) where zod 3 returned the input unchanged, so the url fields (`relayUrl` in `backend/src/routes/servers.ts`, `BACKEND_URL` in `backend/src/config/index.ts`) use a shared helper (`backend/src/lib/zod-url.ts`) that validates with `new URL()` and keeps the raw bytes.
