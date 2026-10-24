@@ -21,6 +21,8 @@ const mSyncServer = vi.fn();
 const mRollbackApp = vi.fn();
 const mDeployApp = vi.fn();
 const mGetDeployStatus = vi.fn();
+const mGetServerRelayStatus = vi.fn();
+const mSelfUpdateServerRelay = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -32,6 +34,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
     rollbackApp: (...args: unknown[]) => mRollbackApp(...args),
     deployApp: (...args: unknown[]) => mDeployApp(...args),
     getDeployStatus: (...args: unknown[]) => mGetDeployStatus(...args),
+    getServerRelayStatus: (...args: unknown[]) => mGetServerRelayStatus(...args),
+    selfUpdateServerRelay: (...args: unknown[]) => mSelfUpdateServerRelay(...args),
   };
 });
 
@@ -385,5 +389,60 @@ describe("ServerDetailPage - accessible names", () => {
     expect(screen.getByRole("checkbox", { name: "Select other-app" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Deployment tag for my-app" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Deployment tag for other-app" })).toBeInTheDocument();
+  });
+});
+
+describe("ServerDetailPage — relay outdated badge, one-click Update relay, and SSH fallback", () => {
+  const OLD_SHA = "89b3f8b920be3ae58617395fddb4d73fe5138f72";
+  const NEW_SHA = "6b2c7bb27d0db0f37b7abb9e3e8286cf44baa4a6";
+
+  it("renders '▲ Relay outdated (89b3f8b → 6b2c7bb)' when relayOutdated is true and updates via one click", async () => {
+    mGetServerRelayStatus.mockResolvedValue({
+      relayRevision: OLD_SHA,
+      latestRevision: NEW_SHA,
+      relayOutdated: true,
+      state: "outdated",
+    });
+    mSelfUpdateServerRelay.mockResolvedValueOnce({
+      status: "online",
+      previousRevision: OLD_SHA,
+      relayRevision: NEW_SHA,
+      latestRevision: NEW_SHA,
+      relayOutdated: false,
+    });
+
+    const user = await renderPage();
+
+    const badge = await screen.findByTestId("relay-outdated-badge");
+    expect(badge).toHaveTextContent("▲ Relay outdated (89b3f8b → 6b2c7bb)");
+
+    await user.click(screen.getByRole("button", { name: "Update relay" }));
+    await waitFor(() => expect(mSelfUpdateServerRelay).toHaveBeenCalledWith("srv-a"));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Relay updated (89b3f8b → 6b2c7bb)");
+    expect(alert.textContent?.startsWith("✓ ")).toBe(true);
+  });
+
+  it("shows an error toast when selfUpdateServerRelay fails and keeps 'Update via SSH (fallback)' reachable", async () => {
+    mGetServerRelayStatus.mockResolvedValue({
+      relayRevision: OLD_SHA,
+      latestRevision: NEW_SHA,
+      relayOutdated: true,
+      state: "outdated",
+    });
+    mSelfUpdateServerRelay.mockRejectedValueOnce(new Error("Relay is currently busy with a deploy"));
+
+    const user = await renderPage();
+    await user.click(screen.getByRole("button", { name: "Update relay" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Relay self-update failed: Relay is currently busy with a deploy");
+    expect(alert.textContent?.startsWith("✗ ")).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "Update via SSH (fallback)" }));
+    expect(
+      await screen.findByRole("dialog", { name: /Update relay image on srv-a/i }),
+    ).toBeInTheDocument();
   });
 });

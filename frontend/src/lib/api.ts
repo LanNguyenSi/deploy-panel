@@ -389,6 +389,35 @@ export async function getServerSystem(id: string): Promise<SystemMetrics> {
   return request(`/api/servers/${id}/system`);
 }
 
+export interface ServerRelayStatus {
+  relayRevision: string | null;
+  latestRevision: string | null;
+  relayOutdated: boolean | null;
+  state: "current" | "outdated" | "unknown";
+}
+
+export interface RelaySelfUpdateResponse {
+  status: string;
+  previousRevision: string | null;
+  relayRevision: string | null;
+  latestRevision: string | null;
+  relayOutdated: boolean | null;
+}
+
+export async function getServerRelayStatus(id: string): Promise<ServerRelayStatus> {
+  return request(`/api/servers/${encodeURIComponent(id)}/relay-status`);
+}
+
+export async function selfUpdateServerRelay(
+  id: string,
+  options?: { tag?: string },
+): Promise<RelaySelfUpdateResponse> {
+  return request(`/api/servers/${encodeURIComponent(id)}/relay-self-update`, {
+    method: "POST",
+    body: JSON.stringify(options ?? {}),
+  });
+}
+
 // ── Apps ───────────────────────────────────────────────────────────────────
 
 export interface AppWithCount extends App {

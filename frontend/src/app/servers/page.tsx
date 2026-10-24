@@ -2,17 +2,36 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { getServers, createServer, deleteServer, testServer, getServerSystem, type ServerWithCount, type SystemMetrics } from "@/lib/api";
+import {
+  getServers,
+  createServer,
+  deleteServer,
+  testServer,
+  getServerSystem,
+  getServerRelayStatus,
+  selfUpdateServerRelay,
+  type ServerWithCount,
+  type SystemMetrics,
+  type ServerRelayStatus,
+} from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { ServerInstallWizard } from "@/components/ServerInstallWizard";
+import { ServerUpdateImageDialog } from "@/components/ServerUpdateImageDialog";
+
+function shortRev(rev: string | null | undefined): string {
+  return rev ? rev.slice(0, 7) : "unknown";
+}
 
 export default function ServersPage() {
   const [servers, setServers] = useState<ServerWithCount[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
+  const [updatingRelay, setUpdatingRelay] = useState<string | null>(null);
+  const [sshFallbackServer, setSshFallbackServer] = useState<ServerWithCount | null>(null);
   const [metrics, setMetrics] = useState<Record<string, SystemMetrics>>({});
+  const [relayStatuses, setRelayStatuses] = useState<Record<string, ServerRelayStatus>>({});
   const { toast } = useToast();
   const { confirm } = useConfirm();
 
@@ -20,16 +39,27 @@ export default function ServersPage() {
     try {
       const data = await getServers();
       setServers(data.servers);
-      // Fetch metrics for each server in parallel
+      // Fetch metrics and relay revision status for each server in parallel
       const metricsMap: Record<string, SystemMetrics> = {};
+      const relayMap: Record<string, ServerRelayStatus> = {};
       await Promise.allSettled(
         data.servers.map(async (s) => {
-          try {
-            metricsMap[s.id] = await getServerSystem(s.id);
-          } catch { /* ignore — server may not have relay */ }
+          await Promise.allSettled([
+            (async () => {
+              try {
+                metricsMap[s.id] = await getServerSystem(s.id);
+              } catch { /* ignore — server may not have relay */ }
+            })(),
+            (async () => {
+              try {
+                relayMap[s.id] = await getServerRelayStatus(s.id);
+              } catch { /* ignore — fail soft to unknown */ }
+            })(),
+          ]);
         }),
       );
       setMetrics(metricsMap);
+      setRelayStatuses(relayMap);
     } catch (err) {
       console.error("Failed to load servers:", err);
     } finally {
@@ -53,6 +83,22 @@ export default function ServersPage() {
       toast(`Test failed: ${err.message}`, "error");
     } finally {
       setTesting(null);
+    }
+  }
+
+  async function handleRelaySelfUpdate(server: ServerWithCount) {
+    setUpdatingRelay(server.id);
+    try {
+      const result = await selfUpdateServerRelay(server.id);
+      toast(
+        `Relay on "${server.name}" updated (${shortRev(result.previousRevision)} → ${shortRev(result.relayRevision)})`,
+        "success",
+      );
+      await load();
+    } catch (err: any) {
+      toast(`Relay self-update failed: ${err.message}`, "error");
+    } finally {
+      setUpdatingRelay(null);
     }
   }
 
@@ -112,24 +158,64 @@ export default function ServersPage() {
         </div>
       ) : (
         <div style={{ display: "grid", gap: "var(--space-3)" }}>
-          {servers.map((s) => (
+          {servers.map((s) => {
+            const rs = relayStatuses[s.id];
+            const isOutdated = rs?.relayOutdated === true;
+            return (
             <div key={s.id} className="card" style={{ padding: "var(--space-4) var(--space-5)" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "var(--space-3)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)", minWidth: 0 }}>
                   <span className={`status-dot status-dot-${s.status}`} />
-                  <div>
-                    <Link href={`/servers/${s.id}`} style={{ fontWeight: 600, color: "var(--text)", fontSize: "var(--text-md)" }}>
-                      {s.name}
-                    </Link>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--space-2)" }}>
+                      <Link href={`/servers/${s.id}`} style={{ fontWeight: 600, color: "var(--text)", fontSize: "var(--text-md)" }}>
+                        {s.name}
+                      </Link>
+                      {isOutdated && (
+                        <span
+                          data-testid={`relay-outdated-${s.id}`}
+                          className="badge badge-warning"
+                          title={`Running relay commit ${rs?.relayRevision ?? "unknown"} is behind published latest ${rs?.latestRevision ?? "unknown"}`}
+                        >
+                          <span aria-hidden="true">▲</span> Relay outdated ({shortRev(rs?.relayRevision)} → {shortRev(rs?.latestRevision)})
+                        </span>
+                      )}
+                      {rs?.relayOutdated === false && rs.relayRevision && (
+                        <span
+                          data-testid={`relay-current-${s.id}`}
+                          className="badge badge-neutral"
+                          title={`Relay image revision ${rs.relayRevision} matches latest published image`}
+                        >
+                          Relay {shortRev(rs.relayRevision)}
+                        </span>
+                      )}
+                    </div>
                     <div style={{ fontSize: "var(--text-sm)", color: "var(--muted)", marginTop: 2 }}>
                       {s.host} · {s._count.apps} app{s._count.apps !== 1 ? "s" : ""}
                     </div>
                   </div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)" }}>
+                <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--space-2)" }}>
                   <span className={`badge badge-${s.status === "online" ? "success" : s.status === "offline" ? "danger" : s.status === "no-relay" ? "warning" : "neutral"}`}>
                     {s.status}
                   </span>
+                  {isOutdated && (
+                    <button
+                      type="button"
+                      onClick={() => void handleRelaySelfUpdate(s)}
+                      disabled={updatingRelay === s.id}
+                      className="btn btn-primary btn-sm"
+                    >
+                      {updatingRelay === s.id ? "Updating relay..." : "Update relay"}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setSshFallbackServer(s)}
+                    className="btn btn-ghost btn-sm"
+                  >
+                    Update via SSH (fallback)
+                  </button>
                   <button onClick={() => handleTest(s.id)} disabled={testing === s.id} className="btn btn-secondary btn-sm">
                     {testing === s.id ? "Testing..." : "Test"}
                   </button>
@@ -147,8 +233,24 @@ export default function ServersPage() {
                 </div>
               )}
             </div>
-          ))}
+            );
+          })}
         </div>
+      )}
+
+      {sshFallbackServer && (
+        <ServerUpdateImageDialog
+          serverId={sshFallbackServer.id}
+          serverName={sshFallbackServer.name}
+          serverHost={sshFallbackServer.host}
+          defaultRelayDir={sshFallbackServer.relayDir ?? null}
+          defaultRelayComposeFile={sshFallbackServer.relayComposeFile ?? null}
+          onClose={() => setSshFallbackServer(null)}
+          onUpdated={() => {
+            void load();
+            toast("Relay image updated", "success");
+          }}
+        />
       )}
     </main>
   );

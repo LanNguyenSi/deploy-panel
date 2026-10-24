@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { getServer, getApps, getAppsUpstream, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, setAppLiveUrl, bulkDeploy, type AppUpstream, type AppWithCount, type RelayMode } from "@/lib/api";
+import { getServer, getApps, getAppsUpstream, getServerRelayStatus, selfUpdateServerRelay, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, setAppLiveUrl, bulkDeploy, type AppUpstream, type AppWithCount, type RelayMode, type ServerRelayStatus } from "@/lib/api";
 import { deployStatusBadge } from "@/lib/status";
 import { describeRollbackResult } from "@/lib/rollback";
 import { useToast } from "@/components/Toast";
@@ -31,6 +31,8 @@ export default function ServerDetailPage() {
   const [serverRelayComposeFile, setServerRelayComposeFile] = useState<string | null>(null);
   const [reinstallOpen, setReinstallOpen] = useState(false);
   const [updateImageOpen, setUpdateImageOpen] = useState(false);
+  const [relayStatus, setRelayStatus] = useState<ServerRelayStatus | null>(null);
+  const [selfUpdatingRelay, setSelfUpdatingRelay] = useState(false);
   const [apps, setApps] = useState<AppWithCount[]>([]);
   // Upstream staleness arrives after the list: null = not arrived yet, "failed" = request failed.
   const [upstream, setUpstream] = useState<Record<string, AppUpstream> | "failed" | null>(null);
@@ -106,6 +108,30 @@ export default function ServerDetailPage() {
     }
   }
 
+  async function loadRelayStatus() {
+    try {
+      const status = await getServerRelayStatus(id);
+      setRelayStatus(status);
+    } catch {
+      setRelayStatus(null);
+    }
+  }
+
+  async function handleRelaySelfUpdate() {
+    setSelfUpdatingRelay(true);
+    try {
+      const res = await selfUpdateServerRelay(id);
+      const prevShort = res.previousRevision ? res.previousRevision.slice(0, 7) : "previous";
+      const nextShort = res.relayRevision ? res.relayRevision.slice(0, 7) : "latest";
+      toast(`Relay updated (${prevShort} → ${nextShort})`, "success");
+      await load();
+    } catch (err: any) {
+      toast(`Relay self-update failed: ${err.message}`, "error");
+    } finally {
+      setSelfUpdatingRelay(false);
+    }
+  }
+
   async function load() {
     try {
       const [serverData, appsData] = await Promise.all([
@@ -120,6 +146,7 @@ export default function ServerDetailPage() {
       setServerRelayComposeFile(serverData.server.relayComposeFile ?? null);
       setApps(appsData.apps);
       void loadUpstream();
+      void loadRelayStatus();
     } catch (err) {
       console.error("Failed to load:", err);
     } finally {
@@ -302,7 +329,27 @@ export default function ServerDetailPage() {
 
       <div className="page-header">
         <div>
-          <h1 className="page-title">{serverName || "Server"}</h1>
+          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--space-2)" }}>
+            <h1 className="page-title">{serverName || "Server"}</h1>
+            {relayStatus?.relayOutdated === true && (
+              <span
+                data-testid="relay-outdated-badge"
+                className="badge badge-warning"
+                title={`Running relay commit ${relayStatus.relayRevision ?? "unknown"} is behind published latest ${relayStatus.latestRevision ?? "unknown"}`}
+              >
+                <span aria-hidden="true">▲</span> Relay outdated ({relayStatus.relayRevision?.slice(0, 7) ?? "unknown"} → {relayStatus.latestRevision?.slice(0, 7) ?? "unknown"})
+              </span>
+            )}
+            {relayStatus?.relayOutdated === false && relayStatus.relayRevision && (
+              <span
+                data-testid="relay-current-badge"
+                className="badge badge-neutral"
+                title={`Relay image revision ${relayStatus.relayRevision} matches latest published image`}
+              >
+                Relay {relayStatus.relayRevision.slice(0, 7)}
+              </span>
+            )}
+          </div>
           <p className="page-subtitle">{apps.length} app{apps.length !== 1 ? "s" : ""} registered
             {outdatedCount > 0 && (
               <>
@@ -316,11 +363,20 @@ export default function ServerDetailPage() {
         </div>
         <div style={{ display: "flex", gap: "var(--space-2)", flexWrap: "wrap" }}>
           <button
+            type="button"
+            onClick={() => void handleRelaySelfUpdate()}
+            disabled={selfUpdatingRelay}
+            className={relayStatus?.relayOutdated === true ? "btn btn-primary" : "btn btn-secondary"}
+            title="Pull latest agent-relay image and recreate the relay container via the relay's self-update endpoint (no SSH required)."
+          >
+            {selfUpdatingRelay ? "Updating relay..." : "Update relay"}
+          </button>
+          <button
             onClick={() => setUpdateImageOpen(true)}
             className="btn btn-ghost"
-            title="Pull latest agent-relay image + restart container (~30s). Does not re-run install.sh."
+            title="Fallback: pull latest agent-relay image + restart container via SSH (~30s). Does not re-run install.sh."
           >
-            Update Relay Image
+            Update via SSH (fallback)
           </button>
           <button
             onClick={() => setReinstallOpen(true)}
