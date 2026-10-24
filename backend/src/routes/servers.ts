@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
-import { zValidator } from "@hono/zod-validator";
+import { validatedJson } from "../lib/validator.js";
 import { prisma } from "../lib/prisma.js";
 import { audit, getActor, getActorUserId } from "../lib/audit.js";
 import {
@@ -31,7 +31,7 @@ function sanitizeServer(server: any) {
 
 export const serversRouter = new Hono();
 
-const createServerSchema = z.object({
+export const createServerSchema = z.object({
   name: z.string().min(1).max(100),
   host: z.string().min(1).max(255),
   sshKeyPath: z.string().optional(),
@@ -69,7 +69,7 @@ serversRouter.get("/:id", async (c) => {
 });
 
 // POST /api/servers — add server (owned by the actor unless admin)
-serversRouter.post("/", zValidator("json", createServerSchema), async (c) => {
+serversRouter.post("/", validatedJson(createServerSchema), async (c) => {
   const actor = getActorContext(c);
   const data = c.req.valid("json");
 
@@ -94,7 +94,7 @@ serversRouter.post("/", zValidator("json", createServerSchema), async (c) => {
 });
 
 // PATCH /api/servers/:id — update server (owner only)
-serversRouter.patch("/:id", zValidator("json", updateServerSchema), async (c) => {
+serversRouter.patch("/:id", validatedJson(updateServerSchema), async (c) => {
   const actor = getActorContext(c);
   const id = c.req.param("id");
   const owned = await findOwnedServer(actor, id);
@@ -274,8 +274,8 @@ const installEnvSchema = z.object({
 
 // password XOR privateKey. Both optional per field, but the body must
 // carry exactly one authentication method. Validated by the refine
-// below so the error message is stable.
-const sshAuthSchema = z
+// below so the error message is stable. Exported for schema pins.
+export const sshAuthSchema = z
   .object({
     sshUser: z.string().min(1).max(64).default("root"),
     sshPort: z.number().int().min(1).max(65535).default(22),
@@ -290,7 +290,7 @@ const sshAuthSchema = z
     },
   );
 
-const installRelaySchema = z
+export const installRelaySchema = z
   .object({
     // Server identity the resulting DB row will carry. Validated the
     // same way the create-server form validates these.
@@ -314,7 +314,7 @@ const installRelaySchema = z
   .merge(installEnvSchema)
   .and(sshAuthSchema);
 
-const probeVpsSchema = z
+export const probeVpsSchema = z
   .object({
     host: z.string().min(1).max(255),
   })
@@ -668,7 +668,7 @@ serversRouter.post("/install-relay", async (c) => {
   });
 });
 
-const reinstallRelaySchema = z
+export const reinstallRelaySchema = z
   .object({
     // Opt-in auth-token rotation. Default: false — install.sh re-uses
     // the existing /opt/agent-relay/.env token, so the relay stays
@@ -1038,7 +1038,7 @@ export function buildComposeInspectCommand(
 //   runs docker compose pull + up -d. Hardcoded path matches the
 //   installer's RELAY_DIR default; if the wizard ever exposes a
 //   custom RELAY_DIR, template it in.
-const updateRelayImageSchema = z
+export const updateRelayImageSchema = z
   .object({
     // Optional overrides for the relay's install dir + compose file
     // on the VPS. When present and valid, the route persists them to
