@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
-- **Relay self-update no longer marks a healthy server offline.** `POST /api/servers/:id/relay-self-update` answers a relay without `/api/self-update` (`404`/`405`, relay images older than the self-update release) with `422 { kind: "self_update_unsupported" }` and a hint to update once via SSH, a trigger timeout with `504 { kind: "trigger_timeout" }`, and other relay HTTP errors with `502`, all without changing the server status. Only an unreachable relay or one that does not come back after the trigger still sets it `offline`.
+- **Relay self-update no longer marks a healthy server offline.** `POST /api/servers/:id/relay-self-update` answers a relay without `/api/self-update` (`404`/`405`, relay images older than the self-update release) with `422 { kind: "self_update_unsupported" }` and a hint to update once via SSH, a trigger timeout with `504 { kind: "trigger_timeout" }`, and other relay HTTP errors with `502`, all without changing the server status. These cases require that the relay answered its `/health` probe right before the trigger; a relay that did not (for example Traefik answering `404` or `502` for a stopped container) gets `502 { kind: "relay_down" }` and is set `offline`, as is an unreachable relay or one that does not come back after the trigger.
 
 ### Security
 

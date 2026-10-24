@@ -1617,6 +1617,31 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
       );
     }
 
+    // A relay that did not answer /health before the trigger is down, not old:
+    // Traefik answers 404 (no router) or 502/503 for a stopped relay container.
+    if (!triggerRes.ok && !previousProbe.online) {
+      await setServerStatus({
+        serverId: server.id,
+        status: "offline",
+        source: "action",
+      });
+      await audit(
+        "server.relay-self-update.failed",
+        targetLabel,
+        "relay_down",
+        actorName,
+        actorUserId,
+      );
+      return c.json(
+        {
+          error: "self_update_failed",
+          kind: "relay_down",
+          message: `Relay is not answering /health (trigger returned HTTP ${triggerRes.status}). Use 'Update via SSH (fallback)' to recover.`,
+        },
+        502,
+      );
+    }
+
     if (triggerRes.status === 404 || triggerRes.status === 405) {
       await audit(
         "server.relay-self-update.failed",
@@ -1636,7 +1661,7 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
       );
     }
 
-    // The relay answered, so it is online; only the self-update failed.
+    // /health answered before the trigger, so the relay is up; only the self-update failed.
     if (!triggerRes.ok) {
       await audit(
         "server.relay-self-update.failed",

@@ -613,7 +613,9 @@ describe("POST /servers/:id/relay-self-update", () => {
   for (const status of [404, 405]) {
     it(`returns 422 self_update_unsupported without touching Server.status when the relay answers ${status} (relay image without self-update)`, async () => {
       mServer.findUnique.mockResolvedValue(OWNED_SERVER);
-      relayAnswering(async () => jsonRes({ error: "Not Found" }, status));
+      relayAnswering(async () =>
+        new Response("404 Not Found", { status, headers: { "content-type": "text/plain" } }),
+      );
 
       const res = await appFor({ userId: "user-a", isAdmin: false }).request(
         "/servers/srv-1/relay-self-update",
@@ -632,6 +634,29 @@ describe("POST /servers/:id/relay-self-update", () => {
             action: "server.relay-self-update.failed",
             detail: "self_update_unsupported",
           }),
+        }),
+      );
+      expect(activeInstalls.has("self-update:srv-1")).toBe(false);
+    });
+  }
+
+  for (const status of [404, 502]) {
+    it(`returns 502 relay_down and sets Server.status to offline when /health and the trigger both fail with ${status} (stopped relay behind Traefik)`, async () => {
+      mServer.findUnique.mockResolvedValue(OWNED_SERVER);
+      fetchMock.mockImplementation(async () =>
+        new Response("404 page not found", { status, headers: { "content-type": "text/plain" } }),
+      );
+
+      const res = await appFor({ userId: "user-a", isAdmin: false }).request(
+        "/servers/srv-1/relay-self-update",
+        { method: "POST" },
+      );
+      expect(res.status).toBe(502);
+      expect(await res.json()).toMatchObject({ error: "self_update_failed", kind: "relay_down" });
+      expect(mServer.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: "srv-1" },
+          data: expect.objectContaining({ status: "offline" }),
         }),
       );
       expect(activeInstalls.has("self-update:srv-1")).toBe(false);
