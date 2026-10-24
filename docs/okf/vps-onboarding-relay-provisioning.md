@@ -3,7 +3,7 @@ type: module
 title: VPS onboarding and relay provisioning — TOFU-then-pin, SSRF-guarded, concurrency-locked
 description: probeVps captures a SHA-256 host-key fingerprint on first contact and install/re-install pin against it (mismatch = host_key_rejected); non-admin probe requests get a 5-req/60s rate limit and both probe and install apply an SSRF guard, while admins may target arbitrary hosts; persisted install metadata on Server drives re-install/update-image so they don't clobber hand-customized setups, guarded by per-server/per-actor concurrency locks.
 tags: [ssh, onboarding, relay, security, module]
-timestamp: 2026-10-24T14:27:43Z
+timestamp: 2026-10-24T14:29:02Z
 sources:
   - backend/src/services/ssh-executor.ts
   - backend/src/services/install-relay.ts
@@ -29,7 +29,7 @@ Re-install (`POST /api/servers/:id/install-relay`) does the same pin, but source
 - **Resolve-and-check.** `assertHostAllowedForNonAdmin` (probe-guard.ts:86-102) rejects a literal private/loopback/link-local/IPv6-ULA/IPv4-mapped address up front via `isPrivateOrLoopbackHost` (probe-guard.ts:21-70), then resolves the hostname through `dns.lookup` and re-checks EVERY returned address — catching DNS-rebinding-style attacks where the hostname itself looks public but resolves to internal space. A DNS-lookup failure passes through as allowed (the SSH connect timeout is the backstop), which is a deliberate fail-open distinct from the stricter fail-closed posture `post-deploy-gate.ts`'s route probe uses for the same private-host check.
 - **Sliding-window rate limit.** `consumeProbeQuota` (probe-guard.ts:130-141) caps a non-admin actor at 5 probe calls per 60-second window, keyed by `actor.userId`, in-memory only (single-instance; a multi-replica deploy is a known follow-up per the module doc comment).
 
-Both `POST /api/servers/probe-vps` and `POST /api/servers/install-relay` apply the SAME `assertHostAllowedForNonAdmin` check (routes/servers.ts:361-362, :477-478) — the install route re-checks rather than trusting the probe's earlier check, so a non-admin can't bypass the guard by skipping straight to install.
+Both `POST /api/servers/probe-vps` and `POST /api/servers/install-relay` apply the SAME `assertHostAllowedForNonAdmin` check (routes/servers.ts:361-362, :478-479) — the install route re-checks rather than trusting the probe's earlier check, so a non-admin can't bypass the guard by skipping straight to install.
 
 ## Persisted install metadata: re-install and update-image must not clobber hand-customization
 
