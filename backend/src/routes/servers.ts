@@ -1518,6 +1518,26 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
         signal: AbortSignal.timeout(60_000),
       });
     } catch (err) {
+      // A timeout means the relay accepted the connection but is still busy
+      // (it pulls the image before answering 202), so it is not offline.
+      if ((err as Error)?.name === "TimeoutError") {
+        await audit(
+          "server.relay-self-update.failed",
+          targetLabel,
+          "trigger_timeout",
+          actorName,
+          actorUserId,
+        );
+        return c.json(
+          {
+            error: "self_update_failed",
+            kind: "trigger_timeout",
+            message:
+              "Relay did not answer /api/self-update within 60 s; it may still be pulling the image. Check the relay status before retrying.",
+          },
+          504,
+        );
+      }
       await setServerStatus({
         serverId: server.id,
         status: "offline",
@@ -1597,12 +1617,27 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
       );
     }
 
+    if (triggerRes.status === 404 || triggerRes.status === 405) {
+      await audit(
+        "server.relay-self-update.failed",
+        targetLabel,
+        "self_update_unsupported",
+        actorName,
+        actorUserId,
+      );
+      return c.json(
+        {
+          error: "self_update_refused",
+          kind: "self_update_unsupported",
+          message:
+            "This relay does not support self-update yet (older relay image). Update it once with 'Update via SSH (fallback)'; later updates can use 'Update relay'.",
+        },
+        422,
+      );
+    }
+
+    // The relay answered, so it is online; only the self-update failed.
     if (!triggerRes.ok) {
-      await setServerStatus({
-        serverId: server.id,
-        status: "offline",
-        source: "action",
-      });
       await audit(
         "server.relay-self-update.failed",
         targetLabel,
