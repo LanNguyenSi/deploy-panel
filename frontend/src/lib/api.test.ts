@@ -358,4 +358,27 @@ describe("destructive/mutating functions: exact fetch-call construction", () => 
       method: "DELETE",
     });
   });
+
+  it("getServerRelayStatus GETs /api/servers/:id/relay-status", async () => {
+    await api.getServerRelayStatus("srv-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(`${BASE}/api/servers/srv-1/relay-status`, {
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+    });
+  });
+
+  it("selfUpdateServerRelay POSTs /api/servers/:id/relay-self-update with options or {}", async () => {
+    await api.selfUpdateServerRelay("srv-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${BASE}/api/servers/srv-1/relay-self-update`,
+      {
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        method: "POST",
+        body: "{}",
+      },
+    );
+  });
 });

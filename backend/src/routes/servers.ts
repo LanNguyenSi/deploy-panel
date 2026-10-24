@@ -13,9 +13,16 @@ import {
 import { executeSshCommand, SshError, SshTimeoutError } from "../services/ssh-executor.js";
 import { buildInstallCommand, parseInstallOutput } from "../services/install-relay.js";
 import { probeVps } from "../services/probe-vps.js";
-import { activeInstalls } from "../services/active-installs.js";
+import { activeInstalls, isServerMutating } from "../services/active-installs.js";
 import { setServerStatus } from "../services/server-status.js";
 import { assertHostAllowedForNonAdmin, consumeProbeQuota } from "../services/probe-guard.js";
+import {
+  computeRelayOutdated,
+  fetchRelayHealth,
+  getLatestRelayRevision,
+  getServerRelayStatus,
+  normalizeRevision,
+} from "../lib/ghcr.js";
 
 /** Strip sensitive fields from server objects */
 function sanitizeServer(server: any) {
@@ -134,7 +141,13 @@ serversRouter.post("/:id/test", async (c) => {
 
   if (!server.relayUrl) {
     await setServerStatus({ serverId: server.id, status: "no-relay", source: "probe" });
-    return c.json({ status: "no-relay", message: "No relay URL configured" });
+    return c.json({
+      status: "no-relay",
+      message: "No relay URL configured",
+      relayRevision: null,
+      latestRevision: null,
+      relayOutdated: null,
+    });
   }
 
   try {
@@ -150,18 +163,43 @@ serversRouter.post("/:id/test", async (c) => {
 
     if (response.ok) {
       const data = await response.json();
+      const relayRevision = normalizeRevision(
+        (data as Record<string, unknown> | null)?.revision,
+      );
+      const latestRevision = await getLatestRelayRevision();
+      const relayOutdated = computeRelayOutdated(relayRevision, latestRevision);
       // Probe source — an in-flight install / re-install / update-image
       // on this server will short-circuit the write so its final
       // authoritative status wins.
       await setServerStatus({ serverId: server.id, status: "online", source: "probe" });
-      return c.json({ status: "online", relay: data });
+      return c.json({
+        status: "online",
+        relay: data,
+        relayRevision,
+        latestRevision,
+        relayOutdated,
+      });
     }
 
     await setServerStatus({ serverId: server.id, status: "offline", source: "probe" });
-    return c.json({ status: "offline", message: `Relay responded with ${response.status}` });
+    const latestRevision = await getLatestRelayRevision();
+    return c.json({
+      status: "offline",
+      message: `Relay responded with ${response.status}`,
+      relayRevision: null,
+      latestRevision,
+      relayOutdated: null,
+    });
   } catch (err: any) {
     await setServerStatus({ serverId: server.id, status: "offline", source: "probe" });
-    return c.json({ status: "offline", message: err.message ?? "Connection failed" });
+    const latestRevision = await getLatestRelayRevision();
+    return c.json({
+      status: "offline",
+      message: err.message ?? "Connection failed",
+      relayRevision: null,
+      latestRevision,
+      relayOutdated: null,
+    });
   }
 });
 
@@ -725,7 +763,7 @@ serversRouter.post("/:id/install-relay", async (c) => {
   const installKey = `reinstall:${server.id}`;
   const updateImageKey = `update-image:${server.id}`;
   const actorKey = `reinstall-actor:${actor.userId ?? "admin"}`;
-  if (activeInstalls.has(installKey) || activeInstalls.has(updateImageKey)) {
+  if (isServerMutating(server.id) || activeInstalls.has(updateImageKey)) {
     return c.json(
       { error: "rate_limited", message: "an install or update is already in progress for this server" },
       429,
@@ -1092,7 +1130,7 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
   const updateKey = `update-image:${server.id}`;
   const reinstallKey = `reinstall:${server.id}`;
   const actorKey = `update-image-actor:${actor.userId ?? "admin"}`;
-  if (activeInstalls.has(updateKey) || activeInstalls.has(reinstallKey)) {
+  if (isServerMutating(server.id) || activeInstalls.has(reinstallKey)) {
     return c.json(
       {
         error: "rate_limited",
@@ -1391,4 +1429,298 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
       activeInstalls.delete(actorKey);
     }
   });
+});
+
+// GET /api/servers/:id/relay-status — compare running relay /health revision with GHCR :latest
+serversRouter.get("/:id/relay-status", async (c) => {
+  const actor = getActorContext(c);
+  const server = await findOwnedServer(actor, c.req.param("id"));
+  if (!server) return c.json({ error: "not_found" }, 404);
+
+  const status = await getServerRelayStatus(server);
+  return c.json(status);
+});
+
+const relaySelfUpdateSchema = z
+  .object({
+    tag: z
+      .string()
+      .regex(/^(latest|main-[0-9a-f]{7,40})$/, "tag must be 'latest' or 'main-<hex sha>'")
+      .optional(),
+  })
+  .strict();
+
+// POST /api/servers/:id/relay-self-update — trigger relay self-update without SSH and poll /health
+serversRouter.post("/:id/relay-self-update", async (c) => {
+  const actor = getActorContext(c);
+  const server = await findOwnedServer(actor, c.req.param("id"));
+  if (!server) return c.json({ error: "not_found" }, 404);
+
+  if (!server.relayUrl) {
+    return c.json(
+      { error: "no_relay", message: "No relay URL configured for this server" },
+      400,
+    );
+  }
+
+  let rawBody: unknown = {};
+  const contentType = c.req.header("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    try {
+      rawBody = await c.req.json();
+    } catch {
+      return c.json({ error: "bad_request", message: "body must be JSON" }, 400);
+    }
+  }
+  const parsed = relaySelfUpdateSchema.safeParse(rawBody ?? {});
+  if (!parsed.success) {
+    return c.json(
+      {
+        error: "bad_request",
+        message: parsed.error.issues.map((i) => i.message).join("; "),
+      },
+      400,
+    );
+  }
+
+  const selfUpdateKey = `self-update:${server.id}`;
+  if (isServerMutating(server.id)) {
+    return c.json(
+      {
+        error: "rate_limited",
+        message: "an install or update is already in progress for this server",
+      },
+      429,
+    );
+  }
+  activeInstalls.add(selfUpdateKey);
+
+  const startTime = Date.now();
+  const targetLabel = `${server.name} (${server.host})`;
+  const actorName = getActor(c);
+  const actorUserId = getActorUserId(c);
+
+  try {
+    const previousProbe = await fetchRelayHealth(server, 5000);
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (server.relayToken) {
+      headers["Authorization"] = `Bearer ${server.relayToken}`;
+    }
+
+    let triggerRes: Response;
+    try {
+      triggerRes = await fetch(`${server.relayUrl}/api/self-update`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(parsed.data.tag ? { tag: parsed.data.tag } : {}),
+        signal: AbortSignal.timeout(60_000),
+      });
+    } catch (err) {
+      await setServerStatus({
+        serverId: server.id,
+        status: "offline",
+        source: "action",
+      });
+      await audit(
+        "server.relay-self-update.failed",
+        targetLabel,
+        "trigger_unreachable",
+        actorName,
+        actorUserId,
+      );
+      return c.json(
+        {
+          error: "self_update_failed",
+          kind: "trigger_unreachable",
+          message:
+            (err as Error).message ??
+            "Could not reach relay /api/self-update. Use 'Update via SSH (fallback)' instead.",
+        },
+        502,
+      );
+    }
+
+    const triggerBody = (await triggerRes.json().catch(() => null)) as Record<
+      string,
+      unknown
+    > | null;
+    const relayErrorMsg =
+      typeof triggerBody?.message === "string"
+        ? triggerBody.message
+        : typeof triggerBody?.error === "string"
+          ? triggerBody.error
+          : null;
+
+    if (triggerRes.status === 409) {
+      await audit(
+        "server.relay-self-update.failed",
+        targetLabel,
+        "relay_busy",
+        actorName,
+        actorUserId,
+      );
+      return c.json(
+        {
+          error: "conflict",
+          kind: "relay_busy",
+          message:
+            relayErrorMsg ??
+            "Relay is currently busy with a deploy, rollback, or self-update. Try again once it finishes.",
+        },
+        409,
+      );
+    }
+
+    if (triggerRes.status === 400 || triggerRes.status === 422) {
+      const kind =
+        typeof triggerBody?.kind === "string"
+          ? triggerBody.kind
+          : "unsupported_compose";
+      await audit(
+        "server.relay-self-update.failed",
+        targetLabel,
+        kind,
+        actorName,
+        actorUserId,
+      );
+      return c.json(
+        {
+          error: "self_update_refused",
+          kind,
+          message:
+            relayErrorMsg ??
+            "Relay refused self-update (for example a build-based compose file or missing compose labels). Use 'Update via SSH (fallback)' instead.",
+        },
+        422,
+      );
+    }
+
+    if (!triggerRes.ok) {
+      await setServerStatus({
+        serverId: server.id,
+        status: "offline",
+        source: "action",
+      });
+      await audit(
+        "server.relay-self-update.failed",
+        targetLabel,
+        `http_${triggerRes.status}`,
+        actorName,
+        actorUserId,
+      );
+      return c.json(
+        {
+          error: "self_update_failed",
+          kind: `http_${triggerRes.status}`,
+          message:
+            relayErrorMsg ??
+            `Relay returned HTTP ${triggerRes.status} on /api/self-update. Use 'Update via SSH (fallback)' if the relay does not support self-update yet.`,
+        },
+        502,
+      );
+    }
+
+    const latestRevision = await getLatestRelayRevision();
+    const targetRevision =
+      normalizeRevision(triggerBody?.targetRevision ?? triggerBody?.revision) ??
+      latestRevision;
+    const previousRevision =
+      normalizeRevision(triggerBody?.previousRevision) ?? previousProbe.revision;
+
+    const pollDelays =
+      process.env.NODE_ENV === "test"
+        ? [0, 5, 5, 5]
+        : [1000, 2000, 3000, 4000, 5000, 5000, 5000, 5000];
+
+    let lastProbe = previousProbe;
+    let updatedReady = false;
+
+    for (const delay of pollDelays) {
+      if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+      const probe = await fetchRelayHealth(server, 5000);
+      lastProbe = probe;
+      if (!probe.online) continue;
+
+      if (targetRevision) {
+        if (probe.revision === targetRevision) {
+          updatedReady = true;
+          break;
+        }
+      } else if (
+        previousRevision &&
+        probe.revision &&
+        probe.revision !== previousRevision
+      ) {
+        updatedReady = true;
+        break;
+      } else if (!previousRevision) {
+        updatedReady = true;
+        break;
+      }
+    }
+
+    if (!updatedReady) {
+      const finalStatus = lastProbe.online ? "online" : "offline";
+      await setServerStatus({
+        serverId: server.id,
+        status: finalStatus,
+        source: "action",
+      });
+      const kind = lastProbe.online ? "revision_unchanged" : "health_timeout";
+      await audit(
+        "server.relay-self-update.failed",
+        targetLabel,
+        kind,
+        actorName,
+        actorUserId,
+      );
+      const relayRevision = lastProbe.online ? lastProbe.revision : null;
+      const effectiveLatest = targetRevision ?? latestRevision;
+      return c.json(
+        {
+          error: "self_update_failed",
+          kind,
+          message: lastProbe.online
+            ? "Relay answered /health after self-update, but its revision did not reach the target image revision within the poll window. Use 'Update via SSH (fallback)' if it stays outdated."
+            : "Relay did not come back healthy within the poll window after self-update. Use 'Update via SSH (fallback)' to recover.",
+          previousRevision,
+          relayRevision,
+          latestRevision: effectiveLatest,
+          relayOutdated: computeRelayOutdated(relayRevision, effectiveLatest),
+        },
+        502,
+      );
+    }
+
+    const finalRevision = lastProbe.revision;
+    const effectiveLatest = targetRevision ?? latestRevision;
+    const relayOutdated = computeRelayOutdated(finalRevision, effectiveLatest);
+
+    await setServerStatus({
+      serverId: server.id,
+      status: "online",
+      source: "action",
+    });
+
+    const durationSec = Math.round((Date.now() - startTime) / 1000);
+    await audit(
+      "server.relay-self-update.success",
+      targetLabel,
+      `took ${durationSec}s rev=${finalRevision?.slice(0, 7) ?? "unknown"}`,
+      actorName,
+      actorUserId,
+    );
+
+    return c.json({
+      status: "online",
+      previousRevision,
+      relayRevision: finalRevision,
+      latestRevision: effectiveLatest,
+      relayOutdated,
+    });
+  } finally {
+    activeInstalls.delete(selfUpdateKey);
+  }
 });

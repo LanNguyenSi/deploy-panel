@@ -24,6 +24,7 @@ export const activeInstalls = new Set<string>();
 export function isServerMutating(serverId: string): boolean {
   return (
     activeInstalls.has(`reinstall:${serverId}`) ||
-    activeInstalls.has(`update-image:${serverId}`)
+    activeInstalls.has(`update-image:${serverId}`) ||
+    activeInstalls.has(`self-update:${serverId}`)
   );
 }

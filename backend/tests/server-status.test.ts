@@ -76,6 +76,20 @@ describe("setServerStatus", () => {
     expect(call.data.lastSeenAt).toBeInstanceOf(Date);
   });
 
+  it("skips the STATUS write but still refreshes lastSeenAt when a self-update is in flight", async () => {
+    activeInstalls.add("self-update:srv-a");
+    const landed = await setServerStatus({
+      serverId: "srv-a",
+      status: "offline",
+      source: "probe",
+    });
+    expect(landed).toBe(false);
+    expect(mUpdate).toHaveBeenCalledOnce();
+    const call = mUpdate.mock.calls[0][0];
+    expect(call.data.status).toBeUndefined();
+    expect(call.data.lastSeenAt).toBeInstanceOf(Date);
+  });
+
   it("probe write for server A is NOT blocked by an in-flight mutation on server B", async () => {
     activeInstalls.add("reinstall:srv-b");
     const landed = await setServerStatus({
@@ -124,6 +138,11 @@ describe("isServerMutating", () => {
 
   it("returns true for update-image:<id>", () => {
     activeInstalls.add("update-image:srv-a");
+    expect(isServerMutating("srv-a")).toBe(true);
+  });
+
+  it("returns true for self-update:<id>", () => {
+    activeInstalls.add("self-update:srv-a");
     expect(isServerMutating("srv-a")).toBe(true);
   });
 

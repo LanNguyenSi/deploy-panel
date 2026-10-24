@@ -156,7 +156,7 @@ export function ServerUpdateImageDialog({
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--space-4)" }}>
           <h3 style={{ fontSize: "var(--text-md)", fontWeight: 600 }}>
-            Update relay image on <code>{serverName}</code>
+            Update relay via SSH (fallback) on <code>{serverName}</code>
           </h3>
           <button type="button" className="btn btn-ghost btn-sm" onClick={onClose} disabled={phase === "running"}>
             Close
@@ -164,10 +164,10 @@ export function ServerUpdateImageDialog({
         </div>
 
         <p style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)", marginBottom: "var(--space-3)" }}>
-          Runs <code>docker compose pull &amp;&amp; docker compose up -d</code> on <code>{serverHost}</code>.
-          Fast path for picking up a new <code>:latest</code> image — does NOT re-run{" "}
+          SSH fallback when one-click <strong>Update relay</strong> cannot be used (older relay without self-update, or recovery after a failed update): runs <code>docker compose pull &amp;&amp; docker compose up -d</code> on <code>{serverHost}</code>.
+          Does NOT re-run{" "}
           <code>install.sh</code>, touch Traefik, or change the auth token. For mode switches
-          or recovery, use <strong>Re-install Relay</strong> instead.
+          or full bootstrap recovery, use <strong>Re-install Relay</strong> instead.
         </p>
 
         {phase === "form" && (
