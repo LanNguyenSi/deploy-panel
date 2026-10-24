@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { urlV3 } from "../lib/zod-url.js";
 
 const configSchema = z.object({
   PORT: z.coerce.number().default(3001),
@@ -29,7 +30,7 @@ const configSchema = z.object({
   GITHUB_CLIENT_SECRET: z.string().default(""),
   // Absolute URL at which the OAuth callback will receive GitHub's
   // redirect. Required when OAuth is configured.
-  BACKEND_URL: z.string().url().default("http://localhost:3001"),
+  BACKEND_URL: urlV3().default("http://localhost:3001"),
   // Key material for encrypting per-app secrets at rest (see
   // lib/secret-crypto.ts). Optional in development (falls back to an
   // insecure fixed key with a console warning) so `make dev` keeps working

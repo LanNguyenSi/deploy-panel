@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { zValidator } from "@hono/zod-validator";
+import { validatedJson } from "../lib/validator.js";
 import { timingSafeEqual, randomBytes } from "node:crypto";
 import {
   config,
@@ -36,7 +36,7 @@ const loginSchema = z.object({
 });
 
 // POST /api/auth/login — set session cookie
-authRouter.post("/login", zValidator("json", loginSchema), async (c) => {
+authRouter.post("/login", validatedJson(loginSchema), async (c) => {
   const { token } = c.req.valid("json");
 
   if (!config.PANEL_TOKEN || !safeCompare(token, config.PANEL_TOKEN)) {
@@ -220,7 +220,7 @@ function generateApiKey(): string {
 
 authRouter.post(
   "/register-from-project-pilot",
-  zValidator("json", registerFromProjectPilotSchema),
+  validatedJson(registerFromProjectPilotSchema),
   async (c) => {
     const body = c.req.valid("json");
 

@@ -6,7 +6,7 @@ import { DeployPanelClient } from "./client.js";
 
 // A plain record of Zod schemas, matching how registerTools passes its
 // per-tool arg schema to server.tool(name, description, schema, cb).
-type RawShape = Record<string, z.ZodTypeAny>;
+type RawShape = Record<string, z.ZodType>;
 
 type ToolCallback = (args: Record<string, unknown>) => Promise<{
   content: Array<{ type: string; text: string }>;
