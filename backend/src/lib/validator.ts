@@ -11,11 +11,13 @@ import type { ZodType } from "zod";
  * is non-enumerable, so the default serialisation would silently drop it
  * (only `name` and `message` survive `JSON.stringify`).
  *
- * This hook restores the exact base wire shape: status 400, body
- * `{ success: false, error: { issues: Array<{ code, path, message }>,
- * name: "ZodError" } }`. Each issue is reduced to the `code`, `path` and
- * `message` keys (the fields the panel's clients read); zod 4 issue objects
- * may additionally carry `input`, which must never reach the wire.
+ * This hook restores the base wire shape exactly: the status (400) and the
+ * envelope `{ success: false, error: { issues: [...], name: "ZodError" } }` are
+ * unchanged from zod 3. Only the per-issue contents differ: each issue is
+ * reduced to the `code`, `path` and `message` keys (the fields the panel's
+ * clients read; zod 4 issue objects may additionally carry `input`, which must
+ * never reach the wire), and those carry zod 4's issue codes and default texts
+ * (for example `invalid_string` became `invalid_format`).
  *
  * Pinned by tests/zvalidator-400-body.test.ts (encoded bodies per site).
  */

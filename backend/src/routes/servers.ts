@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { validatedJson } from "../lib/validator.js";
+import { urlV3 } from "../lib/zod-url.js";
 import { prisma } from "../lib/prisma.js";
 import { audit, getActor, getActorUserId } from "../lib/audit.js";
 import {
@@ -35,7 +36,7 @@ export const createServerSchema = z.object({
   name: z.string().min(1).max(100),
   host: z.string().min(1).max(255),
   sshKeyPath: z.string().optional(),
-  relayUrl: z.string().url().optional(),
+  relayUrl: urlV3().optional(),
   relayToken: z.string().optional(),
 });
 

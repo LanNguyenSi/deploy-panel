@@ -91,6 +91,42 @@ describe("config BACKEND_URL: z.string().url().default(...) pins", () => {
   });
 });
 
+describe("config BACKEND_URL: whitespace kept verbatim (v3 url output parity)", () => {
+  // zod 4's z.url() cleans the parsed value (trims leading/trailing whitespace,
+  // strips ASCII tabs and newlines); zod 3 returned the input unchanged. Each
+  // case pins that config BACKEND_URL still equals the env value byte for byte.
+
+  it("leading space: BACKEND_URL is \" http://x\"", async () => {
+    const { config, exitCalled } = await loadConfig({ BACKEND_URL: " http://x" });
+    expect(exitCalled).toBe(false);
+    expect(config?.BACKEND_URL).toBe(" http://x");
+  });
+
+  it("trailing space: BACKEND_URL is \"http://x \"", async () => {
+    const { config, exitCalled } = await loadConfig({ BACKEND_URL: "http://x " });
+    expect(exitCalled).toBe(false);
+    expect(config?.BACKEND_URL).toBe("http://x ");
+  });
+
+  it("trailing newline: BACKEND_URL is \"http://x\\n\"", async () => {
+    const { config, exitCalled } = await loadConfig({ BACKEND_URL: "http://x\n" });
+    expect(exitCalled).toBe(false);
+    expect(config?.BACKEND_URL).toBe("http://x\n");
+  });
+
+  it("leading tab: BACKEND_URL is \"\\thttp://x\"", async () => {
+    const { config, exitCalled } = await loadConfig({ BACKEND_URL: "\thttp://x" });
+    expect(exitCalled).toBe(false);
+    expect(config?.BACKEND_URL).toBe("\thttp://x");
+  });
+
+  it("internal tab: BACKEND_URL is \"http://x\\t/y\"", async () => {
+    const { config, exitCalled } = await loadConfig({ BACKEND_URL: "http://x\t/y" });
+    expect(exitCalled).toBe(false);
+    expect(config?.BACKEND_URL).toBe("http://x\t/y");
+  });
+});
+
 describe("config defaults and coercion pins", () => {
   it("PORT defaults to 3001 when unset", async () => {
     const { config } = await loadConfig({});
