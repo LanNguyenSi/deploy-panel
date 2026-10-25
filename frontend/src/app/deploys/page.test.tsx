@@ -36,7 +36,7 @@ const DEPLOYS_LIST = {
       commitAfter: "bbb",
       status: "failed",
       duration: 4200,
-      log: null,
+      blocked: false,
       triggeredBy: "manual",
       createdAt: "2026-08-24T00:00:00.000Z",
       app: { name: "my-app" },
@@ -193,5 +193,56 @@ describe("DeploysPage - keyboard access", () => {
     );
     await screen.findAllByText("my-app");
     expect(screen.getByRole("heading", { level: 2, name: "Deploy Duration Trend" })).toBeInTheDocument();
+  });
+});
+
+describe("DeploysPage - status labels and filter", () => {
+  function listWith(rows: Array<{ id: string; status: string; blocked: boolean }>) {
+    return {
+      total: rows.length,
+      deploys: rows.map((r) => ({
+        ...DEPLOYS_LIST.deploys[0],
+        ...r,
+        app: { name: `app-${r.id}` },
+      })),
+    };
+  }
+
+  it("labels a blocked failed deploy 'Blocked (preflight)' and a plain failure 'Failed'", async () => {
+    mGetDeploys.mockResolvedValue(
+      listWith([
+        { id: "b", status: "failed", blocked: true },
+        { id: "f", status: "failed", blocked: false },
+        { id: "i", status: "interrupted", blocked: false },
+        { id: "s", status: "success", blocked: false },
+      ]),
+    );
+    render(
+      <Providers>
+        <DeploysPage />
+      </Providers>,
+    );
+    await screen.findByText("app-b");
+    const rowOf = (name: string) => screen.getByText(name).closest("tr")!;
+    expect(rowOf("app-b").textContent).toContain("Blocked (preflight)");
+    expect(rowOf("app-f").textContent).toContain("Failed");
+    expect(rowOf("app-f").textContent).not.toContain("Blocked");
+    expect(rowOf("app-i").textContent).toContain("Interrupted");
+    expect(rowOf("app-s").textContent).toContain("Success");
+  });
+
+  it("offers an Interrupted status filter that queries status=interrupted", async () => {
+    mGetDeploys.mockResolvedValue(listWith([{ id: "i", status: "interrupted", blocked: false }]));
+    const user = userEvent.setup();
+    render(
+      <Providers>
+        <DeploysPage />
+      </Providers>,
+    );
+    await screen.findByText("app-i");
+    await user.click(screen.getByRole("button", { name: "Interrupted" }));
+    await waitFor(() =>
+      expect(mGetDeploys).toHaveBeenCalledWith(expect.objectContaining({ status: "interrupted" })),
+    );
   });
 });

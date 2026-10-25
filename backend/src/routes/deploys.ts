@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { getActorContext } from "../lib/ownership.js";
+import { isPreflightBlockedDeployLog } from "../lib/deploy-log.js";
 
 export const deploysRouter = new Hono();
 
@@ -37,7 +38,14 @@ deploysRouter.get("/", async (c) => {
     prisma.deploy.count({ where }),
   ]);
 
-  return c.json({ deploys, total });
+  // The list never carries the raw log (it can be large); it carries only the
+  // derived `blocked` flag (blocked at preflight; a relay 409 conflict is
+  // not) so the UI can tell a preflight-blocked deploy from a real failure. The log column is already read by findMany, so the flag costs
+  // one JSON.parse per row (at most 200) and no extra query.
+  return c.json({
+    deploys: deploys.map(({ log, ...rest }) => ({ ...rest, blocked: isPreflightBlockedDeployLog(log) })),
+    total,
+  });
 });
 
 // GET /api/deploys/:id — single deploy detail with steps and commit info

@@ -19,6 +19,11 @@ describe("deployStatusBadge", () => {
     expect(deployStatusBadge("success", true)).toEqual({ className: "badge-success", label: "Success" });
   });
 
+  it("labels blocked only for failed: blocked true with status success stays 'Success'", () => {
+    expect(deployStatusBadge("success", true).label).toBe("Success");
+    expect(deployStatusBadge("interrupted", true).label).toBe("Interrupted");
+  });
+
   it("falls back to badge-neutral with the raw status for an unknown status", () => {
     expect(deployStatusBadge("totally-unknown")).toEqual({
       className: "badge-neutral",

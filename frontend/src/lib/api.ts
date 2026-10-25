@@ -651,7 +651,9 @@ export async function getAppPreflight(serverId: string, name: string): Promise<{
 
 // ── Deploys ────────────────────────────────────────────────────────────────
 
-export interface DeployWithRelations extends Deploy {
+/** A row of `GET /api/deploys`: no raw log, only the derived `blocked` flag (true for a deploy blocked at preflight, not a relay 409 conflict). */
+export interface DeployWithRelations extends Omit<Deploy, "log"> {
+  blocked: boolean;
   app: { name: string };
   server: { name: string; host: string };
 }

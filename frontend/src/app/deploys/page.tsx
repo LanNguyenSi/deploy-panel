@@ -71,6 +71,7 @@ export default function DeploysPage() {
     { value: "failed", label: "Failed" },
     { value: "rolled_back", label: "Rolled back" },
     { value: "running", label: "Running" },
+    { value: "interrupted", label: "Interrupted" },
   ];
 
   return (
@@ -135,7 +136,7 @@ export default function DeploysPage() {
                       style={{ cursor: "pointer" }}
                       className={expandedId === d.id ? "row-expanded" : ""}
                     >
-                      <td><StatusBadge status={d.status} /></td>
+                      <td><StatusBadge status={d.status} blocked={d.blocked} /></td>
                       <td style={{ fontWeight: 500, color: "var(--text)" }}>
                         <button type="button" className="row-toggle" aria-expanded={expandedId === d.id}>
                           {d.app.name}
@@ -337,8 +338,8 @@ function DeployDetailPanel({ detail, loading }: { detail: DeployDetail | null; l
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  const s = deployStatusBadge(status);
+function StatusBadge({ status, blocked }: { status: string; blocked?: boolean }) {
+  const s = deployStatusBadge(status, blocked);
   return <span className={`badge ${s.className}`}>{s.label}</span>;
 }
 
