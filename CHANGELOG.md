@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `GET /api/health` reports the real version again. The route returned a hard-coded `0.1.0` since the first release; it now reads `version` from `backend/package.json` at runtime (`backend/src/routes/health.ts`, resolved relative to the module file, so it works from `src/` in tests and from `backend/dist/` in the image, where `backend/Dockerfile` copies `backend/package.json` next to `dist/`). The node-server adapter test compares the response against the `version` field of `backend/package.json` instead of a literal. The `version` fields of `backend/`, `frontend/` and `mcp/` were brought in line with the 0.7.0 release (they still said 0.4.0, 0.4.0 and 0.1.0), lockfiles included.
+- The MCP `deploy_list` tool's `status` filter enum now offers exactly the values the backend writes: `running`, `success`, `failed`, `rolled_back` and `interrupted`. `interrupted` (written by connection-lost recovery and the stuck-deploy sweep) was missing, and `pending` is only the `Deploy.status` column default and is never written, so it was dropped.
+
 ## [0.7.0] - 2026-10-25
 
 ### Added

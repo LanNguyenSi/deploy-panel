@@ -582,6 +582,28 @@ describe("deploy_list", () => {
     expect(shape.safeParse({ limit: 201 }).success).toBe(false);
   });
 
+  // The enum must match the statuses the backend actually writes
+  // (deploy-recovery.ts, startup.ts): "interrupted" is written by recovery;
+  // "pending" is only the DB column default and is never written.
+  it("accepts interrupted and rejects pending in the status enum", () => {
+    const shape = z.object(schema);
+    expect(shape.safeParse({ status: "interrupted" }).success).toBe(true);
+    expect(shape.safeParse({ status: "pending" }).success).toBe(false);
+  });
+
+  it("passes an interrupted status filter through to the outgoing deploys request", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ deploys: [], total: 0 }));
+
+    await cb({ status: "interrupted" });
+
+    const [deploysUrl] = fetchSpy.mock.calls[0];
+    const parsed = new URL(deploysUrl as string);
+    expect(parsed.pathname).toBe("/api/v1/deploys");
+    expect(parsed.searchParams.get("status")).toBe("interrupted");
+  });
+
   // Every other deploy_list test above calls cb({}), so a tool body that
   // ignores its args entirely and always calls client.listDeploys() with no
   // filters would still pass the suite. Assert the app/server/status/limit

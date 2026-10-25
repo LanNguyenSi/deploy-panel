@@ -12,6 +12,7 @@
  *
  * Tracker task 46a3a7b9.
  */
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/lib/prisma.js", () => ({
@@ -92,7 +93,12 @@ describe("node-server adapter: JSON round trip", () => {
 
     const res = await fetch(`${running.url}/api/health`);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ status: "ok", version: "0.1.0" });
+    // The version must be the real one from backend/package.json, not a
+    // hard-coded literal: read the file here and compare.
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+      version: string;
+    };
+    expect(await res.json()).toEqual({ status: "ok", version: pkg.version });
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
   });
 });
