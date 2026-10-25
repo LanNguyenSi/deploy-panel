@@ -56,7 +56,7 @@ All app endpoints are nested under a server: `/api/servers/:serverId/apps`.
 
 | Method | Path           | Description                                                        |
 |--------|----------------|--------------------------------------------------------------------|
-| GET    | `/api/deploys` | List deploys with optional filters: `serverId`, `appId`, `status`, `limit`, `offset`. Response includes `total` for pagination. Rows carry no raw `log`; a derived boolean `blocked` is `true` for a deploy blocked at preflight (the relay or the panel's env preflight refused it; a relay 409 conflict is not, status `failed`), so clients can tell it from a real failure. |
+| GET    | `/api/deploys` | List deploys with optional filters: `serverId`, `appId`, `status`, `limit`, `offset`. Response includes `total` for pagination. Rows carry no raw `log`; a derived boolean `blocked` is `true` for a deploy blocked at preflight (refused by the relay or by the panel's env preflight), so clients can tell it from a real failure; a relay 409 conflict stays `false` (status `failed`). |
 | GET    | `/api/deploys/:id` | Get one deploy with its app and server summary. Non-admins only see deploys on servers they own (404 otherwise). |
 
 ## Audit
