@@ -2,7 +2,13 @@ import { prisma } from "./prisma.js";
 import { recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "./deploy-recovery.js";
 import { verifyDeployHealth } from "./post-deploy-gate.js";
 import { provisionAndCheckAppSecrets } from "./provision-secrets.js";
-import { blockedDeployLogSteps, isBlockedDeployLog, type DeployLogStep as Step } from "./deploy-log.js";
+import {
+  CONFLICT_STEP_KIND,
+  PREFLIGHT_CHECK_KIND,
+  blockedDeployLogSteps,
+  isBlockedDeployLog,
+  type DeployLogStep as Step,
+} from "./deploy-log.js";
 
 // GET /api/v1/deploy/:id JSON.parses `deploy.log` inside a swallowing
 // try/catch (routes/v1.ts) and so does the panel-UI equivalent
@@ -167,7 +173,7 @@ export async function streamDeploy(opts: {
 }) {
   const { serverId, deployId, appId, appName, relayUrl, relayToken, body, previousStatus } = opts;
   const startedAt = Date.now();
-  const steps: Array<{ name: string; status: string; durationMs: number; output?: string }> = [];
+  const steps: Array<{ name: string; status: string; durationMs: number; output?: string; kind?: string; message?: string }> = [];
 
   // Marks this deploy as owned by THIS process for as long as the try below
   // runs (cleared in the finally regardless of outcome). startup.ts's
@@ -203,13 +209,12 @@ export async function streamDeploy(opts: {
 
     if (provision.missing.length > 0) {
       const message = `Missing required env key(s): ${provision.missing.join(", ")}`;
-      steps.push({ name: "env-preflight", status: "failure", durationMs: 0, output: message });
+      // The panel's own preflight refused the deploy: nothing ran, so the
+      // app keeps its previous status (same rule as a relay-blocked deploy)
+      // and the step carries the preflight-check marker.
+      steps.push({ name: "env-preflight", kind: PREFLIGHT_CHECK_KIND, status: "failure", durationMs: 0, message, output: message });
       console.log(`[stream-deploy] ${appName}: blocked before deploy — ${message}`);
-      await prisma.deploy.update({
-        where: { id: deployId },
-        data: { status: "failed", log: JSON.stringify(steps) },
-      });
-      await prisma.app.update({ where: { id: appId }, data: { status: "unhealthy" } });
+      await finalizeBlockedDeploy({ deployId, appId, previousStatus, steps, duration: Date.now() - startedAt });
       return;
     }
 
@@ -241,6 +246,19 @@ export async function streamDeploy(opts: {
     if (!res.ok && res.status >= 400 && res.status < 500) {
       const bodyText = await res.text().catch(() => "");
       const reason = `Relay rejected the deploy: ${res.status} ${bodyText || res.statusText}`;
+      // 409: another deploy is already running on the relay. Nothing was
+      // deployed by this request, so the app keeps its previous status
+      // (the running deploy owns the card) instead of turning unhealthy.
+      if (res.status === 409) {
+        await finalizeBlockedDeploy({
+          deployId,
+          appId,
+          previousStatus,
+          steps: [{ name: "deploy-conflict", kind: CONFLICT_STEP_KIND, status: "failure", durationMs: 0, message: reason, output: reason }],
+          duration: Date.now() - startedAt,
+        });
+        return;
+      }
       await prisma.deploy.update({
         where: { id: deployId },
         data: { status: "failed", log: failureStepLog(reason) },

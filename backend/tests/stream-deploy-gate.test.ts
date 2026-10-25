@@ -56,6 +56,7 @@ const mProvision = provisionAndCheckAppSecrets as unknown as ReturnType<typeof v
 
 const lastCall = (m: ReturnType<typeof vi.fn>) => m.mock.calls[m.mock.calls.length - 1][0];
 
+const failureLog = (): string => JSON.stringify([{ name: "deploy", status: "failure", durationMs: 0, output: "boom" }]);
 const baseOpts = {
   serverId: "srv-a",
   deployId: "d1",
@@ -76,16 +77,32 @@ describe("streamDeploy — pre-deploy secret provisioning + required-env gate", 
     mProvision.mockResolvedValue({ provisionedKeys: [], wrote: false, missing: ["METRICS_API_TOKEN"] });
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
-    await streamDeploy(baseOpts);
+    await streamDeploy({ ...baseOpts, previousStatus: "healthy" });
 
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(lastCall(mDeployUpdate).data.status).toBe("failed");
-    expect(lastCall(mAppUpdate).data.status).toBe("unhealthy");
+    // nothing was deployed: the app keeps the status it had before the dispatch
+    expect(lastCall(mAppUpdate).data.status).toBe("healthy");
     const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
-    expect(steps.at(-1)).toMatchObject({ name: "env-preflight", status: "failure" });
+    expect(steps.at(-1)).toMatchObject({ name: "env-preflight", kind: "preflight-check", status: "failure" });
     expect(steps.at(-1).output).toContain("METRICS_API_TOKEN");
     expect(recoverBrokenDeploy).not.toHaveBeenCalled();
 
+    fetchSpy.mockRestore();
+  });
+
+  it("env block without a captured previous status: falls back to the last non-blocked finished deploy", async () => {
+    mProvision.mockResolvedValue({ provisionedKeys: [], wrote: false, missing: ["METRICS_API_TOKEN"] });
+    mDeployFindMany.mockResolvedValue([
+      { status: "failed", log: JSON.stringify([{ name: "x", kind: "preflight-check", status: "failure" }]) },
+      { status: "success", log: "[]" },
+    ]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    await streamDeploy({ ...baseOpts, previousStatus: undefined });
+
+    expect(lastCall(mAppUpdate).data.status).toBe("healthy");
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
     fetchSpy.mockRestore();
   });
 
@@ -190,6 +207,53 @@ describe("streamDeploy: relay response handling", () => {
     expect(steps[0].output).toContain("404");
     expect(steps[0].output).toContain("unknown app");
 
+    fetchSpy.mockRestore();
+  });
+
+  it("relay 409 (another deploy running): deploy fails with a conflict step and the app keeps its previous status", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 409,
+      statusText: "Conflict",
+      body: null,
+      headers: new Headers(),
+      text: async () => "deploy already running",
+    } as unknown as Response);
+
+    await streamDeploy({ ...baseOpts, previousStatus: "healthy" });
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    expect(lastCall(mAppUpdate).data.status).toBe("healthy");
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ name: "deploy-conflict", kind: "deploy-conflict", status: "failure" });
+    expect(steps[0].output).toContain("409");
+    expect(steps[0].output).toContain("deploy already running");
+    // a conflict is not a failed preflight check: no preflight marker
+    expect(steps[0].kind).not.toBe("preflight-check");
+    expect(isBlockedDeployLog(lastCall(mDeployUpdate).data.log)).toBe(true);
+
+    fetchSpy.mockRestore();
+  });
+
+  it("relay 409 with an overlapping `deploying` capture: status derives from history, skipping blocked deploys", async () => {
+    mDeployFindMany.mockResolvedValue([
+      { status: "failed", log: JSON.stringify([{ name: "deploy-conflict", kind: "deploy-conflict", status: "failure" }]) },
+      { status: "failed", log: failureLog() },
+    ]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 409,
+      statusText: "Conflict",
+      body: null,
+      headers: new Headers(),
+      text: async () => "busy",
+    } as unknown as Response);
+
+    await streamDeploy({ ...baseOpts, previousStatus: "deploying" });
+
+    expect(lastCall(mAppUpdate).data.status).toBe("unhealthy");
     fetchSpy.mockRestore();
   });
 
@@ -505,6 +569,10 @@ describe("streamDeploy: relay response handling", () => {
 
 describe("deploy-log helpers", () => {
   const report = { passed: false, checks: [{ name: "disk", passed: false, message: "full", critical: true }] };
+
+  it("isBlockedDeployLog recognises a relay-409 conflict step", () => {
+    expect(isBlockedDeployLog(JSON.stringify([{ name: "deploy-conflict", kind: "deploy-conflict", status: "failure" }]))).toBe(true);
+  });
 
   it("every step of a blocked log carries the preflight-check marker, including the generic fallback step", () => {
     expect(blockedPreflightSteps(report).every((s) => s.kind === "preflight-check")).toBe(true);
