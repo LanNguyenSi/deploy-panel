@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The pre-pull no-cache build is removed from `.relay.yml`. agent-relay runs `pre_update` against the pre-pull tree, so its single entry (`docker compose -f docker-compose.prod.yml build --no-cache`) rebuilt the OLD commit on every deploy (47 s) before agent-relay built the pulled commit again; the `pre_update` key is gone entirely (left present with no items it parses as null, which agent-relay rejects, failing every deploy). A new CI job `relay-config` (`.github/workflows/ci.yml`, `scripts/relay-config.test.sh`) parses `.relay.yml` the way agent-relay's loader reads it and fails if a hook entry is not a string, if a hook key is present with no items, or if a `pre_update` entry builds images. For security updates in the base image or a suspected stale layer, `docs/architecture.md` now documents the manual hard rebuild (`docker compose -f docker-compose.prod.yml build --pull --no-cache`, then `up -d`, run on the server).
+
 ### Fixed
 
 - A deploy that never ran no longer marks the app `unhealthy` when the panel's own env preflight refused it (a required env key still empty after provisioning) or when the relay answered `409` (another deploy is already running). Both now end the deploy `failed` and restore the app's earlier status through the same rule as a relay-blocked deploy (`previousStatus`, else the last finished deploy that was not itself blocked), leaving `lastDeployAt` alone. The env refusal keeps its `env-preflight` step, now carrying the `kind: "preflight-check"` marker and a `message`, so the UI labels it "Blocked (preflight)". The `409` stores one `deploy-conflict` step with `kind: "deploy-conflict"` and the relay's reason; it deliberately does not carry the `preflight-check` marker, because a concurrency conflict is not a failed preflight check and "Blocked (preflight)" would mislead. The status fallback recognises the `deploy-conflict` marker as a blocked log too. Other relay 4xx answers (unknown app, bad branch) still end `unhealthy`.

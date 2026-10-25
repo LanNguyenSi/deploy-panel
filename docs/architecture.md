@@ -66,6 +66,17 @@ The backend also calls the relay for env reads and writes, app listing and detai
 
 Relay calls use per-operation timeouts: 5 seconds for connectivity and system-info checks, 5 minutes for standard relay operations (rollback, logs, preflight), and 10 minutes for streaming deploys. A relay 4xx or a relay-reported failure marks the deploy failed. A deploy the relay blocks at preflight (SSE `blocked` event or `result.blocked` in a JSON response) also ends `failed`, but nothing was deployed, so the app keeps the status it had before the dispatch (it is not marked `unhealthy` and `lastDeployAt` is not touched) and the deploy log is a steps array with one failed step per failed preflight check (`name`, `message`, `output`, `critical`). When the connection is lost or the relay answers 5xx, connection-loss recovery marks the deploy success only when the post-deploy health gate confirms the app and the relay history shows this deploy reached its target, interrupted when the app is healthy but that proof is missing, and failed otherwise; see `docs/okf/deploy-outcome-trust-chain.md` for the full mechanism. The outcome is visible in deploy history either way.
 
+## Hard rebuild (base image or dependency updates)
+
+A deploy builds its images once, from the pulled commit. agent-relay builds the pulled commit itself after the git pull and normally reuses the Docker build cache, which is right for normal deploys; the panel's own `.relay.yml` has no `pre_update` hook, because `pre_update` runs against the pre-pull tree and a build there would build the old commit. When the base image gets a security update, or a stale layer is suspected, the operator forces a full rebuild on the server, in the app directory, after a deploy:
+
+```bash
+docker compose -f docker-compose.prod.yml build --pull --no-cache
+docker compose -f docker-compose.prod.yml up -d
+```
+
+This is a manual step, not part of the relay flow; the CI job `relay-config` (`scripts/relay-config.test.sh`) guards `.relay.yml` against re-growing a build in `pre_update`.
+
 ## Data model
 
 - **Server**: a VPS instance with host, optional SSH key path, relay URL/token, and connection status (`unknown`, `online`, `offline`, `no-relay`).
