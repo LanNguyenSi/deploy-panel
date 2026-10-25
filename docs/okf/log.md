@@ -2,6 +2,8 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-10-25T19:21:24Z, deploys list wording fix: `realtime-update-strategy.md` now cites the deploy-history poll as `frontend/src/app/deploys/page.tsx:44-45` (the `setInterval` is on line 45; the previous entry claimed this re-anchor before it was made). `app-secrets-config-footgun.md` re-read after the `docs/api.md` row for `GET /api/deploys` was reworded (no claim about it); both re-stamped.
+
 - 2026-10-25T19:17:38Z, deploys history list blocked flag: `realtime-update-strategy.md` re-verified and re-stamped after `GET /api/deploys` dropped the raw `log` for a derived `blocked` flag and the list page gained an Interrupted filter; the `frontend/src/lib/api.ts` edit (line 654) sits behind every cited range, and the deploy-history poll citation was re-anchored to `deploys/page.tsx:44-45` (the `setInterval(load, 15000)` is on line 45). `app-secrets-config-footgun.md` re-verified against the `docs/api.md` row change (the `GET /api/deploys` row only); its app-secrets claims are unaffected. No other bundle doc cites `deploy-log.ts` or `routes/deploys.ts`.
 
 - 2026-10-25T19:03:40Z, env-preflight and relay-409 handling: `deploy-outcome-trust-chain.md` re-verified and re-stamped after the panel's env-preflight refusal and a relay `409` started ending the deploy `failed` through `finalizeBlockedDeploy` (app status restored; `preflight-check` marker on the env step, `deploy-conflict` marker on the 409 step); the 4xx paragraph was extended and its `stream-deploy.ts` citations re-pointed. `realtime-update-strategy.md` re-stamped with its two `stream-deploy.ts` citations re-pointed (the other sources did not change in this task).
