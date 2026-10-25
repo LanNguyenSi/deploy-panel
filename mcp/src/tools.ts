@@ -235,7 +235,7 @@ export function registerTools(server: McpServer, client: DeployPanelClient) {
     {
       app: z.string().optional().describe("Filter by app name or ID"),
       server: z.string().optional().describe("Filter by server name or ID"),
-      status: z.enum(["pending", "running", "success", "failed", "rolled_back"]).optional().describe("Filter by deploy status"),
+      status: z.enum(["running", "success", "failed", "rolled_back", "interrupted"]).optional().describe("Filter by deploy status"),
       limit: z.number().int().positive().max(200).optional().describe("Max number of deploys to return (default: 10, max 200)"),
     },
     async ({ app, server, status, limit }) => {
