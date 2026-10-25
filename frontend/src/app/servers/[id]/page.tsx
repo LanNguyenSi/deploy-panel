@@ -14,8 +14,8 @@ import { requestPermission, notifyDeployResult } from "@/lib/notifications";
 import { isPinned, togglePin } from "@/lib/pinned";
 import EnvVarsPanel from "@/components/EnvVarsPanel";
 import AppSecretsPanel from "@/components/AppSecretsPanel";
-import { DeployStepList, normalizeDeploySteps, type DeployStep } from "@/components/DeploySteps";
-import { BULK_MAX_POLLS, BULK_POLL_MS, describeFailures, failuresFromLog, initialBulkEntries, isSettled, type BulkResult } from "@/lib/bulk-deploy";
+import { DeployStepList, isBlockedSteps, normalizeDeploySteps, type DeployStep } from "@/components/DeploySteps";
+import { BULK_MAX_POLLS, BULK_POLL_MS, bulkSummary, describeFailures, failuresFromLog, initialBulkEntries, isBlockedEntry, isSettled, type BulkResult } from "@/lib/bulk-deploy";
 import { ServerReinstallDialog } from "@/components/ServerReinstallDialog";
 import { ServerUpdateImageDialog } from "@/components/ServerUpdateImageDialog";
 import { countOutdated, describeUpstream, failedUpstream, formatCheckedAt, githubCompareUrl, shortSha } from "@/lib/upstream";
@@ -493,33 +493,32 @@ export default function ServerDetailPage() {
       {bulkResult && (
         <section
           className="card"
-          role="status"
           aria-label="Bulk deploy result"
           style={{ marginBottom: "var(--space-3)", padding: "var(--space-3) var(--space-4)", display: "grid", gap: "var(--space-2)" }}
         >
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--space-3)" }}>
-            <h2 style={{ fontSize: "var(--text-md)", fontWeight: 600, margin: 0 }}>
-              Bulk deploy result
-              {bulkResult.entries.some((e) => !isSettled(e)) && bulkResult.polls < BULK_MAX_POLLS && (
-                <span style={{ marginLeft: "var(--space-2)", color: "var(--muted)", fontWeight: 400, fontSize: "var(--text-sm)" }}>
-                  waiting for {bulkResult.entries.filter((e) => !isSettled(e)).length} deploy(s)
-                </span>
-              )}
-            </h2>
+            <h2 style={{ fontSize: "var(--text-md)", fontWeight: 600, margin: 0 }}>Bulk deploy result</h2>
             <button onClick={() => setBulkResult(null)} className="btn btn-secondary btn-sm">Dismiss</button>
           </div>
+          {/* Live region: only this short line is announced when the polling progresses */}
+          <p role="status" style={{ margin: 0, color: "var(--muted)", fontSize: "var(--text-sm)" }}>
+            {bulkSummary(bulkResult)}
+          </p>
           <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "var(--space-2)" }}>
-            {bulkResult.entries.map((entry) => (
-              <li key={entry.app} style={{ fontSize: "var(--text-sm)" }}>
-                <span style={{ fontWeight: 500 }}>{entry.app}</span>{" "}
-                <span className={`badge ${deployStatusBadge(entry.status).className}`}>{deployStatusBadge(entry.status).label}</span>
-                {entry.status !== "running" && entry.status !== "success" && (
-                  <div style={{ color: "var(--text-secondary)", marginTop: "var(--space-1)", overflowWrap: "anywhere" }}>
-                    {entry.failures.length > 0 ? describeFailures(entry.failures) : "no failure details recorded"}
-                  </div>
-                )}
-              </li>
-            ))}
+            {bulkResult.entries.map((entry) => {
+              const badge = deployStatusBadge(entry.status, isBlockedEntry(entry));
+              return (
+                <li key={entry.app} style={{ fontSize: "var(--text-sm)" }}>
+                  <span style={{ fontWeight: 500 }}>{entry.app}</span>{" "}
+                  <span className={`badge ${badge.className}`}>{badge.label}</span>
+                  {entry.status !== "running" && entry.status !== "success" && (
+                    <div style={{ color: "var(--text-secondary)", marginTop: "var(--space-1)", overflowWrap: "anywhere" }}>
+                      {entry.failures.length > 0 ? describeFailures(entry.failures) : "no failure details recorded"}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </section>
       )}
@@ -699,8 +698,10 @@ export default function ServerDetailPage() {
                     <div className="log-panel" style={{ fontFamily: "inherit", whiteSpace: "normal" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-3)" }}>
                         <span style={{ fontWeight: 600 }}>Status:</span>
-                        <span className={`badge ${deployStatusBadge(deployLog.status).className}`}>
-                          {deployLog.status}
+                        <span className={`badge ${deployStatusBadge(deployLog.status, isBlockedSteps(deployLog.steps)).className}`}>
+                          {isBlockedSteps(deployLog.steps) && deployLog.status === "failed"
+                            ? deployStatusBadge(deployLog.status, true).label
+                            : deployLog.status}
                         </span>
                       </div>
                       {deployLog.steps.length === 0 && deployLog.status === "running" && (

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeFailures, failuresFromLog, initialBulkEntries, isSettled } from "./bulk-deploy";
+import { BULK_MAX_POLLS, bulkSummary, describeFailures, failuresFromLog, initialBulkEntries, isBlockedEntry, isSettled } from "./bulk-deploy";
 
 describe("failuresFromLog", () => {
   it("returns the failed steps of a steps array, skipping success and skipped", () => {
@@ -23,7 +23,7 @@ describe("failuresFromLog", () => {
 
   it("reads an old-format preflight report log (object with checks)", () => {
     const log = JSON.stringify({ passed: false, checks: [{ name: "disk", passed: false, message: "full" }, { name: "git", passed: true, message: "ok" }] });
-    expect(failuresFromLog(log)).toEqual([{ check: "disk", message: "full" }]);
+    expect(failuresFromLog(log)).toEqual([{ check: "disk", message: "full", preflight: true }]);
   });
 
   it("reads an old bare-string log as a failed deploy step", () => {
@@ -57,5 +57,46 @@ describe("initialBulkEntries / isSettled / describeFailures", () => {
 
   it("describeFailures joins checks and omits empty messages", () => {
     expect(describeFailures([{ check: "a", message: "x" }, { check: "b", message: "" }])).toBe("a (x); b");
+  });
+});
+
+describe("blocked detection and critical marking", () => {
+  const marked = (critical?: boolean) =>
+    JSON.stringify([{ name: "disk", kind: "preflight-check", status: "failure", durationMs: 0, message: "full", ...(critical === undefined ? {} : { critical }) }]);
+
+  it("a failure from a marked step is a preflight failure; critical is carried only when true", () => {
+    expect(failuresFromLog(marked(true))).toEqual([{ check: "disk", message: "full", critical: true, preflight: true }]);
+    expect(failuresFromLog(marked(false))).toEqual([{ check: "disk", message: "full", preflight: true }]);
+    expect(failuresFromLog(marked())).toEqual([{ check: "disk", message: "full", preflight: true }]);
+  });
+
+  it("an unmarked failed step (even one named preflight) is not a preflight failure", () => {
+    const log = JSON.stringify([{ name: "preflight", status: "failure", durationMs: 0, output: "x" }]);
+    expect(failuresFromLog(log)).toEqual([{ check: "preflight", message: "x" }]);
+  });
+
+  it("isBlockedEntry needs a settled entry with a preflight failure", () => {
+    const base = { app: "a", deployId: "d", failures: [{ check: "c", message: "m", preflight: true }] };
+    expect(isBlockedEntry({ ...base, status: "failed" })).toBe(true);
+    expect(isBlockedEntry({ ...base, status: "running" })).toBe(false);
+    expect(isBlockedEntry({ ...base, status: "failed", failures: [{ check: "c", message: "m" }] })).toBe(false);
+    expect(isBlockedEntry({ ...base, status: "failed", failures: [] })).toBe(false);
+  });
+
+  it("describeFailures marks a critical check in text", () => {
+    expect(describeFailures([{ check: "a", message: "x", critical: true }, { check: "b", message: "", critical: true }, { check: "c", message: "y", critical: false }])).toBe(
+      "a [critical] (x); b [critical]; c (y)",
+    );
+  });
+});
+
+describe("bulkSummary", () => {
+  const entry = (status: string) => ({ app: "a", deployId: "d", status, failures: [] });
+
+  it("waiting, stopped at the poll cap, and all finished", () => {
+    expect(bulkSummary({ entries: [entry("running"), entry("failed")], polls: 3 })).toBe("Waiting for 1 deploy(s).");
+    expect(bulkSummary({ entries: [entry("running")], polls: BULK_MAX_POLLS - 1 })).toBe("Waiting for 1 deploy(s).");
+    expect(bulkSummary({ entries: [entry("running")], polls: BULK_MAX_POLLS })).toMatch(/^Stopped waiting for 1 deploy\(s\)/);
+    expect(bulkSummary({ entries: [entry("success"), entry("failed")], polls: BULK_MAX_POLLS })).toBe("All 2 deploys finished.");
   });
 });

@@ -1,6 +1,8 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { BULK_MAX_POLLS, BULK_POLL_MS } from "@/lib/bulk-deploy";
 import { Providers } from "@/components/Providers";
 import ServerDetailPage from "./page";
 
@@ -451,7 +453,7 @@ describe("ServerDetailPage — relay outdated badge, one-click Update relay, and
 
 describe("ServerDetailPage - blocked deploys", () => {
   const BLOCKED_STEPS = [
-    { name: "disk", status: "failure", durationMs: 0, message: "disk almost full", output: "disk almost full", critical: true },
+    { name: "disk", kind: "preflight-check", status: "failure", durationMs: 0, message: "disk almost full", output: "disk almost full", critical: true },
   ];
 
   async function clickDeployAndConfirm(user: ReturnType<typeof userEvent.setup>) {
@@ -496,6 +498,23 @@ describe("ServerDetailPage - blocked deploys", () => {
     await screen.findByText("Deploy Progress");
     expect(await screen.findByText("disk", {}, { timeout: 3000 })).toBeInTheDocument();
     expect(screen.getByText("disk almost full")).toBeVisible();
+    // header says blocked (from the step marker), and the critical check is marked in text
+    expect(screen.getByText("Blocked (preflight)")).toBeVisible();
+    expect(screen.getByText("(critical)")).toBeVisible();
+  });
+
+  it("the deploy log header keeps the plain status for a failure that is not a preflight block", async () => {
+    const user = await renderPage();
+    mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
+    mGetDeployStatus.mockResolvedValueOnce({
+      deploy: { id: "deploy-1", status: "failed", log: JSON.stringify([{ name: "build", status: "failure", durationMs: 1, output: "boom" }]) },
+    });
+
+    await clickDeployAndConfirm(user);
+
+    expect(await screen.findByText("boom", {}, { timeout: 3000 })).toBeVisible();
+    expect(screen.queryByText("Blocked (preflight)")).not.toBeInTheDocument();
+    expect(screen.getByText("failed")).toBeVisible();
   });
 
   it("the deploy log view still renders an old-format preflight report log", async () => {
@@ -537,11 +556,13 @@ describe("ServerDetailPage - blocked deploys", () => {
 
     await bulkDeployBoth(user);
 
-    const result = await screen.findByRole("status", { name: "Bulk deploy result" });
-    await waitFor(() => expect(result).toHaveTextContent("disk (disk almost full)"));
+    const result = await screen.findByRole("region", { name: "Bulk deploy result" });
+    await waitFor(() => expect(result).toHaveTextContent("disk [critical] (disk almost full)"));
     const blocked = within(result).getByText("my-app").closest("li")!;
-    expect(blocked).toHaveTextContent("Failed");
-    expect(blocked).toHaveTextContent("disk (disk almost full)");
+    // labelled from the step marker, not just "Failed"
+    expect(blocked).toHaveTextContent("Blocked (preflight)");
+    expect(blocked).not.toHaveTextContent("Failed");
+    expect(blocked).toHaveTextContent("disk [critical] (disk almost full)");
     const ok = within(result).getByText("other-app").closest("li")!;
     expect(ok).toHaveTextContent("Success");
     expect(ok).not.toHaveTextContent("disk");
@@ -559,7 +580,7 @@ describe("ServerDetailPage - blocked deploys", () => {
 
     await bulkDeployBoth(user);
 
-    const result = await screen.findByRole("status", { name: "Bulk deploy result" });
+    const result = await screen.findByRole("region", { name: "Bulk deploy result" });
     expect(within(result).getByText("my-app").closest("li")).toHaveTextContent("deploy (Invalid app name)");
     await waitFor(() => expect(within(result).getByText("other-app").closest("li")).toHaveTextContent("Success"));
     // the failed-to-start app has no deployId and must not be polled
@@ -578,7 +599,135 @@ describe("ServerDetailPage - blocked deploys", () => {
 
     await bulkDeployBoth(user);
 
-    const result = await screen.findByRole("status", { name: "Bulk deploy result" });
+    const result = await screen.findByRole("region", { name: "Bulk deploy result" });
     await waitFor(() => expect(result).toHaveTextContent("no failure details recorded"));
+  });
+});
+
+describe("ServerDetailPage - bulk result polling", () => {
+  // One app is already settled (failed to start), one is pending, so every poll tick makes exactly one call.
+  const START = {
+    deploys: [
+      { app: "my-app", deployId: "", status: "failed", error: "Invalid app name" },
+      { app: "other-app", deployId: "d-2", status: "running" },
+    ],
+  };
+
+  async function startBulk() {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mGetServer.mockResolvedValue(SERVER);
+    mGetApps.mockResolvedValue({ apps: [APPS.apps[0], { ...APPS.apps[0], id: "app-b", name: "other-app" }] });
+    mSyncServer.mockResolvedValue({ synced: true, apps: 2, created: 0, updated: 0 });
+    mBulkDeploy.mockResolvedValueOnce(START);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const view = render(
+      <Providers>
+        <ServerDetailPage />
+      </Providers>,
+    );
+    await screen.findByText("other-app");
+    await user.click(screen.getByRole("checkbox", { name: "Select my-app" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select other-app" }));
+    await user.click(screen.getByRole("button", { name: "Deploy 2 apps" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Deploy 2" }));
+    await screen.findByRole("region", { name: "Bulk deploy result" });
+    return { user, view };
+  }
+
+  async function tick(ms = BULK_POLL_MS) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  const pollCalls = () => mGetDeployStatus.mock.calls.filter((c) => c[2] === "d-2").length;
+
+  afterEach(() => {
+    vi.useRealTimers();
+    mGetDeployStatus.mockReset();
+  });
+
+  it("stops polling after BULK_MAX_POLLS and says it stopped waiting", async () => {
+    mGetDeployStatus.mockResolvedValue({ deploy: { id: "d-2", status: "running", log: null } });
+    await startBulk();
+
+    for (let i = 0; i < BULK_MAX_POLLS + 5; i++) await tick();
+
+    expect(pollCalls()).toBe(BULK_MAX_POLLS);
+    expect(screen.getByRole("status")).toHaveTextContent("Stopped waiting for 1 deploy(s)");
+  });
+
+  it("while polling the live region only carries the short waiting line", async () => {
+    mGetDeployStatus.mockResolvedValue({ deploy: { id: "d-2", status: "running", log: null } });
+    await startBulk();
+    await tick();
+
+    expect(screen.getByRole("status")).toHaveTextContent(/^Waiting for 1 deploy\(s\)\.$/);
+    expect(screen.getByRole("heading", { name: "Bulk deploy result" })).toBeVisible();
+    expect(screen.queryByText(/Stopped waiting/)).not.toBeInTheDocument();
+  });
+
+  it("makes no getDeployStatus call after Dismiss", async () => {
+    mGetDeployStatus.mockResolvedValue({ deploy: { id: "d-2", status: "running", log: null } });
+    const { user } = await startBulk();
+    await tick();
+    await tick();
+    expect(pollCalls()).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    const before = pollCalls();
+    for (let i = 0; i < 5; i++) await tick();
+
+    expect(pollCalls()).toBe(before);
+    expect(screen.queryByRole("region", { name: "Bulk deploy result" })).not.toBeInTheDocument();
+  });
+
+  it("makes no getDeployStatus call after the page unmounts", async () => {
+    mGetDeployStatus.mockResolvedValue({ deploy: { id: "d-2", status: "running", log: null } });
+    const { view } = await startBulk();
+    await tick();
+    await tick();
+    expect(pollCalls()).toBeGreaterThan(0);
+
+    view.unmount();
+    const before = pollCalls();
+    for (let i = 0; i < 5; i++) await tick();
+
+    expect(pollCalls()).toBe(before);
+  });
+
+  it("a response that arrives after Dismiss does not bring the panel back", async () => {
+    let resolve!: (v: unknown) => void;
+    mGetDeployStatus.mockImplementation(() => new Promise((r) => (resolve = r)));
+    const { user } = await startBulk();
+    await tick(10);
+    await waitFor(() => expect(pollCalls()).toBe(1));
+
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    await act(async () => {
+      resolve({ deploy: { id: "d-2", status: "failed", log: "not json" } });
+    });
+    await tick();
+
+    expect(screen.queryByRole("region", { name: "Bulk deploy result" })).not.toBeInTheDocument();
+  });
+
+  it("a rejected status call keeps the entry running and polls again on the next tick", async () => {
+    mGetDeployStatus
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValue({ deploy: { id: "d-2", status: "success", log: null } });
+    await startBulk();
+
+    await waitFor(() => expect(pollCalls()).toBe(1));
+    const li = () => within(screen.getByRole("region", { name: "Bulk deploy result" })).getByText("other-app").closest("li")!;
+    await waitFor(() => expect(li()).toHaveTextContent("Running"));
+    expect(li()).not.toHaveTextContent("Failed");
+
+    await tick();
+
+    await waitFor(() => expect(pollCalls()).toBe(2));
+    await waitFor(() => expect(li()).toHaveTextContent("Success"));
+    expect(screen.getByRole("status")).toHaveTextContent("All 2 deploys finished.");
   });
 });

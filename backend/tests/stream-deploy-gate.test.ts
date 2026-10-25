@@ -467,6 +467,9 @@ describe("streamDeploy: relay response handling", () => {
       const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(blockedSse());
       await streamDeploy(baseOpts);
       expect(lastCall(mAppUpdate).data).toEqual({ status: "healthy" });
+      // the lookup must reach past the newest deploy, and read the log it judges by
+      expect(lastCall(mDeployFindMany).take).toBeGreaterThanOrEqual(3);
+      expect(lastCall(mDeployFindMany).select).toMatchObject({ status: true, log: true });
       fetchSpy.mockRestore();
     });
 

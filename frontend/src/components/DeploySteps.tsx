@@ -11,6 +11,15 @@ export interface DeployStep {
   /** Failed preflight checks of a blocked deploy carry the check's message here (and in `output`). */
   message?: string;
   critical?: boolean;
+  /** `"preflight-check"` marks a step that stands for one failed relay preflight check. */
+  kind?: string;
+}
+
+export const PREFLIGHT_CHECK_KIND = "preflight-check";
+
+/** True when the steps are the log of a preflight-blocked deploy (decided by the step marker, not by names). */
+export function isBlockedSteps(steps: DeployStep[]): boolean {
+  return steps.some((s) => s.kind === PREFLIGHT_CHECK_KIND);
 }
 
 function asStep(raw: unknown): DeployStep | null {
@@ -24,6 +33,7 @@ function asStep(raw: unknown): DeployStep | null {
     output: typeof r.output === "string" ? r.output : undefined,
     message: typeof r.message === "string" ? r.message : undefined,
     critical: typeof r.critical === "boolean" ? r.critical : undefined,
+    kind: typeof r.kind === "string" ? r.kind : undefined,
   };
 }
 
@@ -52,6 +62,7 @@ export function normalizeDeploySteps(raw: unknown): DeployStep[] {
         output: message,
         message,
         critical: typeof c.critical === "boolean" ? c.critical : undefined,
+        kind: PREFLIGHT_CHECK_KIND,
       };
     });
   }
@@ -73,6 +84,9 @@ export function DeployStepRow({ step }: { step: DeployStep }) {
           {step.status === "success" ? "✓" : step.status === "skipped" ? "—" : "✗"}
         </span>
         <span style={{ color: "var(--text)" }}>{step.name}</span>
+        {step.critical === true && (
+          <span style={{ color: "var(--muted)", fontSize: "var(--text-xs)" }}>(critical)</span>
+        )}
         {step.durationMs > 0 && (
           <span className="deploy-step-duration">{(step.durationMs / 1000).toFixed(1)}s</span>
         )}
