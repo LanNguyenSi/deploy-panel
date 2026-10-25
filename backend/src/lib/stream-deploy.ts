@@ -2,8 +2,7 @@ import { prisma } from "./prisma.js";
 import { recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "./deploy-recovery.js";
 import { verifyDeployHealth } from "./post-deploy-gate.js";
 import { provisionAndCheckAppSecrets } from "./provision-secrets.js";
-
-type Step = { name: string; status: string; durationMs?: number; [k: string]: unknown };
+import { blockedDeployLogSteps, isBlockedDeployLog, type DeployLogStep as Step } from "./deploy-log.js";
 
 // GET /api/v1/deploy/:id JSON.parses `deploy.log` inside a swallowing
 // try/catch (routes/v1.ts) and so does the panel-UI equivalent
@@ -13,6 +12,64 @@ type Step = { name: string; status: string; durationMs?: number; [k: string]: un
 // array, never a bare string.
 function failureStepLog(output: string): string {
   return JSON.stringify([{ name: "deploy", status: "failure", durationMs: 0, output }]);
+}
+
+/** How many recent deploys the fallback reads to find one that is not a blocked deploy. */
+const STATUS_FALLBACK_LOOKBACK = 20;
+
+/**
+ * The app status a blocked deploy must leave behind. A blocked deploy never
+ * touched the app, so the card returns to what it showed before the dispatch
+ * flipped it to `deploying`. Callers that captured that status pass it in; for
+ * the rest (and for a `deploying` capture, i.e. an overlapping deploy) it is
+ * derived from the most recent other finished deploy of the app that was not
+ * itself blocked: an earlier blocked deploy says nothing about the app, so it
+ * must not count as a failure. A blocked deploy is recognised by its log (see
+ * isBlockedDeployLog).
+ */
+async function statusAfterBlocked(appId: string, deployId: string, previousStatus?: string): Promise<string> {
+  if (previousStatus && previousStatus !== "deploying") return previousStatus;
+  const recent = await prisma.deploy
+    .findMany({
+      where: { appId, id: { not: deployId }, status: { in: ["success", "failed"] } },
+      orderBy: { createdAt: "desc" },
+      take: STATUS_FALLBACK_LOOKBACK,
+      select: { status: true, log: true },
+    })
+    .catch(() => []);
+  const last = recent.find((d) => !isBlockedDeployLog(d.log));
+  if (last?.status === "success") return "healthy";
+  if (last?.status === "failed") return "unhealthy";
+  return "unknown";
+}
+
+/**
+ * Terminal write for a deploy the relay refused at preflight. The deploy row
+ * ends `failed` with the failed checks as its log; the App row is restored to
+ * its pre-dispatch status (and `lastDeployAt` is left alone) because nothing
+ * was deployed, unlike a real failure which marks the app `unhealthy`.
+ */
+async function finalizeBlockedDeploy(opts: {
+  deployId: string;
+  appId: string;
+  previousStatus?: string;
+  steps: Step[];
+  commitBefore?: string | null;
+  commitAfter?: string | null;
+  duration: number;
+}): Promise<void> {
+  await prisma.deploy.update({
+    where: { id: opts.deployId },
+    data: {
+      status: "failed",
+      commitBefore: opts.commitBefore,
+      commitAfter: opts.commitAfter,
+      duration: opts.duration,
+      log: JSON.stringify(opts.steps),
+    },
+  });
+  const restored = await statusAfterBlocked(opts.appId, opts.deployId, opts.previousStatus);
+  await prisma.app.update({ where: { id: opts.appId }, data: { status: restored } });
 }
 
 export interface FinalizeDeployOpts {
@@ -105,8 +162,11 @@ export async function streamDeploy(opts: {
   relayUrl: string;
   relayToken: string | null;
   body: { branch?: string; force?: boolean };
+  /** App status before the dispatch set it to `deploying`; restored if the deploy is blocked by preflight. */
+  previousStatus?: string;
 }) {
-  const { serverId, deployId, appId, appName, relayUrl, relayToken, body } = opts;
+  const { serverId, deployId, appId, appName, relayUrl, relayToken, body, previousStatus } = opts;
+  const startedAt = Date.now();
   const steps: Array<{ name: string; status: string; durationMs: number; output?: string }> = [];
 
   // Marks this deploy as owned by THIS process for as long as the try below
@@ -213,22 +273,28 @@ export async function streamDeploy(opts: {
       const success = data?.result?.success === true || data?.deploy?.status === "success";
       const rawDuration = data?.result?.durationMs ?? data?.deploy?.durationMs;
       const duration = typeof rawDuration === "number" ? Math.round(rawDuration) : null;
-      // A non-streaming preflight-blocked relay response carries the relay's own
-      // steps (including the failing preflight step) and nests the structured
-      // report as `result.preflight`. Keep the relay's steps and append the
-      // report (the streaming `blocked` event, by contrast, stores the report
-      // alone), so the per-check verdicts (with their critical flags) survive
-      // in the deploy log. With no steps the report is the only step.
-      const blockedPreflight =
-        data?.result?.blocked === true && data.result.preflight && typeof data.result.preflight === "object"
-          ? data.result.preflight
-          : undefined;
+      // A non-streaming preflight-blocked relay response nests the structured
+      // report as `result.preflight`. Same handling as the streaming `blocked`
+      // event: nothing was deployed, so the log is the relay's own steps
+      // (minus its failed preflight summary step) plus one step per failed
+      // check, and the app keeps the status it had before the dispatch.
+      if (data?.result?.blocked === true) {
+        await finalizeBlockedDeploy({
+          deployId,
+          appId,
+          previousStatus,
+          steps: blockedDeployLogSteps([...steps, ...(Array.isArray(data.result.steps) ? data.result.steps : [])], data.result.preflight),
+          commitBefore: data.result.commitBefore ?? null,
+          commitAfter: data.result.commitAfter ?? null,
+          duration: duration ?? Date.now() - startedAt,
+        });
+        return;
+      }
       const relaySteps = data?.result?.steps ?? data?.deploy?.steps;
-      const jsonSteps = blockedPreflight
-        ? [...(Array.isArray(relaySteps) ? relaySteps : []), blockedPreflight]
-        : relaySteps ?? [
-            { name: "deploy", status: success ? "success" : "failed", note: "JSON fallback" },
-          ];
+      const jsonSteps =
+        relaySteps ?? [
+          { name: "deploy", status: success ? "success" : "failed", note: "JSON fallback" },
+        ];
 
       await finalizeDeploy({
         deployId,
@@ -272,7 +338,7 @@ export async function streamDeploy(opts: {
         } else if (line.startsWith("data: ") && eventType) {
           try {
             const data = JSON.parse(line.slice(6));
-            await handleEvent(eventType, data, { deployId, appId, serverId, appName }, steps);
+            await handleEvent(eventType, data, { deployId, appId, serverId, appName, previousStatus, startedAt }, steps);
           } catch (err) {
             console.warn(
               `[stream-deploy] ${appName}: failed to parse SSE ${eventType} event payload — ${err instanceof Error ? err.message : String(err)}`,
@@ -327,6 +393,8 @@ interface EventContext {
   appId: string;
   serverId: string;
   appName: string;
+  previousStatus?: string;
+  startedAt: number;
 }
 
 // Caps a single step's output before it's persisted — mirrors agent-relay's
@@ -341,7 +409,7 @@ async function handleEvent(
   ctx: EventContext,
   steps: Array<{ name: string; status: string; durationMs: number; output?: string }>,
 ) {
-  const { deployId, appId, serverId, appName } = ctx;
+  const { deployId, appId, serverId, appName, previousStatus, startedAt } = ctx;
   if (event === "step") {
     // The step event carries `output` (e.g. the health-check step's HTTP
     // status / container-log excerpt) — this used to be dropped here, which
@@ -374,13 +442,12 @@ async function handleEvent(
       steps: data.steps ?? steps,
     });
   } else if (event === "blocked") {
-    await prisma.deploy.update({
-      where: { id: deployId },
-      data: { status: "failed", log: JSON.stringify(data ?? "blocked by preflight") },
-    });
-    await prisma.app.update({
-      where: { id: appId },
-      data: { status: "unhealthy" },
+    await finalizeBlockedDeploy({
+      deployId,
+      appId,
+      previousStatus,
+      steps: blockedDeployLogSteps(steps, data),
+      duration: Date.now() - startedAt,
     });
   } else if (event === "error") {
     await prisma.deploy.update({

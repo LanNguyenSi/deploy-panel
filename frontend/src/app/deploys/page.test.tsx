@@ -98,6 +98,33 @@ describe("DeploysPage - stored deploy step output", () => {
     );
   });
 
+  it("renders an old-format stored preflight report (object steps) as its failed checks instead of crashing", async () => {
+    const user = await renderPage();
+    mGetDeployDetail.mockResolvedValueOnce({
+      deploy: {
+        id: "deploy-1",
+        serverId: "srv-a",
+        appId: "app-a",
+        commitBefore: null,
+        commitAfter: null,
+        status: "failed",
+        duration: null,
+        log: null,
+        triggeredBy: "manual",
+        createdAt: "2026-08-24T00:00:00.000Z",
+        app: { name: "my-app", repoUrl: null, branch: "main" },
+        server: { name: "srv-a", host: "1.2.3.4" },
+        compareUrl: null,
+        steps: { passed: false, checks: [{ name: "disk", passed: false, message: "disk almost full", critical: true }] },
+      },
+    });
+
+    await user.click(screen.getByText("my-app"));
+
+    await waitFor(() => expect(screen.getByText("disk almost full")).toBeInTheDocument());
+    expect(screen.queryByText("No step data available.")).not.toBeInTheDocument();
+  });
+
   it("renders a step without output as before (no output block)", async () => {
     const user = await renderPage();
     mGetDeployDetail.mockResolvedValueOnce({

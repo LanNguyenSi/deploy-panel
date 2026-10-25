@@ -3,6 +3,7 @@ import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
 import { recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "../lib/deploy-recovery.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
+import { normalizeDeployLog } from "../lib/deploy-log.js";
 import { setAppStatusAfterRollback, setAppStatusAfterRollbackRejection } from "../lib/rollback-app-status.js";
 import { audit, getActorUserId } from "../lib/audit.js";
 import {
@@ -129,6 +130,7 @@ v1Router.post("/deploy", async (c) => {
     relayUrl: srv.relayUrl,
     relayToken: srv.relayToken,
     body: { branch: ref, force: force ?? false },
+    previousStatus: appRecord.status,
   });
 
   return c.json({
@@ -153,19 +155,18 @@ v1Router.get("/deploy/:id", async (c) => {
     return c.json({ error: "not_found", message: "Deploy not found" }, 404);
   }
 
-  // deploy.log isn't always a JSON array: POST /rollback stores the raw
-  // relay result object (`JSON.stringify(raw)` in the rollback handler
-  // below), and a preflight-blocked deploy can store a bare string
-  // (stream-deploy.ts). Parsing either straight into `steps` would type it
-  // as unknown[] while actually holding an object or a string at runtime.
-  // Normalise to a single-element array so the field's shape matches its
-  // declared type (and mcp/src/client.ts's DeployInfo.steps) regardless of
-  // what produced the log.
+  // deploy.log isn't always a JSON array of steps: POST /rollback stores the
+  // raw relay result object (`JSON.stringify(raw)` in the rollback handler
+  // below), and rows written before blocked deploys got a steps log hold the
+  // raw preflight report (an object with `checks`) or a JSON string. Parsing
+  // those straight into `steps` would type it as unknown[] while actually
+  // holding an object or a string at runtime, so normalise (see
+  // normalizeDeployLog) to the array the field's declared type (and
+  // mcp/src/client.ts's DeployInfo.steps) promises.
   let steps: unknown[] = [];
   if (deploy.log) {
     try {
-      const parsed = JSON.parse(deploy.log);
-      steps = Array.isArray(parsed) ? parsed : [parsed];
+      steps = normalizeDeployLog(JSON.parse(deploy.log));
     } catch {}
   }
 

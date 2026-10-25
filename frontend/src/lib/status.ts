@@ -2,7 +2,9 @@
 // badge cannot drift between the deploys list and the live deploy-log panel.
 // Colours follow the Mission Control system (see /styleguide + globals.css).
 
-export function deployStatusBadge(status: string): { className: string; label: string } {
+export function deployStatusBadge(status: string, blocked = false): { className: string; label: string } {
+  // A deploy the relay refused at preflight never touched the app: say so instead of "Failed".
+  if (blocked && status === "failed") return { className: "badge-warning", label: "Blocked (preflight)" };
   const map: Record<string, { className: string; label: string }> = {
     success: { className: "badge-success", label: "Success" },
     failed: { className: "badge-danger", label: "Failed" },

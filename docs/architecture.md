@@ -64,7 +64,7 @@ Each `Server` row stores a `relayUrl` (e.g. `http://vps-ip:3002`) and an optiona
 
 The backend also calls the relay for env reads and writes, app listing and detail (sync and the upstream check), and the relay `/health` version check.
 
-Relay calls use per-operation timeouts: 5 seconds for connectivity and system-info checks, 5 minutes for standard relay operations (rollback, logs, preflight), and 10 minutes for streaming deploys. A relay 4xx or a relay-reported failure marks the deploy failed. When the connection is lost or the relay answers 5xx, connection-loss recovery marks the deploy success only when the post-deploy health gate confirms the app and the relay history shows this deploy reached its target, interrupted when the app is healthy but that proof is missing, and failed otherwise; see `docs/okf/deploy-outcome-trust-chain.md` for the full mechanism. The outcome is visible in deploy history either way.
+Relay calls use per-operation timeouts: 5 seconds for connectivity and system-info checks, 5 minutes for standard relay operations (rollback, logs, preflight), and 10 minutes for streaming deploys. A relay 4xx or a relay-reported failure marks the deploy failed. A deploy the relay blocks at preflight (SSE `blocked` event or `result.blocked` in a JSON response) also ends `failed`, but nothing was deployed, so the app keeps the status it had before the dispatch (it is not marked `unhealthy` and `lastDeployAt` is not touched) and the deploy log is a steps array with one failed step per failed preflight check (`name`, `message`, `output`, `critical`). When the connection is lost or the relay answers 5xx, connection-loss recovery marks the deploy success only when the post-deploy health gate confirms the app and the relay history shows this deploy reached its target, interrupted when the app is healthy but that proof is missing, and failed otherwise; see `docs/okf/deploy-outcome-trust-chain.md` for the full mechanism. The outcome is visible in deploy history either way.
 
 ## Data model
 
@@ -86,7 +86,7 @@ The state diagram shows how a deploy row moves from `running` to its final statu
 ```mermaid
 stateDiagram-v2
   [*] --> running
-  running --> failed: missing required env, relay 4xx, relay failure or health gate fails
+  running --> failed: missing required env, relay 4xx, preflight block (app status kept), relay failure or health gate fails
   running --> success: relay success and health gate pass, recovery or stuck sweep proves the target, or stuck sweep preflight passes for the panel's own app
   running --> rolled_back: rollback route, relay success
   running --> interrupted: recovery or stuck sweep cannot prove the target

@@ -347,6 +347,83 @@ describe("deploy_app", () => {
       }
     });
 
+    // The shape the panel stores for a blocked deploy and GET /api/v1/deploy/:id returns:
+    // one marked step per failed check (rows from before the marker are converted to the same).
+    const checkStep = (name: string, message: string, critical?: boolean) => ({
+      name,
+      kind: "preflight-check",
+      status: "failure",
+      durationMs: 0,
+      message,
+      output: message,
+      ...(critical === undefined ? {} : { critical }),
+    });
+
+    it("projects marked preflight-check steps into one preflight entry, critical failures first", async () => {
+      mockDeploy({
+        status: "failed",
+        steps: [
+          { name: "git pull", status: "success", durationMs: 1300 },
+          checkStep("memory", "memory low", false),
+          checkStep("disk", "disk almost full", true),
+          { name: "later", status: "success", durationMs: 1 },
+        ],
+      });
+      const result = await cb({ server: "s", app: "a" });
+      const body = textOf(result);
+      expect(body.steps).toEqual([
+        { name: "git pull", status: "success", durationMs: 1300 },
+        {
+          preflight: {
+            passed: false,
+            failingChecks: [
+              { name: "disk", message: "disk almost full", critical: true },
+              { name: "memory", message: "memory low", critical: false },
+            ],
+          },
+        },
+        { name: "later", status: "success", durationMs: 1 },
+      ]);
+      expect(body.steps[1].outputTail).toBeUndefined();
+      expect(result.content[0].text).not.toContain('"kind"');
+    });
+
+    it("a marked step without a message falls back to its output; a blocked deploy with one step still projects", async () => {
+      mockDeploy({ status: "failed", steps: [{ name: "preflight", kind: "preflight-check", status: "failure", durationMs: 0, output: "Blocked by preflight" }] });
+      const body = textOf(await cb({ server: "s", app: "a" }));
+      expect(body.steps).toEqual([{ preflight: { passed: false, failingChecks: [{ name: "preflight", message: "Blocked by preflight" }] } }]);
+    });
+
+    it("an unmarked failing preflight step keeps its output tail and is not folded into the preflight entry", async () => {
+      mockDeploy({
+        status: "failed",
+        steps: [{ name: "preflight (post-pull)", status: "failure", durationMs: 5, output: "x: y" }, checkStep("disk", "full", true)],
+      });
+      const body = textOf(await cb({ server: "s", app: "a" }));
+      expect(body.steps[0]).toEqual({ name: "preflight (post-pull)", status: "failure", durationMs: 5, outputTail: "x: y" });
+      expect(body.steps[1].preflight.failingChecks).toEqual([{ name: "disk", message: "full", critical: true }]);
+    });
+
+    it("caps marked check text and the failing-check count like a report does", async () => {
+      const steps = Array.from({ length: 25 }, (_, i) => checkStep(`c${i}`, "m".repeat(400), false));
+      steps.push(checkStep("late-critical", "m", true));
+      mockDeploy({ status: "failed", steps });
+      const body = textOf(await cb({ server: "s", app: "a" }));
+      const f = body.steps[0].preflight.failingChecks;
+      expect(body.steps).toHaveLength(1);
+      expect(f).toHaveLength(20);
+      expect(f[0]).toEqual({ name: "late-critical", message: "m", critical: true });
+      expect(f[1].message.length).toBe(300);
+    });
+
+    it("marked check steps share the details budget like a report", async () => {
+      const steps = Array.from({ length: 20 }, (_, i) => checkStep(`c${i}`, '"'.repeat(300), false));
+      mockDeploy({ status: "failed", steps });
+      const body = textOf(await cb({ server: "s", app: "a" }));
+      expect(body.steps).toEqual([{ preflight: { passed: false } }]);
+      expect(body.detailsTruncated).toBe(true);
+    });
+
     it("ignores a non-report string step and a report without a checks array", async () => {
       mockDeploy({ status: "failed", steps: ["not json", "{bad", { passed: false }, "blocked by preflight"] });
       const body = textOf(await cb({ server: "s", app: "a" }));

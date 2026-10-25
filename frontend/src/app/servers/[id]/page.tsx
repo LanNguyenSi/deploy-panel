@@ -14,7 +14,8 @@ import { requestPermission, notifyDeployResult } from "@/lib/notifications";
 import { isPinned, togglePin } from "@/lib/pinned";
 import EnvVarsPanel from "@/components/EnvVarsPanel";
 import AppSecretsPanel from "@/components/AppSecretsPanel";
-import { DeployStepList } from "@/components/DeploySteps";
+import { DeployStepList, isBlockedSteps, normalizeDeploySteps, type DeployStep } from "@/components/DeploySteps";
+import { BULK_MAX_POLLS, BULK_POLL_MS, bulkSummary, describeFailures, failuresFromLog, initialBulkEntries, isBlockedEntry, isSettled, type BulkResult } from "@/lib/bulk-deploy";
 import { ServerReinstallDialog } from "@/components/ServerReinstallDialog";
 import { ServerUpdateImageDialog } from "@/components/ServerUpdateImageDialog";
 import { countOutdated, describeUpstream, failedUpstream, formatCheckedAt, githubCompareUrl, shortSha } from "@/lib/upstream";
@@ -44,10 +45,11 @@ export default function ServerDetailPage() {
   const [logs, setLogs] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [deploying, setDeploying] = useState<string | null>(null);
-  const [deployLog, setDeployLog] = useState<{ status: string; steps: Array<{ name: string; status: string; durationMs: number; output?: string }> } | null>(null);
+  const [deployLog, setDeployLog] = useState<{ status: string; steps: DeployStep[] } | null>(null);
   const [preflight, setPreflight] = useState<{ passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkDeploying, setBulkDeploying] = useState(false);
+  const [bulkResult, setBulkResult] = useState<BulkResult | null>(null);
   const { toast } = useToast();
   const { confirm } = useConfirm();
   const { prompt: promptDialog } = usePrompt();
@@ -83,6 +85,7 @@ export default function ServerDetailPage() {
     try {
       const result = await bulkDeploy(id, names);
       toast(`${result.deploys.length} deploys started`, "success");
+      setBulkResult({ entries: initialBulkEntries(result.deploys), polls: 0 });
       setSelected(new Set());
       // Start polling for completion
       setTimeout(() => load(), 5000);
@@ -94,6 +97,34 @@ export default function ServerDetailPage() {
       setBulkDeploying(false);
     }
   }
+
+  // Bulk deploys answer 202 before the relay has judged them, so a deploy that
+  // the relay blocks at preflight only shows up in its stored log. Poll each
+  // pending deploy (first poll at once, then every BULK_POLL_MS) and keep the
+  // outcome, with the failed checks, in the result panel.
+  useEffect(() => {
+    if (!bulkResult || bulkResult.polls >= BULK_MAX_POLLS || bulkResult.entries.every(isSettled)) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const entries = await Promise.all(
+        bulkResult.entries.map(async (entry) => {
+          if (isSettled(entry)) return entry;
+          try {
+            const { deploy: d } = await getDeployStatus(id, entry.app, entry.deployId);
+            if (d.status === "running") return entry;
+            return { ...entry, status: d.status, failures: d.status === "success" ? [] : failuresFromLog(d.log) };
+          } catch {
+            return entry;
+          }
+        }),
+      );
+      if (!cancelled) setBulkResult({ entries, polls: bulkResult.polls + 1 });
+    }, bulkResult.polls === 0 ? 0 : BULK_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [bulkResult, id]);
 
   async function loadUpstream() {
     const seq = ++upstreamSeq.current;
@@ -190,11 +221,10 @@ export default function ServerDetailPage() {
       const pollInterval = setInterval(async () => {
         try {
           const { deploy: d } = await getDeployStatus(id, name, deploy.id);
-          let steps: Array<{ name: string; status: string; durationMs: number; output?: string }> = [];
+          let steps: DeployStep[] = [];
           if (d.log) {
             try {
-              const parsed = JSON.parse(d.log);
-              steps = Array.isArray(parsed) ? parsed : [];
+              steps = normalizeDeploySteps(JSON.parse(d.log));
             } catch {}
           }
           setDeployLog({ status: d.status, steps });
@@ -459,6 +489,40 @@ export default function ServerDetailPage() {
         </div>
       )}
 
+      {/* Bulk deploy outcome: which apps were blocked or failed, and why */}
+      {bulkResult && (
+        <section
+          className="card"
+          aria-label="Bulk deploy result"
+          style={{ marginBottom: "var(--space-3)", padding: "var(--space-3) var(--space-4)", display: "grid", gap: "var(--space-2)" }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--space-3)" }}>
+            <h2 style={{ fontSize: "var(--text-md)", fontWeight: 600, margin: 0 }}>Bulk deploy result</h2>
+            <button onClick={() => setBulkResult(null)} className="btn btn-secondary btn-sm">Dismiss</button>
+          </div>
+          {/* Live region: only this short line is announced when the polling progresses */}
+          <p role="status" style={{ margin: 0, color: "var(--muted)", fontSize: "var(--text-sm)" }}>
+            {bulkSummary(bulkResult)}
+          </p>
+          <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "var(--space-2)" }}>
+            {bulkResult.entries.map((entry) => {
+              const badge = deployStatusBadge(entry.status, isBlockedEntry(entry));
+              return (
+                <li key={entry.app} style={{ fontSize: "var(--text-sm)" }}>
+                  <span style={{ fontWeight: 500 }}>{entry.app}</span>{" "}
+                  <span className={`badge ${badge.className}`}>{badge.label}</span>
+                  {entry.status !== "running" && entry.status !== "success" && (
+                    <div style={{ color: "var(--text-secondary)", marginTop: "var(--space-1)", overflowWrap: "anywhere" }}>
+                      {entry.failures.length > 0 ? describeFailures(entry.failures) : "no failure details recorded"}
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+
       {loading ? (
         <div style={{ display: "grid", gap: "var(--space-3)" }}>
           {[1, 2, 3].map((i) => (
@@ -634,8 +698,10 @@ export default function ServerDetailPage() {
                     <div className="log-panel" style={{ fontFamily: "inherit", whiteSpace: "normal" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-3)" }}>
                         <span style={{ fontWeight: 600 }}>Status:</span>
-                        <span className={`badge ${deployStatusBadge(deployLog.status).className}`}>
-                          {deployLog.status}
+                        <span className={`badge ${deployStatusBadge(deployLog.status, isBlockedSteps(deployLog.steps)).className}`}>
+                          {isBlockedSteps(deployLog.steps) && deployLog.status === "failed"
+                            ? deployStatusBadge(deployLog.status, true).label
+                            : deployLog.status}
                         </span>
                       </div>
                       {deployLog.steps.length === 0 && deployLog.status === "running" && (

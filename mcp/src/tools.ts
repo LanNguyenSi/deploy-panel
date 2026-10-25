@@ -48,9 +48,30 @@ interface PreflightReport {
   checks: unknown[];
 }
 
-// A preflight-blocked deploy stores the relay preflight report as its last
-// step (its only step on the streaming path), either as an object or as a
-// JSON string.
+// The panel stores a preflight-blocked deploy as one step per failed check,
+// each marked with this `kind` (also for rows older than the marker, which
+// GET /api/v1/deploy/:id converts to the same steps).
+const PREFLIGHT_CHECK_KIND = "preflight-check";
+
+function isPreflightCheckStep(step: unknown): step is { name?: unknown; message?: unknown; output?: unknown; critical?: unknown } {
+  return !!step && typeof step === "object" && (step as { kind?: unknown }).kind === PREFLIGHT_CHECK_KIND;
+}
+
+// Folds the marked steps into the failing-check report the projection renders.
+function reportFromCheckSteps(steps: unknown[]): PreflightReport {
+  return {
+    passed: false,
+    checks: steps.filter(isPreflightCheckStep).map((s) => ({
+      name: s.name,
+      passed: false,
+      message: s.message ?? s.output,
+      critical: s.critical,
+    })),
+  };
+}
+
+// A raw preflight report as a single step (a relay-blocked rollback payload),
+// either as an object or as a JSON string.
 function asBlockedPreflight(step: unknown): PreflightReport | undefined {
   let value = step;
   if (typeof value === "string") {
@@ -106,8 +127,11 @@ function spend(budget: Budget, size: number): boolean {
   return true;
 }
 
-function compactStep(step: unknown, budget: Budget) {
-  const preflight = asBlockedPreflight(step);
+// Stands for the run of marked check steps in the step list until it is projected.
+const CHECK_STEPS_SLOT = Symbol("preflight-check-steps");
+
+function compactStep(step: unknown, budget: Budget, checkSteps: unknown[] = []) {
+  const preflight = step === CHECK_STEPS_SLOT ? reportFromCheckSteps(checkSteps) : asBlockedPreflight(step);
   if (preflight) {
     const failingChecks = failingChecksOf(preflight);
     const size = failingChecks.reduce((n, c) => n + escapedLength(c.name) + escapedLength(c.message), 0);
@@ -136,9 +160,19 @@ function compactStep(step: unknown, budget: Budget) {
 // bounded tail of failing steps' output. Full step output stays reachable via
 // the verbose option or deploy_status.
 function compactDeploy(deploy: DeployInfo) {
-  const steps = Array.isArray(deploy.steps) ? deploy.steps : [];
+  const all = Array.isArray(deploy.steps) ? deploy.steps : [];
+  // Every marked check step of a blocked deploy collapses into one preflight
+  // entry, placed where the first of them was.
+  const checkSteps = all.filter(isPreflightCheckStep);
+  let slotPlaced = false;
+  const steps = all.flatMap((s): unknown[] => {
+    if (!isPreflightCheckStep(s)) return [s];
+    if (slotPlaced) return [];
+    slotPlaced = true;
+    return [CHECK_STEPS_SLOT];
+  });
   const budget: Budget = { used: 0, truncated: false };
-  const compact = steps.slice(0, MAX_COMPACT_STEPS).map((s) => compactStep(s, budget));
+  const compact = steps.slice(0, MAX_COMPACT_STEPS).map((s) => compactStep(s, budget, checkSteps));
   return {
     id: deploy.id,
     status: deploy.status,
