@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { getDeploys, getDeployDetail, type DeployWithRelations, type DeployDetail } from "@/lib/api";
 import { deployStatusBadge } from "@/lib/status";
-import { DeployStepList } from "@/components/DeploySteps";
+import { DeployStepList, normalizeDeploySteps } from "@/components/DeploySteps";
 
 export default function DeploysPage() {
   const [deploys, setDeploys] = useState<DeployWithRelations[]>([]);
@@ -272,6 +272,7 @@ function DeployDetailPanel({ detail, loading }: { detail: DeployDetail | null; l
     );
   }
 
+  const detailSteps = normalizeDeploySteps(detail.steps);
   const hasCommits = detail.commitBefore || detail.commitAfter;
 
   return (
@@ -325,8 +326,8 @@ function DeployDetailPanel({ detail, loading }: { detail: DeployDetail | null; l
           <h4 style={{ fontSize: "var(--text-sm)", fontWeight: 600, marginBottom: "var(--space-3)", color: "var(--text-secondary)" }}>
             Deploy Steps
           </h4>
-          {detail.steps.length > 0 ? (
-            <DeployStepList steps={detail.steps} />
+          {detailSteps.length > 0 ? (
+            <DeployStepList steps={detailSteps} />
           ) : (
             <p style={{ color: "var(--muted)", fontSize: "var(--text-sm)" }}>No step data available.</p>
           )}

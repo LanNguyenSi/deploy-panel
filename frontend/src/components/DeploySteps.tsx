@@ -8,6 +8,54 @@ export interface DeployStep {
   status: string;
   durationMs: number;
   output?: string;
+  /** Failed preflight checks of a blocked deploy carry the check's message here (and in `output`). */
+  message?: string;
+  critical?: boolean;
+}
+
+function asStep(raw: unknown): DeployStep | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.name !== "string") return null;
+  return {
+    name: r.name,
+    status: typeof r.status === "string" ? r.status : "failure",
+    durationMs: typeof r.durationMs === "number" ? r.durationMs : 0,
+    output: typeof r.output === "string" ? r.output : undefined,
+    message: typeof r.message === "string" ? r.message : undefined,
+    critical: typeof r.critical === "boolean" ? r.critical : undefined,
+  };
+}
+
+/**
+ * A deploy's stored log comes in several historic shapes: the steps array
+ * (current, including blocked deploys: one failed step per failed preflight
+ * check), a bare string or the raw preflight report (`{ passed, checks }`)
+ * that older blocked deploys stored, and a rollback's raw relay result.
+ * Returns the steps to render for any of them; unknown objects yield none.
+ */
+export function normalizeDeploySteps(raw: unknown): DeployStep[] {
+  if (Array.isArray(raw)) {
+    return raw.map(asStep).filter((x): x is DeployStep => x !== null);
+  }
+  if (typeof raw === "string") {
+    return raw ? [{ name: "deploy", status: "failure", durationMs: 0, output: raw }] : [];
+  }
+  if (raw && typeof raw === "object" && Array.isArray((raw as { checks?: unknown }).checks)) {
+    const failed = (raw as { checks: Array<Record<string, unknown>> }).checks.filter((c) => c && c.passed !== true);
+    return failed.map((c) => {
+      const message = typeof c.message === "string" && c.message ? c.message : "check failed";
+      return {
+        name: typeof c.name === "string" && c.name ? c.name : "preflight",
+        status: "failure",
+        durationMs: 0,
+        output: message,
+        message,
+        critical: typeof c.critical === "boolean" ? c.critical : undefined,
+      };
+    });
+  }
+  return [];
 }
 
 function statusModifier(status: string): "success" | "skipped" | "failed" {
@@ -15,7 +63,8 @@ function statusModifier(status: string): "success" | "skipped" | "failed" {
 }
 
 export function DeployStepRow({ step }: { step: DeployStep }) {
-  const hasOutput = typeof step.output === "string" && step.output.length > 0;
+  const text = step.output ?? step.message;
+  const hasOutput = typeof text === "string" && text.length > 0;
 
   return (
     <div>
@@ -35,7 +84,7 @@ export function DeployStepRow({ step }: { step: DeployStep }) {
           <summary style={{ cursor: "pointer", color: "var(--muted)", fontSize: "var(--text-xs)" }}>
             Output
           </summary>
-          <pre className="log-panel deploy-step-output-pre">{step.output}</pre>
+          <pre className="log-panel deploy-step-output-pre">{text}</pre>
         </details>
       )}
     </div>

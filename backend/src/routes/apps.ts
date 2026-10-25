@@ -227,6 +227,7 @@ appsRouter.post("/:name/deploy", async (c) => {
     relayUrl: server?.relayUrl ?? "",
     relayToken: server?.relayToken ?? null,
     body: { branch: body.branch, force: body.force },
+    previousStatus: app.status,
   });
 
   return c.json({ deploy: { id: deploy.id, status: "running" } }, 202);
@@ -560,6 +561,7 @@ appsRouter.post("/bulk-deploy", async (c) => {
         relayUrl: server.relayUrl ?? "",
         relayToken: server.relayToken ?? null,
         body: { force: force ?? false },
+        previousStatus: app.status,
       });
     } catch (err) {
       results.push({

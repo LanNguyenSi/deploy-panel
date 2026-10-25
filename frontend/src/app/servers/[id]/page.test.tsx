@@ -23,6 +23,7 @@ const mDeployApp = vi.fn();
 const mGetDeployStatus = vi.fn();
 const mGetServerRelayStatus = vi.fn();
 const mSelfUpdateServerRelay = vi.fn();
+const mBulkDeploy = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -36,6 +37,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getDeployStatus: (...args: unknown[]) => mGetDeployStatus(...args),
     getServerRelayStatus: (...args: unknown[]) => mGetServerRelayStatus(...args),
     selfUpdateServerRelay: (...args: unknown[]) => mSelfUpdateServerRelay(...args),
+    bulkDeploy: (...args: unknown[]) => mBulkDeploy(...args),
   };
 });
 
@@ -123,7 +125,7 @@ describe("ServerDetailPage — Rollback result surfacing", () => {
     // Toast.tsx prefixes an error toast with "✗ " (success gets "✓ ") — this
     // is the DOM signal that pins the toast's severity, not just its text.
     // A mutant that keeps the error message but reports it via the success
-    // variant (reviewer mutant M4) flips this prefix without changing the
+    // variant flips this prefix without changing the
     // text assertions above, so this is required to catch it.
     expect(alert.textContent?.startsWith("✗ ")).toBe(true);
   });
@@ -444,5 +446,139 @@ describe("ServerDetailPage — relay outdated badge, one-click Update relay, and
     expect(
       await screen.findByRole("dialog", { name: /Update relay image on srv-a/i }),
     ).toBeInTheDocument();
+  });
+});
+
+describe("ServerDetailPage - blocked deploys", () => {
+  const BLOCKED_STEPS = [
+    { name: "disk", status: "failure", durationMs: 0, message: "disk almost full", output: "disk almost full", critical: true },
+  ];
+
+  async function clickDeployAndConfirm(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("button", { name: "Deploy" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
+  }
+
+  async function renderTwoApps() {
+    mGetServer.mockResolvedValue(SERVER);
+    mGetApps.mockResolvedValue({
+      apps: [APPS.apps[0], { ...APPS.apps[0], id: "app-b", name: "other-app" }],
+    });
+    mSyncServer.mockResolvedValue({ synced: true, apps: 2, created: 0, updated: 0 });
+    const user = userEvent.setup();
+    render(
+      <Providers>
+        <ServerDetailPage />
+      </Providers>,
+    );
+    await screen.findByText("other-app");
+    return user;
+  }
+
+  async function bulkDeployBoth(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("checkbox", { name: "Select my-app" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select other-app" }));
+    await user.click(screen.getByRole("button", { name: "Deploy 2 apps" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Deploy 2" }));
+  }
+
+  it("the deploy log view lists the failed preflight check and its message", async () => {
+    const user = await renderPage();
+    mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
+    mGetDeployStatus.mockResolvedValueOnce({
+      deploy: { id: "deploy-1", status: "failed", log: JSON.stringify(BLOCKED_STEPS) },
+    });
+
+    await clickDeployAndConfirm(user);
+
+    await screen.findByText("Deploy Progress");
+    expect(await screen.findByText("disk", {}, { timeout: 3000 })).toBeInTheDocument();
+    expect(screen.getByText("disk almost full")).toBeVisible();
+  });
+
+  it("the deploy log view still renders an old-format preflight report log", async () => {
+    const user = await renderPage();
+    mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
+    mGetDeployStatus.mockResolvedValueOnce({
+      deploy: {
+        id: "deploy-1",
+        status: "failed",
+        log: JSON.stringify({
+          passed: false,
+          checks: [
+            { name: "git", passed: true, message: "clean", critical: false },
+            { name: "disk", passed: false, message: "disk almost full", critical: true },
+          ],
+        }),
+      },
+    });
+
+    await clickDeployAndConfirm(user);
+
+    expect(await screen.findByText("disk almost full", {}, { timeout: 3000 })).toBeVisible();
+    expect(screen.queryByText("clean")).not.toBeInTheDocument();
+  });
+
+  it("bulk deploy result names the blocked app and its failed check, and shows the other app as succeeded", async () => {
+    const user = await renderTwoApps();
+    mBulkDeploy.mockResolvedValueOnce({
+      deploys: [
+        { app: "my-app", deployId: "d-1", status: "running" },
+        { app: "other-app", deployId: "d-2", status: "running" },
+      ],
+    });
+    mGetDeployStatus.mockImplementation(async (_srv: string, app: string) =>
+      app === "my-app"
+        ? { deploy: { id: "d-1", status: "failed", log: JSON.stringify(BLOCKED_STEPS) } }
+        : { deploy: { id: "d-2", status: "success", log: JSON.stringify([{ name: "up", status: "success", durationMs: 1 }]) } },
+    );
+
+    await bulkDeployBoth(user);
+
+    const result = await screen.findByRole("status", { name: "Bulk deploy result" });
+    await waitFor(() => expect(result).toHaveTextContent("disk (disk almost full)"));
+    const blocked = within(result).getByText("my-app").closest("li")!;
+    expect(blocked).toHaveTextContent("Failed");
+    expect(blocked).toHaveTextContent("disk (disk almost full)");
+    const ok = within(result).getByText("other-app").closest("li")!;
+    expect(ok).toHaveTextContent("Success");
+    expect(ok).not.toHaveTextContent("disk");
+  });
+
+  it("bulk deploy result reports an app that could not be started with its error", async () => {
+    const user = await renderTwoApps();
+    mBulkDeploy.mockResolvedValueOnce({
+      deploys: [
+        { app: "my-app", deployId: "", status: "failed", error: "Invalid app name" },
+        { app: "other-app", deployId: "d-2", status: "running" },
+      ],
+    });
+    mGetDeployStatus.mockResolvedValue({ deploy: { id: "d-2", status: "success", log: null } });
+
+    await bulkDeployBoth(user);
+
+    const result = await screen.findByRole("status", { name: "Bulk deploy result" });
+    expect(within(result).getByText("my-app").closest("li")).toHaveTextContent("deploy (Invalid app name)");
+    await waitFor(() => expect(within(result).getByText("other-app").closest("li")).toHaveTextContent("Success"));
+    // the failed-to-start app has no deployId and must not be polled
+    expect(mGetDeployStatus).not.toHaveBeenCalledWith("srv-a", "my-app", "");
+  });
+
+  it("a failed deploy with an unreadable log still gets a line saying no details were recorded", async () => {
+    const user = await renderTwoApps();
+    mBulkDeploy.mockResolvedValueOnce({
+      deploys: [
+        { app: "my-app", deployId: "d-1", status: "running" },
+        { app: "other-app", deployId: "d-2", status: "running" },
+      ],
+    });
+    mGetDeployStatus.mockResolvedValue({ deploy: { id: "x", status: "failed", log: "not json" } });
+
+    await bulkDeployBoth(user);
+
+    const result = await screen.findByRole("status", { name: "Bulk deploy result" });
+    await waitFor(() => expect(result).toHaveTextContent("no failure details recorded"));
   });
 });

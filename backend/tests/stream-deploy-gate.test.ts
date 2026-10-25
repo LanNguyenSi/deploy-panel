@@ -12,7 +12,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     app: { findUnique: vi.fn(), update: vi.fn().mockResolvedValue({}) },
-    deploy: { findUnique: vi.fn(), update: vi.fn().mockResolvedValue({}) },
+    deploy: { findUnique: vi.fn(), findFirst: vi.fn(), update: vi.fn().mockResolvedValue({}) },
   },
 }));
 
@@ -46,10 +46,12 @@ import { prisma } from "../src/lib/prisma.js";
 import { provisionAndCheckAppSecrets } from "../src/lib/provision-secrets.js";
 import { recoverBrokenDeploy } from "../src/lib/deploy-recovery.js";
 import { streamDeploy } from "../src/lib/stream-deploy.js";
+import { blockedPreflightSteps, normalizeDeployLog } from "../src/lib/deploy-log.js";
 
 const mAppFindUnique = (prisma.app as any).findUnique as ReturnType<typeof vi.fn>;
 const mAppUpdate = (prisma.app as any).update as ReturnType<typeof vi.fn>;
 const mDeployUpdate = (prisma.deploy as any).update as ReturnType<typeof vi.fn>;
+const mDeployFindFirst = (prisma.deploy as any).findFirst as ReturnType<typeof vi.fn>;
 const mProvision = provisionAndCheckAppSecrets as unknown as ReturnType<typeof vi.fn>;
 
 const lastCall = (m: ReturnType<typeof vi.fn>) => m.mock.calls[m.mock.calls.length - 1][0];
@@ -312,49 +314,165 @@ describe("streamDeploy: relay response handling", () => {
     ],
   };
 
-  it("JSON-blocked relay response: keeps the relay's steps and appends the preflight report", async () => {
+  const diskStep = { name: "disk", status: "failure", durationMs: 0, message: "disk almost full", output: "disk almost full", critical: true };
+
+  it("JSON-blocked relay response: log is one failed step per failed check, app status is restored, deploy is failed", async () => {
     mProvision.mockResolvedValue({ provisionedKeys: [], wrote: false, missing: [] });
-    // Shape the relay returns for a blocked deploy: non-empty steps that include
-    // the failing preflight step with per-check output, plus the nested report.
-    const relayStep = {
-      name: "preflight (pre-pull)",
-      status: "failure",
-      durationMs: 12,
-      output: "✗ disk: disk almost full\n✓ git: clean",
-    };
+    const relayStep = { name: "preflight (pre-pull)", status: "failure", durationMs: 12, output: "x" };
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse({
         result: { success: false, blocked: true, preflight: blockedPreflight, durationMs: 3, commitBefore: "a", commitAfter: "a", steps: [relayStep] },
       }),
     );
 
-    await streamDeploy(baseOpts);
+    await streamDeploy({ ...baseOpts, previousStatus: "healthy" });
 
     const update = lastCall(mDeployUpdate);
     expect(update.data.status).toBe("failed");
-    expect(lastCall(mAppUpdate).data.status).toBe("unhealthy");
-    const steps = JSON.parse(update.data.log);
-    expect(steps).toContainEqual(relayStep);
-    expect(steps.at(-1)).toEqual(blockedPreflight);
+    expect(JSON.parse(update.data.log)).toEqual([diskStep]);
+    expect(update.data.commitBefore).toBe("a");
+    expect(update.data.commitAfter).toBe("a");
+    expect(update.data.duration).toBe(3);
+    expect(lastCall(mAppUpdate).data).toEqual({ status: "healthy" });
+    expect(lastCall(mAppUpdate).data.lastDeployAt).toBeUndefined();
 
     fetchSpy.mockRestore();
   });
 
-  it("JSON-blocked relay response with empty steps: the preflight report is the only step", async () => {
+  it("JSON-blocked relay response with empty steps and no duration: still the failed-check steps, duration measured locally", async () => {
     mProvision.mockResolvedValue({ provisionedKeys: [], wrote: false, missing: [] });
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse({
-        result: { success: false, blocked: true, preflight: blockedPreflight, durationMs: 3, commitBefore: "a", commitAfter: "a", steps: [] },
-      }),
+      jsonResponse({ result: { success: false, blocked: true, preflight: blockedPreflight, steps: [] } }),
     );
 
-    await streamDeploy(baseOpts);
+    await streamDeploy({ ...baseOpts, previousStatus: "unhealthy" });
+
+    const update = lastCall(mDeployUpdate);
+    expect(update.data.status).toBe("failed");
+    expect(JSON.parse(update.data.log)).toEqual([diskStep]);
+    expect(typeof update.data.duration).toBe("number");
+    expect(update.data.commitBefore).toBeNull();
+    expect(lastCall(mAppUpdate).data).toEqual({ status: "unhealthy" });
+
+    fetchSpy.mockRestore();
+  });
+
+  it("SSE `blocked` event: same log shape as the JSON path, app status restored, prior steps kept in front", async () => {
+    mProvision.mockResolvedValue({
+      provisionedKeys: ["A"],
+      wrote: true,
+      missing: [],
+    });
+    const sse = `event: blocked\ndata: ${JSON.stringify(blockedPreflight)}\n\n`;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponse(sse));
+
+    await streamDeploy({ ...baseOpts, previousStatus: "healthy" });
 
     const update = lastCall(mDeployUpdate);
     expect(update.data.status).toBe("failed");
     const steps = JSON.parse(update.data.log);
-    expect(steps).toContainEqual(blockedPreflight);
+    expect(steps.map((s: any) => s.name)).toEqual(["provision-secrets", "disk"]);
+    expect(steps[1]).toEqual(diskStep);
+    expect(typeof update.data.duration).toBe("number");
+    expect(lastCall(mAppUpdate).data).toEqual({ status: "healthy" });
+    // the stream-end fallback must not overwrite the blocked outcome
+    expect(mAppUpdate.mock.calls.some((c) => c[0].data.lastDeployAt)).toBe(false);
 
     fetchSpy.mockRestore();
+  });
+
+  it("SSE `blocked` event with no per-check data: log is a single failed preflight step, never empty or a bare object", async () => {
+    mProvision.mockResolvedValue({ provisionedKeys: [], wrote: false, missing: [] });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponse("event: blocked\ndata: {}\n\n"));
+
+    await streamDeploy({ ...baseOpts, previousStatus: "healthy" });
+
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps).toEqual([expect.objectContaining({ name: "preflight", status: "failure", output: "Blocked by preflight" })]);
+
+    fetchSpy.mockRestore();
+  });
+
+  describe("status restored after a blocked deploy", () => {
+    const blockedSse = () => sseResponse(`event: blocked\ndata: ${JSON.stringify(blockedPreflight)}\n\n`);
+
+    beforeEach(() => {
+      mProvision.mockResolvedValue({ provisionedKeys: [], wrote: false, missing: [] });
+    });
+
+    it("explicit previousStatus wins over the deploy history", async () => {
+      mDeployFindFirst.mockResolvedValue({ status: "failed" });
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(blockedSse());
+      await streamDeploy({ ...baseOpts, previousStatus: "healthy" });
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "healthy" });
+      expect(mDeployFindFirst).not.toHaveBeenCalled();
+      fetchSpy.mockRestore();
+    });
+
+    it("no previousStatus, last other deploy succeeded: healthy", async () => {
+      mDeployFindFirst.mockResolvedValue({ status: "success" });
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(blockedSse());
+      await streamDeploy(baseOpts);
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "healthy" });
+      expect(lastCall(mDeployFindFirst).where).toMatchObject({ appId: "app-1", id: { not: "d1" } });
+      fetchSpy.mockRestore();
+    });
+
+    it("no previousStatus, last other deploy failed: unhealthy", async () => {
+      mDeployFindFirst.mockResolvedValue({ status: "failed" });
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(blockedSse());
+      await streamDeploy(baseOpts);
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "unhealthy" });
+      fetchSpy.mockRestore();
+    });
+
+    it("no previousStatus and no earlier deploy: unknown", async () => {
+      mDeployFindFirst.mockResolvedValue(null);
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(blockedSse());
+      await streamDeploy(baseOpts);
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "unknown" });
+      fetchSpy.mockRestore();
+    });
+
+    it("previousStatus `deploying` (overlapping deploy) is not restored; falls back to history", async () => {
+      mDeployFindFirst.mockResolvedValue({ status: "success" });
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(blockedSse());
+      await streamDeploy({ ...baseOpts, previousStatus: "deploying" });
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "healthy" });
+      fetchSpy.mockRestore();
+    });
+  });
+});
+
+describe("blockedPreflightSteps / normalizeDeployLog", () => {
+  it("emits only failed checks, carrying name, message and the critical flag", () => {
+    expect(
+      blockedPreflightSteps({
+        passed: false,
+        checks: [
+          { name: "a", passed: true, message: "ok", critical: true },
+          { name: "b", passed: false, message: "bad", critical: false },
+        ],
+      }),
+    ).toEqual([{ name: "b", status: "failure", durationMs: 0, message: "bad", output: "bad", critical: false }]);
+  });
+
+  it("falls back to one generic step for a non-report payload", () => {
+    for (const bad of [undefined, null, "x", {}, { checks: [] }, { checks: [{ name: "a", passed: true, message: "ok" }] }]) {
+      expect(blockedPreflightSteps(bad)).toHaveLength(1);
+    }
+  });
+
+  it("normalizeDeployLog: array, string, preflight report and other objects", () => {
+    const arr = [{ name: "s", status: "success", durationMs: 1 }];
+    expect(normalizeDeployLog(arr)).toBe(arr);
+    expect(normalizeDeployLog("blocked by preflight")).toEqual([
+      { name: "deploy", status: "failure", durationMs: 0, output: "blocked by preflight" },
+    ]);
+    expect(
+      normalizeDeployLog({ passed: false, checks: [{ name: "disk", passed: false, message: "full", critical: true }] }),
+    ).toEqual([expect.objectContaining({ name: "disk", status: "failure", output: "full" })]);
+    const rollback = { success: true, commitBefore: "a" };
+    expect(normalizeDeployLog(rollback)).toEqual([rollback]);
   });
 });

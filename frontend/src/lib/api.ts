@@ -659,7 +659,8 @@ export interface DeployWithRelations extends Deploy {
 export interface DeployDetail extends Deploy {
   app: { name: string; repoUrl: string | null; branch: string };
   server: { name: string; host: string };
-  steps: Array<{ name: string; status: string; durationMs: number; output?: string }>;
+  /** Parsed `Deploy.log`; usually a steps array, but older rows hold other shapes: render via normalizeDeploySteps. */
+  steps: unknown;
   compareUrl: string | null;
 }
 

@@ -409,6 +409,7 @@ describe("v1 POST /deploy — core flow and ownership", () => {
     expect(createData.appId).toBe("app-a");
     expect(mApp.update).toHaveBeenCalledOnce();
     expect(streamDeploy).toHaveBeenCalledOnce();
+    expect(streamDeploy).toHaveBeenCalledWith(expect.objectContaining({ previousStatus: appRecord.status }));
 
     const body = (await res.json()) as { deploy: { id: string; status: string } };
     expect(body.deploy.status).toBe("running");
@@ -575,12 +576,44 @@ describe("v1 GET /deploy/:id — steps normalisation", () => {
     expect(body.deploy.steps).toEqual([{ blocked: true, preflight: { passed: false, checks: [] } }]);
   });
 
-  it("wraps a JSON-encoded string log in a single-element array", async () => {
+  it("turns a JSON-encoded string log into a single failed deploy step", async () => {
     mDeploy.findUnique.mockResolvedValue(deployWithLog(JSON.stringify("blocked by preflight")));
 
     const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy/deploy-1");
     const body = (await res.json()) as { deploy: { steps: unknown } };
-    expect(body.deploy.steps).toEqual(["blocked by preflight"]);
+    // A bare string log becomes a single failed `deploy` step.
+    expect(body.deploy.steps).toEqual([
+      { name: "deploy", status: "failure", durationMs: 0, output: "blocked by preflight" },
+    ]);
+  });
+
+  it("expands an old-format preflight report object (blocked deploys before the steps log) into failed-check steps", async () => {
+    mDeploy.findUnique.mockResolvedValue(
+      deployWithLog(
+        JSON.stringify({
+          passed: false,
+          checks: [
+            { name: "git", passed: true, message: "clean", critical: false },
+            { name: "disk", passed: false, message: "disk almost full", critical: true },
+          ],
+        }),
+      ),
+    );
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy/deploy-1");
+    const body = (await res.json()) as { deploy: { steps: unknown } };
+    expect(body.deploy.steps).toEqual([
+      { name: "disk", status: "failure", durationMs: 0, message: "disk almost full", output: "disk almost full", critical: true },
+    ]);
+  });
+
+  it("returns the new blocked-deploy log (failed-check steps array) unchanged", async () => {
+    const stored = [{ name: "disk", status: "failure", durationMs: 0, message: "full", output: "full", critical: true }];
+    mDeploy.findUnique.mockResolvedValue(deployWithLog(JSON.stringify(stored)));
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy/deploy-1");
+    const body = (await res.json()) as { deploy: { steps: unknown } };
+    expect(body.deploy.steps).toEqual(stored);
   });
 
   it("falls back to an empty array for a non-JSON log (e.g. 'Relay returned invalid JSON')", async () => {

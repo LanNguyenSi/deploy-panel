@@ -96,6 +96,35 @@ describe("apps router: streamDeploy delegation", () => {
     expect(body.deploy.status).toBe("running");
   });
 
+  it("POST /:name/deploy hands streamDeploy the app status from before the dispatch (so a blocked deploy can restore it)", async () => {
+    mAppUpsert.mockResolvedValue({ id: "app-a", name: "my-app", status: "healthy" });
+    mDeployCreate.mockResolvedValue({ id: "deploy-1", status: "running" });
+
+    await app().request("/servers/srv-a/apps/my-app/deploy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    expect(mAppUpdate).toHaveBeenCalledWith({ where: { id: "app-a" }, data: { status: "deploying" } });
+    expect(mStreamDeploy).toHaveBeenCalledWith(expect.objectContaining({ previousStatus: "healthy" }));
+  });
+
+  it("POST /bulk-deploy hands each streamDeploy the app status from before the dispatch and keeps force=false", async () => {
+    mAppUpsert.mockResolvedValue({ id: "app-a", name: "my-app", status: "unhealthy" });
+    mDeployCreate.mockResolvedValue({ id: "deploy-a", status: "running" });
+
+    await app().request("/servers/srv-a/apps/bulk-deploy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apps: ["app-1"] }),
+    });
+
+    expect(mStreamDeploy).toHaveBeenCalledWith(
+      expect.objectContaining({ previousStatus: "unhealthy", body: { force: false } }),
+    );
+  });
+
   it("POST /bulk-deploy calls streamDeploy exactly once per app", async () => {
     mDeployCreate
       .mockResolvedValueOnce({ id: "deploy-a", status: "running" })
