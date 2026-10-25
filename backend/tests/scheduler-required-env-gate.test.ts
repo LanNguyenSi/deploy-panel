@@ -20,7 +20,7 @@ vi.mock("../src/lib/prisma.js", () => ({
       update: vi.fn().mockResolvedValue({}),
       findUnique: vi.fn(),
     },
-    deploy: { create: vi.fn(), update: vi.fn().mockResolvedValue({}) },
+    deploy: { create: vi.fn(), update: vi.fn().mockResolvedValue({}), findMany: vi.fn().mockResolvedValue([]) },
   },
 }));
 
@@ -96,7 +96,11 @@ describe("checkScheduled — required-env gate enforced end-to-end (real streamD
     expect(failedUpdate).toBeTruthy();
     expect(failedUpdate![0].data.log).toContain("METRICS_API_TOKEN");
     expect(mApp.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: "app-1" }, data: expect.objectContaining({ status: "unhealthy" }) }),
+      expect.objectContaining({ where: { id: "app-1" }, data: expect.objectContaining({ status: "unknown" }) }),
+    );
+    // nothing was deployed: the app is not marked unhealthy
+    expect(mApp.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "unhealthy" }) }),
     );
 
     fetchSpy.mockRestore();

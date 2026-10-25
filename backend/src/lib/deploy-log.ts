@@ -16,6 +16,18 @@ export function isPreflightCheckStep(step: unknown): boolean {
   return !!step && typeof step === "object" && (step as { kind?: unknown }).kind === PREFLIGHT_CHECK_KIND;
 }
 
+/**
+ * Marker (`step.kind`) of the step written when the relay answered 409 (another
+ * deploy is running): nothing was deployed, but it is a concurrency conflict,
+ * not a failed preflight check, so it must not read "Blocked (preflight)" in
+ * the UI. Blocked-deploy recognition (the status fallback) still counts it.
+ */
+export const CONFLICT_STEP_KIND = "deploy-conflict";
+
+function isConflictStep(step: unknown): boolean {
+  return !!step && typeof step === "object" && (step as { kind?: unknown }).kind === CONFLICT_STEP_KIND;
+}
+
 function isRawPreflightReport(value: unknown): boolean {
   return !!value && typeof value === "object" && Array.isArray((value as { checks?: unknown }).checks);
 }
@@ -41,7 +53,7 @@ export function isBlockedDeployLog(log: string | null | undefined): boolean {
   }
   if (Array.isArray(parsed)) {
     return parsed.some(
-      (s) => isPreflightCheckStep(s) || (isRawPreflightReport(s) && (s as { passed?: unknown }).passed === false),
+      (s) => isPreflightCheckStep(s) || isConflictStep(s) || (isRawPreflightReport(s) && (s as { passed?: unknown }).passed === false),
     );
   }
   if (parsed === LEGACY_BLOCKED_STRING) return true;
