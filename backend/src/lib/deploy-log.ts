@@ -4,6 +4,35 @@
 
 export type DeployLogStep = { name: string; status: string; durationMs?: number; [k: string]: unknown };
 
+/**
+ * Marker (`step.kind`) carried by every step that stands for one failed relay
+ * preflight check. The log of a blocked deploy is recognised by it: consumers
+ * (the status fallback, the UI label, the MCP projection) never infer a
+ * blocked deploy from step names.
+ */
+export const PREFLIGHT_CHECK_KIND = "preflight-check";
+
+export function isPreflightCheckStep(step: unknown): boolean {
+  return !!step && typeof step === "object" && (step as { kind?: unknown }).kind === PREFLIGHT_CHECK_KIND;
+}
+
+/**
+ * True when a stored `deploy.log` text is the log of a preflight-blocked
+ * deploy: a steps array holding a marked step, or the raw preflight report
+ * (`{ checks: [...] }`) that rows written before the marker existed hold.
+ */
+export function isBlockedDeployLog(log: string | null | undefined): boolean {
+  if (!log) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(log);
+  } catch {
+    return false;
+  }
+  if (Array.isArray(parsed)) return parsed.some(isPreflightCheckStep);
+  return !!parsed && typeof parsed === "object" && Array.isArray((parsed as { checks?: unknown }).checks);
+}
+
 interface PreflightCheckLike {
   name?: unknown;
   passed?: unknown;
@@ -28,12 +57,13 @@ export function blockedPreflightSteps(report: unknown): DeployLogStep[] {
   const failed = checks.filter((c) => c.passed !== true);
   if (failed.length === 0) {
     const message = "Blocked by preflight";
-    return [{ name: "preflight", status: "failure", durationMs: 0, message, output: message }];
+    return [{ name: "preflight", kind: PREFLIGHT_CHECK_KIND, status: "failure", durationMs: 0, message, output: message }];
   }
   return failed.map((c) => {
     const message = typeof c.message === "string" && c.message.length > 0 ? c.message : "check failed";
     const step: DeployLogStep = {
       name: typeof c.name === "string" && c.name.length > 0 ? c.name : "preflight",
+      kind: PREFLIGHT_CHECK_KIND,
       status: "failure",
       durationMs: 0,
       message,
@@ -42,6 +72,34 @@ export function blockedPreflightSteps(report: unknown): DeployLogStep[] {
     if (typeof c.critical === "boolean") step.critical = c.critical;
     return step;
   });
+}
+
+// The relay's own summary of its preflight run ("preflight",
+// "preflight (pre-pull)", "preflight (post-pull)"). On a blocked deploy its
+// output lists every check, passed ones included, which the per-check steps
+// already carry.
+const RELAY_PREFLIGHT_SUMMARY = /^preflight( \(.*\))?$/;
+
+/**
+ * The steps stored for a blocked deploy: whatever ran before (the panel's own
+ * steps and the relay's streamed or returned steps) without a failed relay
+ * preflight summary step, followed by one marked step per failed check. Both
+ * the stream and the JSON path store this, so they stay identical.
+ */
+export function blockedDeployLogSteps(before: unknown, report: unknown): DeployLogStep[] {
+  const kept = (Array.isArray(before) ? (before as DeployLogStep[]) : []).filter(
+    (s) =>
+      !(
+        s &&
+        typeof s === "object" &&
+        !isPreflightCheckStep(s) &&
+        typeof s.name === "string" &&
+        RELAY_PREFLIGHT_SUMMARY.test(s.name) &&
+        s.status !== "success" &&
+        s.status !== "skipped"
+      ),
+  );
+  return [...kept, ...blockedPreflightSteps(report)];
 }
 
 /**

@@ -2,7 +2,7 @@ import { prisma } from "./prisma.js";
 import { recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "./deploy-recovery.js";
 import { verifyDeployHealth } from "./post-deploy-gate.js";
 import { provisionAndCheckAppSecrets } from "./provision-secrets.js";
-import { blockedPreflightSteps, type DeployLogStep as Step } from "./deploy-log.js";
+import { blockedDeployLogSteps, isBlockedDeployLog, type DeployLogStep as Step } from "./deploy-log.js";
 
 // GET /api/v1/deploy/:id JSON.parses `deploy.log` inside a swallowing
 // try/catch (routes/v1.ts) and so does the panel-UI equivalent
@@ -14,22 +14,30 @@ function failureStepLog(output: string): string {
   return JSON.stringify([{ name: "deploy", status: "failure", durationMs: 0, output }]);
 }
 
+/** How many recent deploys the fallback reads to find one that is not a blocked deploy. */
+const STATUS_FALLBACK_LOOKBACK = 20;
+
 /**
  * The app status a blocked deploy must leave behind. A blocked deploy never
  * touched the app, so the card returns to what it showed before the dispatch
  * flipped it to `deploying`. Callers that captured that status pass it in; for
  * the rest (and for a `deploying` capture, i.e. an overlapping deploy) it is
- * derived from the most recent other finished deploy of the app.
+ * derived from the most recent other finished deploy of the app that was not
+ * itself blocked: an earlier blocked deploy says nothing about the app, so it
+ * must not count as a failure. A blocked deploy is recognised by its log (see
+ * isBlockedDeployLog).
  */
 async function statusAfterBlocked(appId: string, deployId: string, previousStatus?: string): Promise<string> {
   if (previousStatus && previousStatus !== "deploying") return previousStatus;
-  const last = await prisma.deploy
-    .findFirst({
+  const recent = await prisma.deploy
+    .findMany({
       where: { appId, id: { not: deployId }, status: { in: ["success", "failed"] } },
       orderBy: { createdAt: "desc" },
-      select: { status: true },
+      take: STATUS_FALLBACK_LOOKBACK,
+      select: { status: true, log: true },
     })
-    .catch(() => null);
+    .catch(() => []);
+  const last = recent.find((d) => !isBlockedDeployLog(d.log));
   if (last?.status === "success") return "healthy";
   if (last?.status === "failed") return "unhealthy";
   return "unknown";
@@ -267,14 +275,15 @@ export async function streamDeploy(opts: {
       const duration = typeof rawDuration === "number" ? Math.round(rawDuration) : null;
       // A non-streaming preflight-blocked relay response nests the structured
       // report as `result.preflight`. Same handling as the streaming `blocked`
-      // event: nothing was deployed, so the log is the failed checks and the
-      // app keeps the status it had before the dispatch.
+      // event: nothing was deployed, so the log is the relay's own steps
+      // (minus its failed preflight summary step) plus one step per failed
+      // check, and the app keeps the status it had before the dispatch.
       if (data?.result?.blocked === true) {
         await finalizeBlockedDeploy({
           deployId,
           appId,
           previousStatus,
-          steps: [...steps, ...blockedPreflightSteps(data.result.preflight)],
+          steps: blockedDeployLogSteps([...steps, ...(Array.isArray(data.result.steps) ? data.result.steps : [])], data.result.preflight),
           commitBefore: data.result.commitBefore ?? null,
           commitAfter: data.result.commitAfter ?? null,
           duration: duration ?? Date.now() - startedAt,
@@ -437,7 +446,7 @@ async function handleEvent(
       deployId,
       appId,
       previousStatus,
-      steps: [...steps, ...blockedPreflightSteps(data)],
+      steps: blockedDeployLogSteps(steps, data),
       duration: Date.now() - startedAt,
     });
   } else if (event === "error") {

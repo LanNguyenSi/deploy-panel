@@ -98,6 +98,9 @@ export async function checkScheduled() {
       relayUrl: entry.server.relayUrl ?? "",
       relayToken: entry.server.relayToken ?? null,
       body: { force: entry.force },
+      // upsert returned the row before the `deploying` update above, so this
+      // is the status a preflight-blocked deploy restores.
+      previousStatus: app.status,
     });
   }
 }

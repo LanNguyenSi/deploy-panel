@@ -603,7 +603,7 @@ describe("v1 GET /deploy/:id — steps normalisation", () => {
     const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy/deploy-1");
     const body = (await res.json()) as { deploy: { steps: unknown } };
     expect(body.deploy.steps).toEqual([
-      { name: "disk", status: "failure", durationMs: 0, message: "disk almost full", output: "disk almost full", critical: true },
+      { name: "disk", kind: "preflight-check", status: "failure", durationMs: 0, message: "disk almost full", output: "disk almost full", critical: true },
     ]);
   });
 

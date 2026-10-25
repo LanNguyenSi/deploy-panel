@@ -123,7 +123,7 @@ describe("checkScheduled — delegates to streamDeploy", () => {
   });
 
   it("transitions to triggered, creates the deploy row, links deployId, and calls streamDeploy with the server's relay creds", async () => {
-    const app = { id: "app-1", name: "my-app" };
+    const app = { id: "app-1", name: "my-app", status: "healthy" };
     const deploy = { id: "deploy-1" };
 
     mScheduledDeploy.findMany.mockResolvedValue([makeDueEntry()]);
@@ -167,6 +167,8 @@ describe("checkScheduled — delegates to streamDeploy", () => {
       relayUrl: "http://relay.example",
       relayToken: "relay-tok",
       body: { force: false },
+      // the app status from before the `deploying` flip, restored if preflight blocks the deploy
+      previousStatus: "healthy",
     });
   });
 
