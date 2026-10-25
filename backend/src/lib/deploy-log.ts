@@ -44,6 +44,20 @@ const LEGACY_BLOCKED_STRING = "blocked by preflight";
  * streaming path when the event carried no data).
  */
 export function isBlockedDeployLog(log: string | null | undefined): boolean {
+  return matchBlockedLog(log, true);
+}
+
+/**
+ * True only for a log blocked at preflight: the same shapes as
+ * isBlockedDeployLog minus the relay-409 conflict marker. This is what the
+ * "Blocked (preflight)" label needs; a log holding both a conflict step and a
+ * preflight marker counts as blocked at preflight (the preflight marker wins).
+ */
+export function isPreflightBlockedDeployLog(log: string | null | undefined): boolean {
+  return matchBlockedLog(log, false);
+}
+
+function matchBlockedLog(log: string | null | undefined, includeConflict: boolean): boolean {
   if (!log) return false;
   let parsed: unknown;
   try {
@@ -53,7 +67,10 @@ export function isBlockedDeployLog(log: string | null | undefined): boolean {
   }
   if (Array.isArray(parsed)) {
     return parsed.some(
-      (s) => isPreflightCheckStep(s) || isConflictStep(s) || (isRawPreflightReport(s) && (s as { passed?: unknown }).passed === false),
+      (s) =>
+        isPreflightCheckStep(s) ||
+        (includeConflict && isConflictStep(s)) ||
+        (isRawPreflightReport(s) && (s as { passed?: unknown }).passed === false),
     );
   }
   if (parsed === LEGACY_BLOCKED_STRING) return true;
