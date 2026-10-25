@@ -38,7 +38,7 @@ make dev                                          # backend on :3001, frontend o
 
 `make dev`, `make db-push` and `cd backend && npx prisma ...` do not read `.env`; export it first as above. Details: [docs/configuration.md](docs/configuration.md#local-development).
 
-Open http://localhost:3000, add a server (host + `relayUrl` + optional `relayToken`), hit "Test connection", then deploy from the app list.
+Open http://localhost:3000, click "+ Add Server", choose "I already have a relay", fill in "Server name" + "Host" + optional "Relay URL" and "Relay token", hit "Test" on the server card, then deploy from the app list.
 
 `make setup` (install, then `make docker-up` for the full db + backend + frontend Docker stack, then Prisma generate/push) exists as an alternative, but its Docker stack is not what `make dev` above needs: the containerized backend requires `APP_SECRETS_KEY` set in `.env` to pass its startup validation (commented out in `.env.example`, so `make setup` fails there on a fresh clone), and if that is fixed, the containerized frontend then occupies host port 3000, the same port `make dev` binds on the host. Use `docker compose up -d db` for local dev as shown above, or see [docs/configuration.md](docs/configuration.md#docker-deployment) to run the full stack in containers instead of on the host.
 

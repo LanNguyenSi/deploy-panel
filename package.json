@@ -5,6 +5,9 @@
     "backend",
     "frontend"
   ],
+  "devDependencies": {
+    "concurrently": "9.2.5"
+  },
   "overrides": {
     "postcss": "^8.5.23",
     "esbuild": "^0.28.1",
