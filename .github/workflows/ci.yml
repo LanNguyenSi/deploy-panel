@@ -195,3 +195,20 @@ jobs:
         if: always()
         run: |
           docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v
+
+  relay-config:
+    # Parses .relay.yml with js-yaml the way agent-relay's loader reads it:
+    # every pre_update/post_update entry must be a string, a hook key left
+    # present with no items (null) is rejected, and no pre_update entry may
+    # build images (pre_update runs pre-pull, so a build there builds the old
+    # tree; the relay builds the pulled commit itself). Either mistake fails
+    # every deploy on the server, so it fails CI first.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: bash scripts/relay-config.test.sh

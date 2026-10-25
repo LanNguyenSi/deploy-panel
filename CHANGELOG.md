@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The pre-pull no-cache build is removed from `.relay.yml`. agent-relay runs `pre_update` against the pre-pull tree, so its single entry (`docker compose -f docker-compose.prod.yml build --no-cache`) rebuilt the OLD commit on every deploy (47 s) before agent-relay built the pulled commit again; the `pre_update` key is gone entirely (left present with no items it parses as null, which agent-relay rejects, failing every deploy). A new CI job `relay-config` (`.github/workflows/ci.yml`, `scripts/relay-config.test.sh`) parses `.relay.yml` the way agent-relay's loader reads it and fails if a hook entry is not a string, if a hook key is present with no items, or if a `pre_update` entry builds images. For security updates in the base image or a suspected stale layer, `docs/architecture.md` now documents the manual hard rebuild (`docker compose -f docker-compose.prod.yml build --pull --no-cache`, then `up -d`, run on the server).
+
 ### Fixed
 
 - `GET /api/health` reports the real version again. The route returned a hard-coded `0.1.0` since the first release; it now reads `version` from `backend/package.json` at runtime (`backend/src/routes/health.ts`, resolved relative to the module file, so it works from `src/` in tests and from `backend/dist/` in the image, where `backend/Dockerfile` copies `backend/package.json` next to `dist/`). The node-server adapter test compares the response against the `version` field of `backend/package.json` instead of a literal. The `version` fields of `backend/`, `frontend/` and `mcp/` were brought in line with the 0.7.0 release (they still said 0.4.0, 0.4.0 and 0.1.0), lockfiles included.
