@@ -16,10 +16,20 @@ export function isPreflightCheckStep(step: unknown): boolean {
   return !!step && typeof step === "object" && (step as { kind?: unknown }).kind === PREFLIGHT_CHECK_KIND;
 }
 
+function isRawPreflightReport(value: unknown): boolean {
+  return !!value && typeof value === "object" && Array.isArray((value as { checks?: unknown }).checks);
+}
+
+/** The bare string the streaming path stored for a `blocked` event without data, before the marker existed. */
+const LEGACY_BLOCKED_STRING = "blocked by preflight";
+
 /**
  * True when a stored `deploy.log` text is the log of a preflight-blocked
- * deploy: a steps array holding a marked step, or the raw preflight report
- * (`{ checks: [...] }`) that rows written before the marker existed hold.
+ * deploy. Recognised shapes: a steps array holding a marked step; and the
+ * shapes written before the marker existed: the raw preflight report
+ * (`{ checks: [...] }`), a steps array with that report appended (the old
+ * non-streaming path), and the bare string "blocked by preflight" (the old
+ * streaming path when the event carried no data).
  */
 export function isBlockedDeployLog(log: string | null | undefined): boolean {
   if (!log) return false;
@@ -29,8 +39,13 @@ export function isBlockedDeployLog(log: string | null | undefined): boolean {
   } catch {
     return false;
   }
-  if (Array.isArray(parsed)) return parsed.some(isPreflightCheckStep);
-  return !!parsed && typeof parsed === "object" && Array.isArray((parsed as { checks?: unknown }).checks);
+  if (Array.isArray(parsed)) {
+    return parsed.some(
+      (s) => isPreflightCheckStep(s) || (isRawPreflightReport(s) && (s as { passed?: unknown }).passed === false),
+    );
+  }
+  if (parsed === LEGACY_BLOCKED_STRING) return true;
+  return isRawPreflightReport(parsed);
 }
 
 interface PreflightCheckLike {

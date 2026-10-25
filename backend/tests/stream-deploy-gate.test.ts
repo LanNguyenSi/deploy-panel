@@ -517,7 +517,10 @@ describe("deploy-log helpers", () => {
     expect(isBlockedDeployLog(JSON.stringify(report))).toBe(true);
     expect(isBlockedDeployLog(JSON.stringify([{ name: "preflight", status: "failure", durationMs: 0 }]))).toBe(false);
     expect(isBlockedDeployLog(JSON.stringify([{ name: "deploy", status: "failure", durationMs: 0, output: "boom" }]))).toBe(false);
-    expect(isBlockedDeployLog(JSON.stringify("blocked by preflight"))).toBe(false);
+    expect(isBlockedDeployLog(JSON.stringify("blocked by preflight"))).toBe(true);
+    expect(isBlockedDeployLog(JSON.stringify([{ name: "git pull", status: "success", durationMs: 1 }, report]))).toBe(true);
+    expect(isBlockedDeployLog(JSON.stringify("relay unreachable"))).toBe(false);
+    expect(isBlockedDeployLog(JSON.stringify([{ name: "git pull", status: "success", durationMs: 1 }, { passed: true, checks: [] }]))).toBe(false);
     expect(isBlockedDeployLog("not json")).toBe(false);
     expect(isBlockedDeployLog(null)).toBe(false);
     expect(isBlockedDeployLog("")).toBe(false);
