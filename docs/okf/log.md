@@ -2,6 +2,8 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-10-26T13:16:33Z, relay 409 keeps a running deploy's status: `deploy-outcome-trust-chain.md` re-stamped; its 409 rule now names the `deploying` exception (the running deploy owns the card) and its `stream-deploy.ts` citations were re-pointed in the same change, checked against the source by the reviewer.
+
 - 2026-10-26T13:16:13Z, relay 409 keeps a running deploy's status: `realtime-update-strategy.md` re-pointed after `stream-deploy.ts` grew by ten lines above the SSE read loop (`:345-378`, was `:335-368`) and the `Deploy.log` step write (`:454-458`, was `:444-448`); the cited code is unchanged, the claims hold.
 
 - 2026-10-25T19:21:24Z, deploys list wording fix: `realtime-update-strategy.md` now cites the deploy-history poll as `frontend/src/app/deploys/page.tsx:44-45` (the `setInterval` is on line 45; the previous entry claimed this re-anchor before it was made). `app-secrets-config-footgun.md` re-read after the `docs/api.md` row for `GET /api/deploys` was reworded (no claim about it); both re-stamped.
