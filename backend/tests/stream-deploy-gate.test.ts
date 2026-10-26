@@ -607,13 +607,57 @@ describe("streamDeploy: relay response handling", () => {
       fetchSpy.mockRestore();
     });
 
-    it("previousStatus `deploying` (overlapping deploy) is not restored; falls back to history", async () => {
-      mDeployFindMany.mockResolvedValue([{ status: "success", log: okLog }]);
-      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(blockedSse());
-      await streamDeploy({ ...baseOpts, previousStatus: "deploying" });
-      expect(lastCall(mAppUpdate).data).toEqual({ status: "healthy" });
-      fetchSpy.mockRestore();
-    });
+    // Every blocked caller shares one rule: a `deploying` capture means another deploy
+    // of the app owns the card, so App.status is not written (and history is not read).
+    // Any other capture restores through the usual rule; an absent capture falls back
+    // to the deploy history (here: last finished deploy succeeded -> healthy).
+    const callers: Array<{ name: string; arrange: () => Response | null }> = [
+      {
+        name: "env preflight block",
+        arrange: () => {
+          mProvision.mockResolvedValue({ provisionedKeys: [], wrote: false, missing: ["K"] });
+          return null;
+        },
+      },
+      {
+        name: "JSON blocked answer",
+        arrange: () =>
+          jsonResponse({ result: { success: false, blocked: true, preflight: blockedPreflight, steps: [] } }),
+      },
+      { name: "streamed blocked answer", arrange: () => blockedSse() },
+    ];
+    for (const caller of callers) {
+      describe(caller.name, () => {
+        const run = async (previousStatus: string | undefined) => {
+          const res = caller.arrange();
+          const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue((res ?? jsonResponse({})) as Response);
+          await streamDeploy({ ...baseOpts, previousStatus });
+          fetchSpy.mockRestore();
+        };
+
+        it("`deploying` capture: the running deploy owns the card, App.status is not written, deploy row still ends with its reason step", async () => {
+          mDeployFindMany.mockResolvedValue([{ status: "failed", log: failedLog }]);
+          await run("deploying");
+          expect(mAppUpdate).not.toHaveBeenCalled();
+          expect(mDeployFindMany).not.toHaveBeenCalled();
+          expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+          expect(isBlockedDeployLog(lastCall(mDeployUpdate).data.log)).toBe(true);
+          const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+          expect(steps.at(-1).status).toBe("failure");
+        });
+
+        it("`unhealthy` capture: the earlier status is restored", async () => {
+          await run("unhealthy");
+          expect(lastCall(mAppUpdate).data).toEqual({ status: "unhealthy" });
+        });
+
+        it("absent capture: the history fallback decides", async () => {
+          mDeployFindMany.mockResolvedValue([{ status: "success", log: okLog }]);
+          await run(undefined);
+          expect(lastCall(mAppUpdate).data).toEqual({ status: "healthy" });
+        });
+      });
+    }
   });
 });
 

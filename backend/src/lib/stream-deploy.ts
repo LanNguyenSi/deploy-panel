@@ -221,7 +221,14 @@ export async function streamDeploy(opts: {
       // and the step carries the preflight-check marker.
       steps.push({ name: "env-preflight", kind: PREFLIGHT_CHECK_KIND, status: "failure", durationMs: 0, message, output: message });
       console.log(`[stream-deploy] ${appName}: blocked before deploy — ${message}`);
-      await finalizeBlockedDeploy({ deployId, appId, previousStatus, steps, duration: Date.now() - startedAt });
+      await finalizeBlockedDeploy({
+        deployId,
+        appId,
+        previousStatus,
+        steps,
+        duration: Date.now() - startedAt,
+        keepAppStatus: previousStatus === "deploying",
+      });
       return;
     }
 
@@ -315,6 +322,7 @@ export async function streamDeploy(opts: {
           commitBefore: data.result.commitBefore ?? null,
           commitAfter: data.result.commitAfter ?? null,
           duration: duration ?? Date.now() - startedAt,
+          keepAppStatus: previousStatus === "deploying",
         });
         return;
       }
@@ -476,6 +484,7 @@ async function handleEvent(
       previousStatus,
       steps: blockedDeployLogSteps(steps, data),
       duration: Date.now() - startedAt,
+      keepAppStatus: previousStatus === "deploying",
     });
   } else if (event === "error") {
     await prisma.deploy.update({
