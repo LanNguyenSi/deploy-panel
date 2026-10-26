@@ -237,23 +237,73 @@ describe("streamDeploy: relay response handling", () => {
     fetchSpy.mockRestore();
   });
 
-  it("relay 409 with an overlapping `deploying` capture: status derives from history, skipping blocked deploys", async () => {
-    mDeployFindMany.mockResolvedValue([
-      { status: "failed", log: JSON.stringify([{ name: "deploy-conflict", kind: "deploy-conflict", status: "failure" }]) },
-      { status: "failed", log: failureLog() },
-    ]);
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+  const conflictResponse = () =>
+    ({
       ok: false,
       status: 409,
       statusText: "Conflict",
       body: null,
       headers: new Headers(),
       text: async () => "busy",
-    } as unknown as Response);
+    }) as unknown as Response;
+
+  it("relay 409 with a `deploying` capture: the running deploy owns the card, App.status is not written", async () => {
+    // History would say unhealthy; it must not be consulted or written.
+    mDeployFindMany.mockResolvedValue([{ status: "failed", log: failureLog() }]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(conflictResponse());
 
     await streamDeploy({ ...baseOpts, previousStatus: "deploying" });
 
-    expect(lastCall(mAppUpdate).data.status).toBe("unhealthy");
+    expect(mAppUpdate).not.toHaveBeenCalled();
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ name: "deploy-conflict", kind: "deploy-conflict", status: "failure" });
+    expect(steps[0].output).toContain("409");
+    expect(isBlockedDeployLog(lastCall(mDeployUpdate).data.log)).toBe(true);
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("relay 409 with an `unhealthy` capture: the earlier status is restored", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(conflictResponse());
+    await streamDeploy({ ...baseOpts, previousStatus: "unhealthy" });
+    expect(lastCall(mAppUpdate).data).toEqual({ status: "unhealthy" });
+    fetchSpy.mockRestore();
+  });
+
+  it("relay 409 without a captured status: the history fallback wins, skipping blocked deploys", async () => {
+    mDeployFindMany.mockResolvedValue([
+      { status: "failed", log: JSON.stringify([{ name: "deploy-conflict", kind: "deploy-conflict", status: "failure" }]) },
+      { status: "success", log: JSON.stringify([{ name: "deploy", status: "success", durationMs: 1 }]) },
+    ]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(conflictResponse());
+    await streamDeploy({ ...baseOpts, previousStatus: undefined });
+    expect(lastCall(mAppUpdate).data).toEqual({ status: "healthy" });
+    fetchSpy.mockRestore();
+  });
+
+  it("relay 409 with an explicit capture and a contradicting history: the capture wins", async () => {
+    mDeployFindMany.mockResolvedValue([{ status: "failed", log: failureLog() }]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(conflictResponse());
+    await streamDeploy({ ...baseOpts, previousStatus: "healthy" });
+    expect(lastCall(mAppUpdate).data).toEqual({ status: "healthy" });
+    fetchSpy.mockRestore();
+  });
+
+  it("relay 404 (not a conflict) with a `deploying` capture: deploy failed and app marked unhealthy", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+      body: null,
+      headers: new Headers(),
+      text: async () => "unknown app",
+    } as unknown as Response);
+    await streamDeploy({ ...baseOpts, previousStatus: "deploying" });
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    expect(lastCall(mAppUpdate).data).toEqual({ status: "unhealthy" });
+    expect(isBlockedDeployLog(lastCall(mDeployUpdate).data.log)).toBe(false);
     fetchSpy.mockRestore();
   });
 

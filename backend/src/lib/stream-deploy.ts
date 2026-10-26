@@ -63,6 +63,12 @@ async function finalizeBlockedDeploy(opts: {
   commitBefore?: string | null;
   commitAfter?: string | null;
   duration: number;
+  /**
+   * Leave the App row untouched. Set when another deploy of the app is known
+   * to be running: it already owns the card (`deploying`), so any settled
+   * status written here would overwrite a deploy that is still in flight.
+   */
+  keepAppStatus?: boolean;
 }): Promise<void> {
   await prisma.deploy.update({
     where: { id: opts.deployId },
@@ -74,6 +80,7 @@ async function finalizeBlockedDeploy(opts: {
       log: JSON.stringify(opts.steps),
     },
   });
+  if (opts.keepAppStatus) return;
   const restored = await statusAfterBlocked(opts.appId, opts.deployId, opts.previousStatus);
   await prisma.app.update({ where: { id: opts.appId }, data: { status: restored } });
 }
@@ -248,7 +255,9 @@ export async function streamDeploy(opts: {
       const reason = `Relay rejected the deploy: ${res.status} ${bodyText || res.statusText}`;
       // 409: another deploy is already running on the relay. Nothing was
       // deployed by this request, so the app keeps its previous status
-      // (the running deploy owns the card) instead of turning unhealthy.
+      // instead of turning unhealthy. When the capture is already `deploying`
+      // the other deploy has set the card and still owns it, so the App row
+      // is not written at all; otherwise the earlier status is restored.
       if (res.status === 409) {
         await finalizeBlockedDeploy({
           deployId,
@@ -256,6 +265,7 @@ export async function streamDeploy(opts: {
           previousStatus,
           steps: [{ name: "deploy-conflict", kind: CONFLICT_STEP_KIND, status: "failure", durationMs: 0, message: reason, output: reason }],
           duration: Date.now() - startedAt,
+          keepAppStatus: previousStatus === "deploying",
         });
         return;
       }
