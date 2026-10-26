@@ -54,6 +54,9 @@ async function statusAfterBlocked(appId: string, deployId: string, previousStatu
  * ends `failed` with the failed checks as its log; the App row is restored to
  * its pre-dispatch status (and `lastDeployAt` is left alone) because nothing
  * was deployed, unlike a real failure which marks the app `unhealthy`.
+ * With `keepAppStatus` (set by every blocked caller when the captured status
+ * is `deploying`) the App row is not written at all: the running deploy owns
+ * the card.
  */
 async function finalizeBlockedDeploy(opts: {
   deployId: string;
