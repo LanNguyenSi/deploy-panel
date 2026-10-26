@@ -2,6 +2,8 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-10-26T17:39:39Z, blocked deploys keep a running deploy's status: `deploy-outcome-trust-chain.md` re-stamped; its blocked-deploy rule now covers the env-preflight, JSON blocked and streamed blocked callers besides the relay 409 (`keepAppStatus` for a `deploying` capture). Its and `realtime-update-strategy.md`'s `stream-deploy.ts` citations were re-pointed after the callers changed and the `finalizeBlockedDeploy` comment grew by three lines; the cited code is unchanged otherwise, ranges checked by the reviewer and `okf-kit check`.
+
 - 2026-10-26T13:16:33Z, relay 409 keeps a running deploy's status: `deploy-outcome-trust-chain.md` re-stamped; its 409 rule now names the `deploying` exception (the running deploy owns the card) and its `stream-deploy.ts` citations were re-pointed in the same change, checked against the source by the reviewer.
 
 - 2026-10-26T13:16:13Z, relay 409 keeps a running deploy's status: `realtime-update-strategy.md` re-pointed after `stream-deploy.ts` grew by ten lines above the SSE read loop (`:345-378`, was `:335-368`) and the `Deploy.log` step write (`:454-458`, was `:444-448`); the cited code is unchanged, the claims hold.

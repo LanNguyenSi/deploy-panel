@@ -54,6 +54,9 @@ async function statusAfterBlocked(appId: string, deployId: string, previousStatu
  * ends `failed` with the failed checks as its log; the App row is restored to
  * its pre-dispatch status (and `lastDeployAt` is left alone) because nothing
  * was deployed, unlike a real failure which marks the app `unhealthy`.
+ * With `keepAppStatus` (set by every blocked caller when the captured status
+ * is `deploying`) the App row is not written at all: the running deploy owns
+ * the card.
  */
 async function finalizeBlockedDeploy(opts: {
   deployId: string;
@@ -221,7 +224,14 @@ export async function streamDeploy(opts: {
       // and the step carries the preflight-check marker.
       steps.push({ name: "env-preflight", kind: PREFLIGHT_CHECK_KIND, status: "failure", durationMs: 0, message, output: message });
       console.log(`[stream-deploy] ${appName}: blocked before deploy — ${message}`);
-      await finalizeBlockedDeploy({ deployId, appId, previousStatus, steps, duration: Date.now() - startedAt });
+      await finalizeBlockedDeploy({
+        deployId,
+        appId,
+        previousStatus,
+        steps,
+        duration: Date.now() - startedAt,
+        keepAppStatus: previousStatus === "deploying",
+      });
       return;
     }
 
@@ -315,6 +325,7 @@ export async function streamDeploy(opts: {
           commitBefore: data.result.commitBefore ?? null,
           commitAfter: data.result.commitAfter ?? null,
           duration: duration ?? Date.now() - startedAt,
+          keepAppStatus: previousStatus === "deploying",
         });
         return;
       }
@@ -476,6 +487,7 @@ async function handleEvent(
       previousStatus,
       steps: blockedDeployLogSteps(steps, data),
       duration: Date.now() - startedAt,
+      keepAppStatus: previousStatus === "deploying",
     });
   } else if (event === "error") {
     await prisma.deploy.update({
