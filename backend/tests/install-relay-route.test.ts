@@ -161,4 +161,22 @@ describe("POST /servers/install-relay (pre-SSE gates)", () => {
     );
     expect(res.status).toBe(400);
   });
+
+  // Contract pin for the join in the 400 branch (servers.ts, install-relay):
+  // zod issues are joined into the message with "; " and nothing else. This
+  // body fails two independent checks (bad traefikEmail, no ssh credential),
+  // so changing the separator, or only the separator at this site, turns
+  // it red.
+  it("joins the two validation issue messages with '; ' verbatim", async () => {
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/install-relay",
+      asJson({ name: "v", host: "h", traefikEmail: "nope" }),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "bad_request",
+      message:
+        "Invalid email address; exactly one of sshPassword or sshPrivateKey must be provided",
+    });
+  });
 });

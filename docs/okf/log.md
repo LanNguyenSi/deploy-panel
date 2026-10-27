@@ -184,7 +184,7 @@
   as :22-30, now 32-40; `streamDeploy`'s catch block was cited as
   :236-240, now 269-273. The doc's "three shapes funnel through
   finalizeDeploy" claim no longer covers every relay outcome: the new
-  4xx-rejection branch (stream-deploy.ts:172-181) writes `status:
+  4xx-rejection branch (stream-deploy.ts:287-317) writes `status:
   "failed"` directly and bypasses `finalizeDeploy`, because it can
   never be a success claim needing verification; the doc's choke-point
   language and "what breaks it" list were reworded to scope the

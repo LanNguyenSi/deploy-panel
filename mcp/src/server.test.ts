@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "./config.js";
 
@@ -44,6 +45,13 @@ import { startServer } from "./server.js";
 
 const CONFIG: Config = { apiUrl: "https://panel.example.com", apiKey: "test-key" };
 
+// Pin: the advertised MCP server version is the mcp/package.json version,
+// read the same way server.ts reads it, never a literal in the source (the
+// stale `0.1.0` literal had outlived the release it named).
+const pkgVersion = (
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }
+).version;
+
 afterEach(() => {
   vi.clearAllMocks();
   mcpServerInstances.length = 0;
@@ -52,10 +60,10 @@ afterEach(() => {
 });
 
 describe("startServer", () => {
-  it("constructs an McpServer with the expected name and version", async () => {
+  it("constructs an McpServer with the name and the version from mcp/package.json", async () => {
     await startServer(CONFIG);
 
-    expect(McpServer).toHaveBeenCalledExactlyOnceWith({ name: "deploy-panel", version: "0.1.0" });
+    expect(McpServer).toHaveBeenCalledExactlyOnceWith({ name: "deploy-panel", version: pkgVersion });
   });
 
   it("builds a DeployPanelClient from the given config and wires it into registerTools with the server", async () => {

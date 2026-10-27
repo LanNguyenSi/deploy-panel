@@ -466,6 +466,25 @@ describe("POST /servers/:id/update-relay-image", () => {
     expect(res.status).toBe(400);
   });
 
+  // Contract pin for the join in the 400 branch (servers.ts,
+  // :id/update-relay-image): zod issues are joined into the message with "; "
+  // and nothing else. This body fails two independent checks (relative
+  // relayDir, no ssh credential), so changing the separator, or only the
+  // separator at this site, turns it red.
+  it("joins the two validation issue messages with '; ' verbatim", async () => {
+    mServer.findUnique.mockResolvedValue(serverFixture());
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-a/update-relay-image",
+      asJson({ relayDir: "relative/path" }),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "bad_request",
+      message:
+        "relayDir must be an absolute, simple path; exactly one of sshPassword or sshPrivateKey must be provided",
+    });
+  });
+
   // NOTE: Cross-lock tests (in-flight reinstall blocks update, actor-
   // lock blocks parallel updates) are hard to exercise in this harness
   // because `activeInstalls` is a module-private Set and the streamSSE

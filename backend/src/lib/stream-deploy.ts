@@ -50,13 +50,37 @@ async function statusAfterBlocked(appId: string, deployId: string, previousStatu
 }
 
 /**
+ * Whether another Deploy row of the app is still `running`, i.e. the
+ * `deploying` on the App row is owned by an in-flight deploy of this app
+ * rather than left over from an interrupted one. The row being finalized is
+ * excluded (it is `running` itself at this point), and the lookup is scoped
+ * to the app: the only running row of a different deploy is no proof that
+ * THIS app owns the card.
+ */
+async function anotherDeployRunning(appId: string, deployId: string): Promise<boolean> {
+  try {
+    const running = await prisma.deploy.findFirst({
+      where: { appId, id: { not: deployId }, status: "running" },
+      select: { id: true },
+    });
+    return running !== null;
+  } catch {
+    // A failed existence check must not become a status write that could
+    // overwrite a card a live deploy owns: assume the deploy is running and
+    // leave the App row alone. The stuck-sweep (startup.ts) stays the backstop.
+    return true;
+  }
+}
+
+/**
  * Terminal write for a deploy the relay refused at preflight. The deploy row
  * ends `failed` with the failed checks as its log; the App row is restored to
  * its pre-dispatch status (and `lastDeployAt` is left alone) because nothing
  * was deployed, unlike a real failure which marks the app `unhealthy`.
- * With `keepAppStatus` (set by every blocked caller when the captured status
- * is `deploying`) the App row is not written at all: the running deploy owns
- * the card.
+ * With `keepAppStatus` (set by the blocked callers when the captured status
+ * is `deploying`, and by the relay-409 caller only after `anotherDeployRunning`
+ * confirmed a running row of this app) the App row is not written at all: the
+ * running deploy owns the card.
  */
 async function finalizeBlockedDeploy(opts: {
   deployId: string;
@@ -265,17 +289,23 @@ export async function streamDeploy(opts: {
       const reason = `Relay rejected the deploy: ${res.status} ${bodyText || res.statusText}`;
       // 409: another deploy is already running on the relay. Nothing was
       // deployed by this request, so the app keeps its previous status
-      // instead of turning unhealthy. When the capture is already `deploying`
-      // the other deploy has set the card and still owns it, so the App row
-      // is not written at all; otherwise the earlier status is restored.
+      // instead of turning unhealthy. A `deploying` capture is kept only
+      // while a Deploy row of THIS app is actually still running: a capture
+      // left over from an interrupted deploy owns nothing, and keeping it
+      // would leave the card stale forever. Without a running row the status
+      // is corrected the way every other finished blocked deploy is (the
+      // history fallback in statusAfterBlocked); the earlier status is
+      // restored for any other capture.
       if (res.status === 409) {
+        const keepAppStatus =
+          previousStatus === "deploying" && (await anotherDeployRunning(appId, deployId));
         await finalizeBlockedDeploy({
           deployId,
           appId,
           previousStatus,
           steps: [{ name: "deploy-conflict", kind: CONFLICT_STEP_KIND, status: "failure", durationMs: 0, message: reason, output: reason }],
           duration: Date.now() - startedAt,
-          keepAppStatus: previousStatus === "deploying",
+          keepAppStatus,
         });
         return;
       }

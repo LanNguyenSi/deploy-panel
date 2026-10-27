@@ -408,6 +408,29 @@ describe("POST /servers/:id/relay-self-update", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  // Contract pin for the join in the 400 branch (servers.ts,
+  // :id/relay-self-update): zod issues are joined into the message with "; "
+  // and nothing else. This body fails two independent checks (bad tag,
+  // unrecognized key on the strict object), so changing the separator, or
+  // only the separator at this site, turns it red.
+  it("joins the two validation issue messages with '; ' verbatim", async () => {
+    mServer.findUnique.mockResolvedValue(OWNED_SERVER);
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-1/relay-self-update",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tag: "bad", extraKey: 1 }),
+      },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "bad_request",
+      message: "tag must be 'latest' or 'main-<hex sha>'; Unrecognized key: \"extraKey\"",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("passes through 409 when the relay refuses self-update because a deploy or self-update is active", async () => {
     mServer.findUnique.mockResolvedValue(OWNED_SERVER);
     fetchMock.mockImplementation(async (input: string | URL, init?: RequestInit) => {
