@@ -279,6 +279,23 @@ describe("streamDeploy: relay response handling", () => {
     });
   };
 
+  it("relay 409 with a `deploying` capture and a failing running-row lookup: the card is left alone", async () => {
+    // A DB error in the existence check must not become a status write over a
+    // card that a live deploy may own.
+    mDeployFindFirst.mockRejectedValue(new Error("db down"));
+    mDeployFindMany.mockResolvedValue([{ status: "failed", log: failureLog() }]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(conflictResponse());
+
+    await streamDeploy({ ...baseOpts, previousStatus: "deploying" });
+
+    runningRowQuery();
+    expect(mAppUpdate).not.toHaveBeenCalled();
+    expect(mDeployFindMany).not.toHaveBeenCalled();
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    expect(isBlockedDeployLog(lastCall(mDeployUpdate).data.log)).toBe(true);
+    fetchSpy.mockRestore();
+  });
+
   it("relay 409 with a `deploying` capture and no running deploy row: the stale status is corrected from history", async () => {
     mDeployFindFirst.mockResolvedValue(null);
     mDeployFindMany.mockResolvedValue([{ status: "success", log: JSON.stringify([{ name: "deploy", status: "success", durationMs: 1 }]) }]);

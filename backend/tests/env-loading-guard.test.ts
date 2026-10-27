@@ -302,8 +302,9 @@ describe("docker-compose.yml: APP_SECRETS_KEY fails closed", () => {
   //     default (`PANEL_TOKEN: ${PANEL_TOKEN:-}`) would break startup; the
   //     token is passed through an override file instead.
   //   - BACKEND_URL keeps a NON-empty default: unlike the optional empty-
-  //     allowed vars next to it, an empty BACKEND_URL default would make the
-  //     OAuth callback URL resolve to nothing while still booting. Pin the
+  //     allowed vars next to it, an empty BACKEND_URL default reaches the url
+  //     schema as '' (a zod default only replaces undefined), fails
+  //     validation, and a fresh clone exits with Invalid config. Pin the
   //     exact line shape, so both adding a forwarding line and emptying the
   //     default turn this red.
   it("does not forward PANEL_TOKEN and keeps the exact non-empty BACKEND_URL default", () => {
