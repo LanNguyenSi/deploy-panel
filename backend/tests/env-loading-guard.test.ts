@@ -293,6 +293,31 @@ describe("docker-compose.yml: APP_SECRETS_KEY fails closed", () => {
     expect(sessionSecretLine, "SESSION_SECRET line not found in docker-compose.yml").toBeDefined();
     expect(sessionSecretLine).toMatch(/:-/);
   });
+
+  // Pins the two remaining contracts of the compose `environment:` block
+  // (docker-compose.yml, backend service):
+  //   - PANEL_TOKEN is deliberately NOT a forwarding line (see the comment
+  //     block above it): production requires a token and an empty value
+  //     fails config validation (min 1), so forwarding it with an empty
+  //     default (`PANEL_TOKEN: ${PANEL_TOKEN:-}`) would break startup; the
+  //     token is passed through an override file instead.
+  //   - BACKEND_URL keeps a NON-empty default: unlike the optional empty-
+  //     allowed vars next to it, an empty BACKEND_URL default reaches the url
+  //     schema as '' (a zod default only replaces undefined), fails
+  //     validation, and a fresh clone exits with Invalid config. Pin the
+  //     exact line shape, so both adding a forwarding line and emptying the
+  //     default turn this red.
+  it("does not forward PANEL_TOKEN and keeps the exact non-empty BACKEND_URL default", () => {
+    const compose = readFileSync(path.join(repoRoot, "docker-compose.yml"), "utf8");
+
+    // Comment lines start with `#` (never bare whitespace), so a matched
+    // line here can only be a real `KEY:` forwarding entry.
+    expect(compose).not.toMatch(/^\s*PANEL_TOKEN\s*:/m);
+
+    const backendUrlLine = compose.match(/^\s*BACKEND_URL:\s*(.+)$/m)?.[1]?.trim();
+    expect(backendUrlLine, "BACKEND_URL line not found in docker-compose.yml").toBeDefined();
+    expect(backendUrlLine).toBe("${BACKEND_URL:-http://localhost:3001}");
+  });
 });
 
 describe("make dev-backend: APP_SECRETS_KEY reaches the backend child process", () => {

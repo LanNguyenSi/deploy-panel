@@ -2,6 +2,8 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-10-27T19:16:23Z, relay 409 corrects a stale deploying status: `deploy-outcome-trust-chain.md` re-stamped; its 409 rule now keeps the app status only while another deploy of the same app is running (`anotherDeployRunning` in `stream-deploy.ts`), and its `stream-deploy.ts` citations are re-pointed. `realtime-update-strategy.md` re-pointed (read loop, step-log write) and re-stamped; no claim changed.
+
 - 2026-10-26T17:39:39Z, blocked deploys keep a running deploy's status: `deploy-outcome-trust-chain.md` re-stamped; its blocked-deploy rule now covers the env-preflight, JSON blocked and streamed blocked callers besides the relay 409 (`keepAppStatus` for a `deploying` capture). Its and `realtime-update-strategy.md`'s `stream-deploy.ts` citations were re-pointed after the callers changed and the `finalizeBlockedDeploy` comment grew by three lines; the cited code is unchanged otherwise, ranges checked by the reviewer and `okf-kit check`.
 
 - 2026-10-26T13:16:33Z, relay 409 keeps a running deploy's status: `deploy-outcome-trust-chain.md` re-stamped; its 409 rule now names the `deploying` exception (the running deploy owns the card) and its `stream-deploy.ts` citations were re-pointed in the same change, checked against the source by the reviewer.
@@ -184,7 +186,7 @@
   as :22-30, now 32-40; `streamDeploy`'s catch block was cited as
   :236-240, now 269-273. The doc's "three shapes funnel through
   finalizeDeploy" claim no longer covers every relay outcome: the new
-  4xx-rejection branch (stream-deploy.ts:172-181) writes `status:
+  4xx-rejection branch (stream-deploy.ts:287-317) writes `status:
   "failed"` directly and bypasses `finalizeDeploy`, because it can
   never be a success claim needing verification; the doc's choke-point
   language and "what breaks it" list were reworded to scope the

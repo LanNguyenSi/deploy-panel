@@ -239,6 +239,39 @@ describe("POST /servers/:id/install-relay (re-install)", () => {
     expect(res.status).toBe(400);
   });
 
+  // Contract pin for the join in the 400 branch (servers.ts, :id/install-relay):
+  // zod issues are joined into the message with "; " and nothing else. This
+  // body fails two independent checks (rotateToken not a boolean, no ssh
+  // credential), so changing the separator, or only the separator at this
+  // site, turns it red.
+  it("joins the two validation issue messages with '; ' verbatim", async () => {
+    mServer.findUnique.mockResolvedValue({
+      id: "srv-a",
+      userId: null,
+      name: "a",
+      host: "a.example",
+      relayUrl: "http://a:8222",
+      relayToken: "tok",
+      hostKeySha256: null,
+      relayMode: null,
+      status: "online",
+      sshKeyPath: null,
+      lastSeenAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-a/install-relay",
+      asJson({ rotateToken: "yes" }),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "bad_request",
+      message:
+        "Invalid input: expected boolean, received string; exactly one of sshPassword or sshPrivateKey must be provided",
+    });
+  });
+
   it("admin can re-install any server (passes ownership gate)", async () => {
     // Even a server owned by user-b is re-installable by an admin.
     mServer.findUnique.mockResolvedValue({

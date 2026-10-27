@@ -12,7 +12,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     app: { findUnique: vi.fn(), update: vi.fn().mockResolvedValue({}) },
-    deploy: { findUnique: vi.fn(), findMany: vi.fn(), update: vi.fn().mockResolvedValue({}) },
+    deploy: { findUnique: vi.fn(), findMany: vi.fn(), findFirst: vi.fn(), update: vi.fn().mockResolvedValue({}) },
   },
 }));
 
@@ -52,6 +52,7 @@ const mAppFindUnique = (prisma.app as any).findUnique as ReturnType<typeof vi.fn
 const mAppUpdate = (prisma.app as any).update as ReturnType<typeof vi.fn>;
 const mDeployUpdate = (prisma.deploy as any).update as ReturnType<typeof vi.fn>;
 const mDeployFindMany = (prisma.deploy as any).findMany as ReturnType<typeof vi.fn>;
+const mDeployFindFirst = (prisma.deploy as any).findFirst as ReturnType<typeof vi.fn>;
 const mProvision = provisionAndCheckAppSecrets as unknown as ReturnType<typeof vi.fn>;
 
 const lastCall = (m: ReturnType<typeof vi.fn>) => m.mock.calls[m.mock.calls.length - 1][0];
@@ -247,14 +248,17 @@ describe("streamDeploy: relay response handling", () => {
       text: async () => "busy",
     }) as unknown as Response;
 
-  it("relay 409 with a `deploying` capture: the running deploy owns the card, App.status is not written", async () => {
+  it("relay 409 with a `deploying` capture and a running deploy row of the app: the running deploy owns the card, App.status is not written", async () => {
+    // A sibling row of THIS app still `running` (the current one excluded):
     // History would say unhealthy; it must not be consulted or written.
+    mDeployFindFirst.mockResolvedValue({ id: "d2" });
     mDeployFindMany.mockResolvedValue([{ status: "failed", log: failureLog() }]);
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(conflictResponse());
 
     await streamDeploy({ ...baseOpts, previousStatus: "deploying" });
 
     expect(mAppUpdate).not.toHaveBeenCalled();
+    expect(mDeployFindMany).not.toHaveBeenCalled();
     expect(lastCall(mDeployUpdate).data.status).toBe("failed");
     const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
     expect(steps).toHaveLength(1);
@@ -262,6 +266,64 @@ describe("streamDeploy: relay response handling", () => {
     expect(steps[0].output).toContain("409");
     expect(isBlockedDeployLog(lastCall(mDeployUpdate).data.log)).toBe(true);
     expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  // The running-row check that guards the keep: it must read the Deploy table
+  // scoped to THIS app (a running row of another app proves nothing about this
+  // card) and must exclude the row being finalized (it is `running` itself).
+  const runningRowQuery = () => {
+    expect(mDeployFindFirst).toHaveBeenCalledTimes(1);
+    expect(lastCall(mDeployFindFirst)).toMatchObject({
+      where: { appId: "app-1", id: { not: "d1" }, status: "running" },
+    });
+  };
+
+  it("relay 409 with a `deploying` capture and a failing running-row lookup: the card is left alone", async () => {
+    // A DB error in the existence check must not become a status write over a
+    // card that a live deploy may own.
+    mDeployFindFirst.mockRejectedValue(new Error("db down"));
+    mDeployFindMany.mockResolvedValue([{ status: "failed", log: failureLog() }]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(conflictResponse());
+
+    await streamDeploy({ ...baseOpts, previousStatus: "deploying" });
+
+    runningRowQuery();
+    expect(mAppUpdate).not.toHaveBeenCalled();
+    expect(mDeployFindMany).not.toHaveBeenCalled();
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    expect(isBlockedDeployLog(lastCall(mDeployUpdate).data.log)).toBe(true);
+    fetchSpy.mockRestore();
+  });
+
+  it("relay 409 with a `deploying` capture and no running deploy row: the stale status is corrected from history", async () => {
+    mDeployFindFirst.mockResolvedValue(null);
+    mDeployFindMany.mockResolvedValue([{ status: "success", log: JSON.stringify([{ name: "deploy", status: "success", durationMs: 1 }]) }]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(conflictResponse());
+
+    await streamDeploy({ ...baseOpts, previousStatus: "deploying" });
+
+    runningRowQuery();
+    expect(lastCall(mAppUpdate).data).toEqual({ status: "healthy" });
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    expect(isBlockedDeployLog(lastCall(mDeployUpdate).data.log)).toBe(true);
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("relay 409 with a `deploying` capture whose only running row belongs to another app: the status is corrected", async () => {
+    // The query is where the other app's row is rejected: it carries the
+    // current app's id, so a row owned by another app never matches and the
+    // lookup comes back empty (history would say unhealthy; it decides here).
+    mDeployFindFirst.mockResolvedValue(null);
+    mDeployFindMany.mockResolvedValue([{ status: "failed", log: failureLog() }]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(conflictResponse());
+
+    await streamDeploy({ ...baseOpts, previousStatus: "deploying" });
+
+    runningRowQuery();
+    expect(lastCall(mAppUpdate).data).toEqual({ status: "unhealthy" });
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
     fetchSpy.mockRestore();
   });
 

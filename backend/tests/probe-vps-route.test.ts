@@ -266,4 +266,18 @@ describe("POST /servers/probe-vps", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect("hostKeySha256" in body).toBe(false);
   });
+
+  // Contract pin for the join in the 400 branch (servers.ts, probe-vps):
+  // zod issues are joined into the message with "; " and nothing else. This
+  // body fails two independent checks (missing host, no ssh credential), so
+  // changing the separator, or only the separator at this site, turns it red.
+  it("joins the two validation issue messages with '; ' verbatim", async () => {
+    const res = await appFor({ userId: null, isAdmin: true }).request("/servers/probe-vps", asJson({}));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: "bad_request",
+      message:
+        "Invalid input: expected string, received undefined; exactly one of sshPassword or sshPrivateKey must be provided",
+    });
+  });
 });
