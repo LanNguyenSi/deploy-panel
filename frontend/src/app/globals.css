@@ -1118,7 +1118,7 @@ a:hover { color: var(--primary-hover); }
     transform: translateX(-100%);
     /* visibility is part of the transition so the closed drawer leaves the
        tab order (visibility: hidden is not focusable, unlike the off-canvas
-       transform alone — the server render is inert-free until hydration).
+       transform alone, the server render is inert-free until hydration).
        Discrete interpolation keeps the slide: hidden->visible flips at the
        start, visible->hidden only at the end of the transition. */
     transition: transform var(--transition), visibility var(--transition);
