@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { hydrateRoot } from "react-dom/client";
 import { renderToString } from "react-dom/server";
 import userEvent from "@testing-library/user-event";
@@ -93,5 +93,77 @@ describe("Sidebar inert state", () => {
     });
     expect(host.querySelector("aside")).toHaveAttribute("inert");
     host.remove();
+  });
+});
+
+// Renders Sidebar next to a stand-in for the .app-content element AppShell
+// renders around the page, so the drawer-open inertness of the page content
+// can be observed.
+function renderWithContent() {
+  const { container } = render(
+    <div>
+      <Sidebar />
+      <div className="app-content">
+        <button>Page button</button>
+      </div>
+    </div>,
+  );
+  return container;
+}
+
+describe("Sidebar mobile top bar landmark", () => {
+  it("renders the mobile bar as a header (banner landmark), not a bare div", () => {
+    mockViewport(true);
+    const { container } = render(<Sidebar />);
+    expect(container.querySelector(".mobile-bar")?.tagName).toBe("HEADER");
+    expect(screen.getByRole("banner")).toBeInTheDocument();
+  });
+});
+
+describe("Sidebar mobile drawer focus management", () => {
+  it("makes the page content inert and moves focus into the drawer on open", async () => {
+    mockViewport(true);
+    const user = userEvent.setup();
+    const container = renderWithContent();
+    const content = container.querySelector(".app-content") as HTMLElement;
+    const drawer = container.querySelector("aside") as HTMLElement;
+    expect(content).not.toHaveAttribute("inert");
+
+    await user.click(screen.getByRole("button", { name: "Toggle menu" }));
+
+    expect(content).toHaveAttribute("inert");
+    // The focus move waits one animation frame (the drawer only becomes
+    // visible through the CSS visibility transition).
+    await waitFor(() => expect(drawer.contains(document.activeElement)).toBe(true));
+  });
+
+  it("removes the inertness and returns focus to the menu button on Escape", async () => {
+    mockViewport(true);
+    const user = userEvent.setup();
+    const container = renderWithContent();
+    const content = container.querySelector(".app-content") as HTMLElement;
+
+    await user.click(screen.getByRole("button", { name: "Toggle menu" }));
+    expect(content).toHaveAttribute("inert");
+
+    await user.keyboard("{Escape}");
+
+    expect(content).not.toHaveAttribute("inert");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Toggle menu" }));
+  });
+
+  it("removes the inertness and returns focus to the menu button on overlay click", async () => {
+    mockViewport(true);
+    const user = userEvent.setup();
+    const container = renderWithContent();
+    const content = container.querySelector(".app-content") as HTMLElement;
+
+    await user.click(screen.getByRole("button", { name: "Toggle menu" }));
+    expect(content).toHaveAttribute("inert");
+
+    await user.click(container.querySelector(".sidebar-overlay") as HTMLElement);
+
+    expect(content).not.toHaveAttribute("inert");
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Toggle menu" }));
   });
 });

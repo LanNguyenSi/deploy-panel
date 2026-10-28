@@ -2,11 +2,15 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
 const MOBILE_QUERY = "(max-width: 768px)";
+
+// Focusable-element query used to move focus into the drawer when it opens.
+const FOCUSABLE =
+  'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
 function getIsMobile(): boolean {
   return typeof window !== "undefined" && typeof window.matchMedia === "function"
@@ -32,6 +36,10 @@ export default function Sidebar() {
   // instead of keeping the server's attribute.
   const isMobile = useSyncExternalStore(subscribeMobile, getIsMobile, () => false);
 
+  const drawerRef = useRef<HTMLElement>(null);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
+  const wasOpenRef = useRef(false);
+
   const closeMobile = useCallback(() => setMobileOpen(false), []);
 
   useEffect(() => {
@@ -42,6 +50,43 @@ export default function Sidebar() {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [mobileOpen, closeMobile]);
+
+  // While the drawer is open on mobile, the page content behind the overlay
+  // must leave the tab order. AppShell renders `.app-content` but does not
+  // manage its `inert` attribute, so the drawer's owner (this component,
+  // which owns every close path: Escape, overlay, link click, menu button)
+  // toggles the attribute directly. Declared before the focus effect so the
+  // attribute is gone before focus is returned to the menu button.
+  useEffect(() => {
+    const content = document.querySelector(".app-content");
+    if (!content) return;
+    if (mobileOpen) content.setAttribute("inert", "");
+    else content.removeAttribute("inert");
+    return () => content.removeAttribute("inert");
+  }, [mobileOpen]);
+
+  // Open: move focus into the drawer (nothing else is focusable while open,
+  // the header and the page content are inert). Close (Escape, overlay click,
+  // link click, menu button — all funnel through mobileOpen): return focus to
+  // the menu button. Skips the initial mount, when nothing was focused yet.
+  // The open-side focus waits two frames: the drawer becomes visible only
+  // once the CSS visibility transition has started, and focus() on a
+  // still-computed-hidden subtree is ignored by browsers (a single frame is
+  // not enough for the transition to be live).
+  useEffect(() => {
+    if (mobileOpen === wasOpenRef.current) return;
+    wasOpenRef.current = mobileOpen;
+    if (mobileOpen) {
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          if (!wasOpenRef.current) return;
+          drawerRef.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+        }),
+      );
+    } else {
+      menuBtnRef.current?.focus();
+    }
+  }, [mobileOpen]);
 
   // Close mobile sidebar on route change
   useEffect(() => { closeMobile(); }, [pathname, closeMobile]);
@@ -60,9 +105,12 @@ export default function Sidebar() {
 
   return (
     <>
-      {/* Mobile top bar — fixed positioning, outside flex flow */}
-      <div className="mobile-bar">
+      {/* Mobile top bar — fixed positioning, outside flex flow. A <header> so
+          it is the banner landmark (axe: region rule); inert while the drawer
+          is open so Tab cannot escape the drawer through the menu button. */}
+      <header className="mobile-bar" inert={mobileOpen}>
         <button
+          ref={menuBtnRef}
           className="mobile-menu-btn"
           onClick={() => setMobileOpen(!mobileOpen)}
           aria-label="Toggle menu"
@@ -73,13 +121,13 @@ export default function Sidebar() {
           </svg>
         </button>
         <span className="mobile-bar-title">Deploy Panel</span>
-      </div>
+      </header>
 
       {/* Overlay for mobile */}
       {mobileOpen && <div className="sidebar-overlay" role="presentation" onClick={closeMobile} />}
 
       {/* Sidebar */}
-      <aside className={`sidebar${mobileOpen ? " sidebar-open" : ""}`} inert={isMobile && !mobileOpen}>
+      <aside ref={drawerRef} className={`sidebar${mobileOpen ? " sidebar-open" : ""}`} inert={isMobile && !mobileOpen}>
         <div className="sidebar-top">
           <div className="sidebar-brand-row">
             <Link href="/" className="sidebar-brand">
