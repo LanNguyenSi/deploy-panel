@@ -2,6 +2,7 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-10-28T07:03:05Z, mobile accessibility (`frontend/src/components/Sidebar.tsx` banner landmark and drawer focus, `frontend/src/app/servers/[id]/page.tsx` pin and URL-edit buttons with aria-label and hit area). `realtime-update-strategy.md` re-verified: its `page.tsx` citations (2 s poll :221-245, bulk poll :106-127) still point at the same code, the edits sit after line 550; no claim changed. Re-stamped.
 - 2026-10-27T19:16:23Z, relay 409 corrects a stale deploying status: `deploy-outcome-trust-chain.md` re-stamped; its 409 rule now keeps the app status only while another deploy of the same app is running (`anotherDeployRunning` in `stream-deploy.ts`), and its `stream-deploy.ts` citations are re-pointed. `realtime-update-strategy.md` re-pointed (read loop, step-log write) and re-stamped; no claim changed.
 
 - 2026-10-26T17:39:39Z, blocked deploys keep a running deploy's status: `deploy-outcome-trust-chain.md` re-stamped; its blocked-deploy rule now covers the env-preflight, JSON blocked and streamed blocked callers besides the relay 409 (`keepAppStatus` for a `deploying` capture). Its and `realtime-update-strategy.md`'s `stream-deploy.ts` citations were re-pointed after the callers changed and the `finalizeBlockedDeploy` comment grew by three lines; the cited code is unchanged otherwise, ranges checked by the reviewer and `okf-kit check`.
