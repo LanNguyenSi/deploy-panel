@@ -6,6 +6,9 @@ import { getServers, getDeploys, deployApp, type ServerWithCount, type DeployWit
 import { getPinnedApps, type PinnedApp } from "@/lib/pinned";
 import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
+import { EmptyStateIcon } from "@/components/EmptyStateIcon";
+import { StatusPanel } from "@/components/DashboardStatusPanel";
+import { summarizeDashboardStatus } from "@/lib/dashboard-status";
 
 export default function DashboardPage() {
   const [servers, setServers] = useState<ServerWithCount[]>([]);
@@ -41,11 +44,8 @@ export default function DashboardPage() {
             <div className="skeleton" style={{ width: 160, height: 16 }} />
           </div>
         </div>
-        <div className="grid-stats">
-          {[1, 2, 3].map((i) => (
-            <div key={i} className="card skeleton" style={{ height: 96 }} />
-          ))}
-        </div>
+        <div className="card skeleton" style={{ height: 96, marginBottom: "var(--space-4)" }} />
+        <div className="skeleton" style={{ width: 280, height: 16, marginBottom: "var(--space-8)" }} />
       </main>
     );
   }
@@ -53,6 +53,7 @@ export default function DashboardPage() {
   const online = servers.filter((s) => s.status === "online").length;
   const totalApps = servers.reduce((sum, s) => sum + s._count.apps, 0);
   const recentSuccess = deploys.filter((d) => d.status === "success").length;
+  const status = summarizeDashboardStatus(servers, deploys);
 
   return (
     <main className="page-shell">
@@ -63,29 +64,17 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Stats */}
-      <div className="grid-stats" style={{ marginBottom: "var(--space-8)" }}>
-        <div className="card stat-card">
-          <div className="stat-value">{servers.length}</div>
-          <div className="stat-label">Servers</div>
-          {online > 0 && (
-            <div className="stat-sub" style={{ color: "var(--success)" }}>
-              <span className="status-dot status-dot-online" style={{ marginRight: "var(--space-1)", width: 6, height: 6 }} /> {online} online
-            </div>
-          )}
-        </div>
-        <div className="card stat-card">
-          <div className="stat-value">{totalApps}</div>
-          <div className="stat-label">Apps</div>
-        </div>
-        <div className="card stat-card">
-          <div className="stat-value">{deploys.length}</div>
-          <div className="stat-label">Recent Deploys</div>
-          {recentSuccess > 0 && (
-            <div className="stat-sub" style={{ color: "var(--success)" }}>{recentSuccess} successful</div>
-          )}
-        </div>
-      </div>
+      <StatusPanel status={status} deployCount={deploys.length} />
+
+      {/* Counters: secondary context, the status panel above is the lead */}
+      <ul className="dashboard-counts" aria-label="Totals">
+        <li><strong>{servers.length}</strong> {servers.length === 1 ? "server" : "servers"}{online > 0 && <> ({online} online)</>}</li>
+        <li><strong>{totalApps}</strong> {totalApps === 1 ? "app" : "apps"}</li>
+        <li>
+          <strong>{deploys.length}</strong> recent {deploys.length === 1 ? "deploy" : "deploys"}
+          {recentSuccess > 0 && <> ({recentSuccess} successful)</>}
+        </li>
+      </ul>
 
       {/* Pinned apps — quick deploy */}
       {pinned.length > 0 && (
@@ -128,7 +117,7 @@ export default function DashboardPage() {
           </div>
           {servers.length === 0 ? (
             <div className="card empty-state" style={{ padding: "var(--space-8) var(--space-4)" }}>
-              <div className="empty-state-icon">&#9881;</div>
+              <EmptyStateIcon name="server" />
               <div className="empty-state-title">No servers yet</div>
               <div className="empty-state-text">
                 <Link href="/servers">Add your first server</Link> to start deploying.
@@ -166,7 +155,7 @@ export default function DashboardPage() {
           </div>
           {deploys.length === 0 ? (
             <div className="card empty-state" style={{ padding: "var(--space-8) var(--space-4)" }}>
-              <div className="empty-state-icon">&#128640;</div>
+              <EmptyStateIcon name="deploy" />
               <div className="empty-state-title">No deployments yet</div>
               <div className="empty-state-text">Deploy an app to see activity here.</div>
             </div>

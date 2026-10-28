@@ -18,6 +18,7 @@ import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { ServerInstallWizard } from "@/components/ServerInstallWizard";
 import { ServerUpdateImageDialog } from "@/components/ServerUpdateImageDialog";
+import { EmptyStateIcon } from "@/components/EmptyStateIcon";
 
 function shortRev(rev: string | null | undefined): string {
   return rev ? rev.slice(0, 7) : "unknown";
@@ -152,7 +153,7 @@ export default function ServersPage() {
         </div>
       ) : servers.length === 0 ? (
         <div className="card empty-state">
-          <div className="empty-state-icon">&#9881;</div>
+          <EmptyStateIcon name="server" />
           <div className="empty-state-title">No servers configured</div>
           <div className="empty-state-text">Add a server to start managing your deployments.</div>
         </div>

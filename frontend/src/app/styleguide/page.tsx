@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { EmptyStateIcon } from "@/components/EmptyStateIcon";
 
 // ── Scaffolding components (inline styles / token vars only) ──────────────────
 
@@ -344,7 +345,7 @@ export default function StyleguidePage() {
             }}
           >
             <li>
-              <strong>focus-visible:</strong> all buttons show a cyan glow ring (--glow-primary) on keyboard focus
+              <strong>focus-visible:</strong> all buttons show a 2px --text outline (2px offset) on keyboard focus
             </li>
             <li>
               <strong>:active:</strong> scale(0.97) on all variants
@@ -377,7 +378,7 @@ export default function StyleguidePage() {
             />
           </div>
           <p style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)", marginTop: "var(--space-2)" }}>
-            On :focus: border turns --primary, box-shadow applies --glow-primary.
+            On :focus: border turns --primary and a 3px --primary-muted ring is added.
           </p>
         </SubSection>
 
@@ -596,7 +597,7 @@ export default function StyleguidePage() {
       <Section id="feedback" title="10 · Empty State · Skeleton · Log Panel">
         <SubSection title=".empty-state">
           <div className="card empty-state" style={{ maxWidth: 400 }}>
-            <div className="empty-state-icon">🚀</div>
+            <EmptyStateIcon name="deploy" />
             <div className="empty-state-title">No deployments yet</div>
             <div className="empty-state-text">
               Deploy an app to see history here. Connect a server first.
@@ -727,7 +728,7 @@ export default function StyleguidePage() {
           </div>
         </SubSection>
 
-        <SubSection title="Shadows & glow">
+        <SubSection title="Shadows & focus ring">
           <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--space-6)", alignItems: "flex-start" }}>
             <div style={{ textAlign: "center" }}>
               <div
@@ -750,14 +751,14 @@ export default function StyleguidePage() {
                   width: 120,
                   height: 64,
                   background: "var(--bg-iron)",
-                  border: "1px solid var(--border)",
+                  border: "1px solid var(--primary)",
                   borderRadius: "var(--radius-md)",
-                  boxShadow: "var(--glow-primary)",
+                  boxShadow: "0 0 0 3px var(--primary-muted)",
                   marginBottom: "var(--space-2)",
                 }}
               />
-              <div style={{ fontSize: "var(--text-xs)", fontWeight: 600, color: "var(--text)" }}>--glow-primary</div>
-              <div style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)" }}>cyan ring + diffuse glow</div>
+              <div style={{ fontSize: "var(--text-xs)", fontWeight: 600, color: "var(--text)" }}>input focus ring</div>
+              <div style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)" }}>border --primary + 0 0 0 3px --primary-muted</div>
             </div>
           </div>
         </SubSection>

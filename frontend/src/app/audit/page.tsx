@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { getAuditLog, type AuditEntry } from "@/lib/api";
+import { EmptyStateIcon } from "@/components/EmptyStateIcon";
 
 const ACTION_OPTIONS = [
   { value: "", label: "All actions" },
@@ -67,7 +68,7 @@ export default function AuditPage() {
         </div>
       ) : entries.length === 0 ? (
         <div className="card empty-state">
-          <div className="empty-state-icon">&#128220;</div>
+          <EmptyStateIcon name="audit" />
           <div className="empty-state-title">No audit entries</div>
           <div className="empty-state-text">
             {actionFilter ? "Try a different filter." : "Actions will appear here as they happen."}
