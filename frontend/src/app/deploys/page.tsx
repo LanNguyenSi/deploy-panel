@@ -4,6 +4,7 @@ import { Fragment, useEffect, useState } from "react";
 import { getDeploys, getDeployDetail, type DeployWithRelations, type DeployDetail } from "@/lib/api";
 import { deployStatusBadge } from "@/lib/status";
 import { DeployStepList, normalizeDeploySteps } from "@/components/DeploySteps";
+import { EmptyStateIcon } from "@/components/EmptyStateIcon";
 
 export default function DeploysPage() {
   const [deploys, setDeploys] = useState<DeployWithRelations[]>([]);
@@ -108,7 +109,7 @@ export default function DeploysPage() {
         </div>
       ) : deploys.length === 0 ? (
         <div className="card empty-state">
-          <div className="empty-state-icon">&#128640;</div>
+          <EmptyStateIcon name="deploy" />
           <div className="empty-state-title">No deployments found</div>
           <div className="empty-state-text">
             {statusFilter ? "Try a different filter." : "Deploy an app to see history here."}

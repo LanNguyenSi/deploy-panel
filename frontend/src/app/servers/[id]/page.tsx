@@ -19,6 +19,7 @@ import { BULK_MAX_POLLS, BULK_POLL_MS, bulkSummary, describeFailures, failuresFr
 import { ServerReinstallDialog } from "@/components/ServerReinstallDialog";
 import { ServerUpdateImageDialog } from "@/components/ServerUpdateImageDialog";
 import { countOutdated, describeUpstream, failedUpstream, formatCheckedAt, githubCompareUrl, shortSha } from "@/lib/upstream";
+import { EmptyStateIcon } from "@/components/EmptyStateIcon";
 
 type Panel = { type: "logs" | "deploy" | "preflight" | "env" | "secrets"; app: string };
 
@@ -531,7 +532,7 @@ export default function ServerDetailPage() {
         </div>
       ) : apps.length === 0 ? (
         <div className="card empty-state">
-          <div className="empty-state-icon">&#128230;</div>
+          <EmptyStateIcon name="package" />
           <div className="empty-state-title">No apps found</div>
           <div className="empty-state-text">Deploy an app via agent-relay to see it here.</div>
         </div>

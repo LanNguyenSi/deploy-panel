@@ -15,6 +15,7 @@ import {
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useScheduleDialog } from "@/components/ScheduleDialog";
 import { useToast } from "@/components/Toast";
+import { EmptyStateIcon } from "@/components/EmptyStateIcon";
 
 // Named `TimeWindow` (not `Window`) to avoid shadowing the DOM lib's
 // global `Window` type. Matching local state below is `timeWindow` for
@@ -261,7 +262,7 @@ export default function ScheduledPage() {
         </div>
       ) : filtered.length === 0 ? (
         <div className="card empty-state">
-          <div className="empty-state-icon">&#128197;</div>
+          <EmptyStateIcon name="calendar" />
           <div className="empty-state-title">No deploys scheduled</div>
           <div className="empty-state-text">
             Schedule one from a server page or from an app card.
