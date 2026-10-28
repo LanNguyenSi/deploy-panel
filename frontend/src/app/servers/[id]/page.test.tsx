@@ -394,6 +394,26 @@ describe("ServerDetailPage - accessible names", () => {
     expect(screen.getByRole("combobox", { name: "Deployment tag for my-app" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Deployment tag for other-app" })).toBeInTheDocument();
   });
+
+  it("gives the pin and URL glyph buttons aria-labels matching their titles and aria-pressed on the pin button", async () => {
+    localStorage.clear();
+    const user = await renderPage();
+
+    const pin = screen.getByRole("button", { name: "Pin to dashboard" });
+    expect(pin).toHaveAttribute("title", "Pin to dashboard");
+    expect(pin).toHaveAttribute("aria-pressed", "false");
+
+    const urlButton = screen.getByRole("button", { name: "Set live URL" });
+    expect(urlButton).toHaveAttribute("title", "Set live URL");
+
+    await user.click(pin);
+
+    const pinned = screen.getByRole("button", { name: "Unpin from dashboard" });
+    expect(pinned).toHaveAttribute("title", "Unpin from dashboard");
+    expect(pinned).toHaveAttribute("aria-pressed", "true");
+
+    localStorage.clear();
+  });
 });
 
 describe("ServerDetailPage — relay outdated badge, one-click Update relay, and SSH fallback", () => {

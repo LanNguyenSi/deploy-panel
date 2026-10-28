@@ -2,11 +2,15 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
 const MOBILE_QUERY = "(max-width: 768px)";
+
+// Focusable-element query used to move focus into the drawer when it opens.
+const FOCUSABLE =
+  'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
 function getIsMobile(): boolean {
   return typeof window !== "undefined" && typeof window.matchMedia === "function"
@@ -32,7 +36,25 @@ export default function Sidebar() {
   // instead of keeping the server's attribute.
   const isMobile = useSyncExternalStore(subscribeMobile, getIsMobile, () => false);
 
+  const drawerRef = useRef<HTMLElement>(null);
+  const menuBtnRef = useRef<HTMLButtonElement>(null);
+  const wasOpenRef = useRef(false);
+
   const closeMobile = useCallback(() => setMobileOpen(false), []);
+
+  // The drawer only exists on mobile, so every drawer-driven attribute below
+  // is derived from this conjunction: a mobileOpen left behind by a viewport
+  // change can then never apply its inertness or open state on desktop. The
+  // reset effect below still clears mobileOpen itself so the state is not
+  // merely masked.
+  const drawerOpen = mobileOpen && isMobile;
+
+  // A viewport that grows past the breakpoint closes the drawer; without this
+  // the drawer would only be masked while desktop-wide and reopen on its own
+  // when the viewport shrinks back.
+  useEffect(() => {
+    if (!isMobile) setMobileOpen(false);
+  }, [isMobile]);
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -42,6 +64,48 @@ export default function Sidebar() {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [mobileOpen, closeMobile]);
+
+  // While the drawer is open on mobile, the page content behind the overlay
+  // must leave the tab order. AppShell renders `.app-content` but does not
+  // manage its `inert` attribute, so the drawer's owner (this component,
+  // which owns every close path: Escape, overlay, link click, menu button,
+  // viewport change) toggles the attribute directly. Declared before the
+  // focus effect so the attribute is gone before focus is returned to the
+  // menu button. Keyed on drawerOpen so a desktop render also runs the
+  // removal even though mobileOpen may not have changed yet.
+  useEffect(() => {
+    const content = document.querySelector(".app-content");
+    if (!content) return;
+    if (drawerOpen) content.setAttribute("inert", "");
+    else content.removeAttribute("inert");
+    return () => content.removeAttribute("inert");
+  }, [drawerOpen]);
+
+  // Open: move focus into the drawer (nothing else is focusable while open,
+  // the header and the page content are inert). Close (Escape, overlay click,
+  // link click, menu button, all funneling through mobileOpen): return focus
+  // to the menu button, but only while still on mobile: when the drawer
+  // closes because the viewport grew past the breakpoint, the menu button is
+  // hidden and must not steal focus. Skips the initial mount, when nothing
+  // was focused yet.
+  // The open-side focus waits two frames: the drawer becomes visible only
+  // once the CSS visibility transition has started, and focus() on a
+  // still-computed-hidden subtree is ignored by browsers (a single frame is
+  // not enough for the transition to be live).
+  useEffect(() => {
+    if (drawerOpen === wasOpenRef.current) return;
+    wasOpenRef.current = drawerOpen;
+    if (drawerOpen) {
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          if (!wasOpenRef.current) return;
+          drawerRef.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+        }),
+      );
+    } else if (isMobile) {
+      menuBtnRef.current?.focus();
+    }
+  }, [drawerOpen, isMobile]);
 
   // Close mobile sidebar on route change
   useEffect(() => { closeMobile(); }, [pathname, closeMobile]);
@@ -60,26 +124,29 @@ export default function Sidebar() {
 
   return (
     <>
-      {/* Mobile top bar — fixed positioning, outside flex flow */}
-      <div className="mobile-bar">
+      {/* Mobile top bar: fixed positioning, outside flex flow. A <header> so
+          it is the banner landmark (axe: region rule); inert while the drawer
+          is open so Tab cannot escape the drawer through the menu button. */}
+      <header className="mobile-bar" inert={drawerOpen}>
         <button
+          ref={menuBtnRef}
           className="mobile-menu-btn"
           onClick={() => setMobileOpen(!mobileOpen)}
           aria-label="Toggle menu"
-          aria-expanded={mobileOpen}
+          aria-expanded={drawerOpen}
         >
           <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
             <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>
         </button>
         <span className="mobile-bar-title">Deploy Panel</span>
-      </div>
+      </header>
 
       {/* Overlay for mobile */}
-      {mobileOpen && <div className="sidebar-overlay" role="presentation" onClick={closeMobile} />}
+      {drawerOpen && <div className="sidebar-overlay" role="presentation" onClick={closeMobile} />}
 
       {/* Sidebar */}
-      <aside className={`sidebar${mobileOpen ? " sidebar-open" : ""}`} inert={isMobile && !mobileOpen}>
+      <aside ref={drawerRef} className={`sidebar${drawerOpen ? " sidebar-open" : ""}`} inert={isMobile && !drawerOpen}>
         <div className="sidebar-top">
           <div className="sidebar-brand-row">
             <Link href="/" className="sidebar-brand">

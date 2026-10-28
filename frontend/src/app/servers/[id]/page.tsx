@@ -556,7 +556,10 @@ export default function ServerDetailPage() {
                   <button
                     onClick={() => { togglePin(id, serverName, app.name); setApps([...apps]); }}
                     title={isPinned(id, app.name) ? "Unpin from dashboard" : "Pin to dashboard"}
-                    style={{ background: "none", border: "none", cursor: "pointer", fontSize: "var(--text-sm)", color: isPinned(id, app.name) ? "var(--warning)" : "var(--muted)", padding: 0 }}
+                    aria-label={isPinned(id, app.name) ? "Unpin from dashboard" : "Pin to dashboard"}
+                    aria-pressed={isPinned(id, app.name)}
+                    className="glyph-btn"
+                    style={{ color: isPinned(id, app.name) ? "var(--warning)" : "var(--muted)" }}
                   >
                     {isPinned(id, app.name) ? "★" : "☆"}
                   </button>
@@ -576,14 +579,8 @@ export default function ServerDetailPage() {
                   <button
                     onClick={() => handleEditLiveUrl(app)}
                     title={app.liveUrl ? "Edit live URL" : "Set live URL"}
-                    style={{
-                      background: "none",
-                      border: "none",
-                      cursor: "pointer",
-                      fontSize: "var(--text-sm)",
-                      color: "var(--muted)",
-                      padding: 0,
-                    }}
+                    aria-label={app.liveUrl ? "Edit live URL" : "Set live URL"}
+                    className="glyph-btn"
                   >
                     {app.liveUrl ? "✎" : "+ URL"}
                   </button>
