@@ -33,6 +33,7 @@
   --primary-hover:     #67E8F9;
   --primary-contrast:  #06121A;
   --primary-muted:     rgba(34, 211, 238, 0.12);
+  --focus-ring:        rgba(34, 211, 238, 0.5); /* 3.4:1 against --bg-iron */
 
   /* ── Accent — amber / AI ──────────────────────────────────────── */
   --accent:            #FBBF24;
@@ -254,7 +255,7 @@ a:hover { color: var(--primary-hover); }
 
 .input:focus {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-muted);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .input::placeholder {
@@ -276,7 +277,7 @@ a:hover { color: var(--primary-hover); }
 
 .input-native:focus {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-muted);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 .input-native::placeholder {
@@ -471,6 +472,7 @@ a:hover { color: var(--primary-hover); }
 }
 
 .status-dot-no-relay,
+.status-dot-warning,
 .status-dot-rolled_back {
   background: var(--warning);
 }
@@ -1032,7 +1034,7 @@ a.status-row:hover .status-row-subject {
 
 .select-native:focus {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px var(--primary-muted);
+  box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
 /* ── Skeleton ───────────────────────────────────────────────────── */

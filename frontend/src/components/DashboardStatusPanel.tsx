@@ -5,24 +5,34 @@ function plural(n: number, one: string, many: string): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
+/** The summary only sees the recent deploys the dashboard loads; say so. */
+function basisLine(deployCount: number): string {
+  if (deployCount === 0) return "No deploys yet.";
+  return deployCount === 1 ? "No current failures in the last deploy." : `No current failures in the last ${deployCount} deploys.`;
+}
+
 /** Lead of the dashboard: answers "is anything wrong or running right now". */
 export function StatusPanel({ status, deployCount }: { status: DashboardStatus; deployCount: number }) {
-  const { level, issues, running, serversOnline, serversTotal } = status;
+  const { level, issues, running, serversOnline, serversTotal, serversUnchecked } = status;
+  const serversLine = `${serversOnline} of ${plural(serversTotal, "server", "servers")} online`;
 
   let title: string;
   let sub: string | null = null;
   let dot: string | null;
   if (level === "attention") {
     title = issues.length === 1 ? "1 item needs attention" : `${issues.length} items need attention`;
-    dot = issues.some((i) => i.tone === "offline" || i.tone === "failed") ? "failed" : "no-relay";
+    // Red only for an offline server or a real failure, amber otherwise.
+    dot = issues.some((i) => i.tone === "offline" || i.tone === "failed") ? "failed" : "warning";
   } else if (level === "running") {
     title = `${plural(running.length, "deploy", "deploys")} running`;
     dot = "running";
+  } else if (level === "unchecked") {
+    title = "No problems found";
+    sub = `${serversLine}, ${serversUnchecked} status unknown. ${basisLine(deployCount)}`;
+    dot = "unknown";
   } else if (level === "ok") {
     title = "All systems operational";
-    sub =
-      `${serversOnline} of ${plural(serversTotal, "server", "servers")} online. ` +
-      (deployCount === 0 ? "No deploys yet." : "The latest deploy of each app succeeded.");
+    sub = `${serversLine}. ${basisLine(deployCount)}`;
     dot = "online";
   } else {
     title = "Nothing to monitor yet";

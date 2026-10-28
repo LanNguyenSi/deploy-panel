@@ -28,7 +28,7 @@ export interface StatusIssue {
   /** Short state in words, e.g. "offline" or "last deploy failed". */
   detail: string;
   /** Status dot suffix (status-dot-<tone>). */
-  tone: "offline" | "failed" | "no-relay" | "rolled_back";
+  tone: "offline" | "failed" | "no-relay" | "warning";
   href: string;
 }
 
@@ -37,7 +37,7 @@ export interface RunningDeploy {
   subject: string;
 }
 
-export type DashboardLevel = "attention" | "running" | "ok" | "empty";
+export type DashboardLevel = "attention" | "running" | "unchecked" | "ok" | "empty";
 
 export interface DashboardStatus {
   level: DashboardLevel;
@@ -45,15 +45,14 @@ export interface DashboardStatus {
   running: RunningDeploy[];
   serversOnline: number;
   serversTotal: number;
+  /** Servers that are neither online nor flagged (offline, no relay), e.g. status unknown. */
+  serversUnchecked: number;
 }
 
 // Deploy outcomes that need a human. `success` is fine; `running` and `pending`
-// are handled as in-flight, never as a problem.
-const PROBLEM_DEPLOY_TONE: Record<string, StatusIssue["tone"]> = {
-  failed: "failed",
-  interrupted: "failed",
-  rolled_back: "rolled_back",
-};
+// are handled as in-flight, never as a problem. The tone follows the canonical
+// badge mapping (deployStatusBadge): danger is red, warning is amber.
+const PROBLEM_DEPLOY_STATUS = new Set(["failed", "interrupted", "rolled_back"]);
 
 export function summarizeDashboardStatus(servers: StatusServer[], deploys: StatusDeploy[]): DashboardStatus {
   const issues: StatusIssue[] = [];
@@ -74,19 +73,29 @@ export function summarizeDashboardStatus(servers: StatusServer[], deploys: Statu
   for (const d of newestFirst) {
     const key = `${d.serverId ?? d.server.name}/${d.appId ?? d.app.name}`;
     const subject = `${d.app.name} on ${d.server.name}`;
-    if (d.status === "running") running.push({ key: `run-${d.id}`, subject });
     if (seen.has(key)) continue;
     seen.add(key);
-    const tone = PROBLEM_DEPLOY_TONE[d.status];
-    if (tone) {
-      const label = deployStatusBadge(d.status, d.blocked).label.toLowerCase();
+    if (d.status === "running") running.push({ key: `run-${d.id}`, subject });
+    if (PROBLEM_DEPLOY_STATUS.has(d.status)) {
+      const badge = deployStatusBadge(d.status, d.blocked);
+      const tone: StatusIssue["tone"] = badge.className === "badge-danger" ? "failed" : "warning";
+      const label = badge.label.toLowerCase();
       issues.push({ key: `deploy-${d.id}`, subject, detail: `last deploy ${label}`, tone, href: "/deploys" });
     }
   }
 
   const serversOnline = servers.filter((s) => s.status === "online").length;
+  const serversUnchecked = servers.filter((s) => s.status !== "online" && s.status !== "offline" && s.status !== "no-relay").length;
   const level: DashboardLevel =
-    issues.length > 0 ? "attention" : running.length > 0 ? "running" : servers.length === 0 ? "empty" : "ok";
+    issues.length > 0
+      ? "attention"
+      : running.length > 0
+        ? "running"
+        : servers.length === 0
+          ? "empty"
+          : serversUnchecked > 0
+            ? "unchecked"
+            : "ok";
 
-  return { level, issues, running, serversOnline, serversTotal: servers.length };
+  return { level, issues, running, serversOnline, serversTotal: servers.length, serversUnchecked };
 }

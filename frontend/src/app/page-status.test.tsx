@@ -90,8 +90,39 @@ describe("DashboardPage status lead", () => {
     const panel = (await screen.findByRole("heading", { name: "All systems operational" })).closest("section")!;
     expect(panel).toHaveAttribute("data-level", "ok");
     expect(within(panel).getByText(/2 of 2 servers online/)).toBeInTheDocument();
-    expect(within(panel).getByText(/latest deploy of each app succeeded/i)).toBeInTheDocument();
+    expect(within(panel).getByText(/No current failures in the last deploy\./)).toBeInTheDocument();
     expect(within(panel).queryByRole("link")).toBeNull();
+  });
+
+  it("names the basis of the all-clear with the real number of loaded deploys", async () => {
+    fixture.servers = [serverRow("s1", "online")];
+    fixture.deploys = [
+      { ...failedDeploy, id: "a", status: "success" },
+      { ...failedDeploy, id: "b", status: "success", app: { name: "other" } },
+      { ...failedDeploy, id: "c", status: "success", app: { name: "third" } },
+    ];
+    renderDashboard();
+    const panel = (await screen.findByRole("heading", { name: "All systems operational" })).closest("section")!;
+    expect(within(panel).getByText(/No current failures in the last 3 deploys\./)).toBeInTheDocument();
+  });
+
+  it("says no deploys yet instead of claiming a basis when none were loaded", async () => {
+    fixture.servers = [serverRow("s1", "online")];
+    fixture.deploys = [];
+    renderDashboard();
+    const panel = (await screen.findByRole("heading", { name: "All systems operational" })).closest("section")!;
+    expect(within(panel).getByText(/No deploys yet\./)).toBeInTheDocument();
+    expect(within(panel).queryByText(/No current failures/)).toBeNull();
+  });
+
+  it("does not claim all systems operational while a server has an unknown status", async () => {
+    fixture.servers = [serverRow("s1", "online"), serverRow("s2", "unknown")];
+    fixture.deploys = [{ ...failedDeploy, status: "success" }];
+    renderDashboard();
+    const panel = (await screen.findByRole("heading", { name: "No problems found" })).closest("section")!;
+    expect(panel).toHaveAttribute("data-level", "unchecked");
+    expect(within(panel).getByText(/1 of 2 servers online, 1 status unknown\./)).toBeInTheDocument();
+    expect(screen.queryByText("All systems operational")).toBeNull();
   });
 
   it("says there is nothing to monitor yet with no servers and no deploys", async () => {
@@ -102,7 +133,7 @@ describe("DashboardPage status lead", () => {
     expect(within(panel).getByText("Add a server to see its status here.")).toBeInTheDocument();
   });
 
-  it("colours the lead dot by the worst issue: red for an offline server, amber when only a relay is missing, blue while deploying, green when fine", async () => {
+  it("colours the lead dot by the worst issue: red for an offline server, amber when only a relay is missing or a deploy was interrupted, blue while deploying, green when fine", async () => {
     const dotOf = async (heading: string) => {
       const h = await screen.findByRole("heading", { name: heading });
       return h.parentElement!.querySelector(".status-dot")!.className;
@@ -115,8 +146,21 @@ describe("DashboardPage status lead", () => {
 
     fixture.servers = [serverRow("s1", "no-relay")];
     const second = renderDashboard();
-    expect(await dotOf("1 item needs attention")).toContain("status-dot-no-relay");
+    expect(await dotOf("1 item needs attention")).toContain("status-dot-warning");
     second.unmount();
+
+    fixture.servers = [serverRow("s1", "online")];
+    fixture.deploys = [{ ...failedDeploy, status: "interrupted" }];
+    const interrupted = renderDashboard();
+    expect(await dotOf("1 item needs attention")).toContain("status-dot-warning");
+    expect(screen.getByRole("link", { name: /my-app on srv-a\s+last deploy interrupted/ }).querySelector(".status-dot")!.className).toContain("status-dot-warning");
+    interrupted.unmount();
+
+    fixture.deploys = [{ ...failedDeploy, status: "failed" }];
+    const failed = renderDashboard();
+    expect(await dotOf("1 item needs attention")).toContain("status-dot-failed");
+    expect(screen.getByRole("link", { name: /last deploy failed/ }).querySelector(".status-dot")!.className).toContain("status-dot-failed");
+    failed.unmount();
 
     fixture.servers = [serverRow("s1", "online")];
     fixture.deploys = [{ ...failedDeploy, status: "running" }];
