@@ -53,13 +53,26 @@ cat > "$FAKE_BIN/docker" <<EOF2
 #!/usr/bin/env bash
 echo "\$*" >> "\$FAKE_DOCKER_LOG"
 case "\$*" in
-  *" ps -q "*) [ "\${FAKE_NO_CONTAINER:-0}" = 1 ] && exit 0; echo fake-cid; exit 0 ;;
+  # like real compose: "ps -q" lists running containers only, "ps -a -q" all of them
+  *" ps -a -q "*) [ "\${FAKE_NO_CONTAINER:-0}" = 1 ] && exit 0; echo fake-cid; exit 0 ;;
+  *" ps -q "*)
+    [ "\${FAKE_NO_CONTAINER:-0}" = 1 ] && exit 0
+    case "\${FAKE_HEALTH:-running healthy}" in exited* | dead*) exit 0 ;; esac
+    echo fake-cid; exit 0 ;;
   *"inspect "*)
-    # FAKE_HEALTH: what the health query prints ("<state> <health>"); FAKE_HEALTH_AFTER=n:
-    # the first n queries print "running starting", later ones FAKE_HEALTH
+    # FAKE_HEALTH: "<state> <health>" (the restart count, always 0, is appended);
+    # FAKE_HEALTH_AFTER=n: the first n queries print "running starting 0", later ones FAKE_HEALTH;
+    # FAKE_HEALTH_LIST="a;b;c": query n prints entry n (the last one repeats), each entry
+    # "<state> <health> <restarts>"
     echo x >> "$WORKDIR/inspect_count"
-    if [ "\$(wc -l < "$WORKDIR/inspect_count" | tr -d ' ')" -le "\${FAKE_HEALTH_AFTER:-0}" ]; then echo "running starting"; exit 0; fi
-    echo "\${FAKE_HEALTH:-running healthy}"; exit 0 ;;
+    n="\$(wc -l < "$WORKDIR/inspect_count" | tr -d ' ')"
+    if [ -n "\${FAKE_HEALTH_LIST:-}" ]; then
+      IFS=';' read -r -a l <<< "\$FAKE_HEALTH_LIST"
+      [ "\$n" -le "\${#l[@]}" ] || n=\${#l[@]}
+      echo "\${l[\$((n - 1))]}"; exit 0
+    fi
+    if [ "\$n" -le "\${FAKE_HEALTH_AFTER:-0}" ]; then echo "running starting 0"; exit 0; fi
+    echo "\${FAKE_HEALTH:-running healthy} 0"; exit 0 ;;
   *" ps "*) [ "\${FAKE_PS_FAIL:-0}" = 1 ] && exit 1; printf '%s\n' \${FAKE_RUNNING:-backend db}; exit 0 ;;
   *" exec "*"pg_restore -f /dev/null"*) cat > /dev/null; exit 0 ;;
   *" exec "*"pg_restore -f -"*)
@@ -73,6 +86,8 @@ case "\$*" in
     exit 0 ;;
   *" exec "*pg_dump*)
     [ "\${FAKE_PGDUMP_FAIL:-0}" = 1 ] && { echo "pg_dump: fatal error" >&2; exit 1; }
+    # FAKE_PGDUMP_SLEEP: seconds the pre-restore dump takes
+    [ -z "\${FAKE_PGDUMP_SLEEP:-}" ] || sleep "\$FAKE_PGDUMP_SLEEP"
     cat "$DUMP"; exit 0 ;;
   *" exec "*psql*)
     cat > "\$FAKE_PSQL_STDIN"
@@ -81,6 +96,8 @@ case "\$*" in
     [ "\${FAKE_PSQL_FAIL:-0}" = 1 ] && { echo "psql: ERROR" >&2; exit 3; }
     exit 0 ;;
   *" stop "*)
+    # FAKE_STOP_SLEEP: seconds the stop takes (the grace period)
+    [ -z "\${FAKE_STOP_SLEEP:-}" ] || sleep "\$FAKE_STOP_SLEEP"
     # FAKE_STOP_RM: files (glob allowed) that disappear while the backend is being stopped
     # shellcheck disable=SC2086
     [ -z "\${FAKE_STOP_RM:-}" ] || rm -f \$FAKE_STOP_RM
@@ -338,7 +355,7 @@ no_tmp_left() { [ -z "$(find "$TMPD" -mindepth 1 2>/dev/null)" ]; }
 {
   bad=""
   for h in "running unhealthy" "exited none" "dead none"; do
-    run_restore "FAKE_HEALTH=$h" RESTORE_WAIT_POLL=0 -- --yes "$DUMP"
+    run_restore "FAKE_HEALTH=$h" RESTORE_WAIT_POLL=0.01 -- --yes "$DUMP"
     { [ "$rc" -eq 4 ] && stdin_is_reset_plus_sql && grep -q "restored and committed, but backend is not healthy" <<< "$out_text" \
       && grep -q "logs --tail 100 backend" <<< "$out_text" && grep -q "start backend" <<< "$out_text" \
       && ! grep -q "backend healthy" <<< "$out_text" && ! grep -q "^restore: done" <<< "$out_text" \
@@ -356,17 +373,17 @@ no_tmp_left() { [ -z "$(find "$TMPD" -mindepth 1 2>/dev/null)" ]; }
   else
     fail "(p3) timeout: rc=$rc polls=$n out=$out_text"
   fi
-  run_restore FAKE_HEALTH="running starting" FAKE_NO_CONTAINER=1 RESTORE_WAIT_SECONDS=0 RESTORE_WAIT_POLL=0 -- --yes "$DUMP"
+  run_restore FAKE_HEALTH="running starting" FAKE_NO_CONTAINER=1 RESTORE_WAIT_SECONDS=0 RESTORE_WAIT_POLL=0.01 -- --yes "$DUMP"
   if [ "$rc" -eq 4 ] && grep -q "no container for backend" <<< "$out_text"; then pass "(p3b) no container to inspect -> exit 4"; else fail "(p3b) no container: rc=$rc"; fi
 }
 
 # (p4) the backend becomes healthy only after a few polls: exit 0, polled until then
 {
-  run_restore FAKE_HEALTH_AFTER=3 RESTORE_WAIT_POLL=0 -- --yes "$DUMP"
+  run_restore FAKE_HEALTH_AFTER=3 RESTORE_WAIT_POLL=0.01 -- --yes "$DUMP"
   n="$(wc -l < "$WORKDIR/inspect_count" | tr -d ' ')"
   l_start="$(line_of ' start backend')"; l_insp="$(line_of 'inspect ')"
-  if [ "$rc" -eq 0 ] && [ "$n" = 4 ] && grep -q "restore: backend healthy" <<< "$out_text" && [ "$l_start" -lt "$l_insp" ]; then
-    pass "(p4) success waits for health after the start: 3 polls starting, then healthy"
+  if [ "$rc" -eq 0 ] && [ "$n" = 5 ] && grep -q "restore: backend healthy" <<< "$out_text" && [ "$l_start" -lt "$l_insp" ]; then
+    pass "(p4) success waits for health after the start: 3 polls starting, one healthy, one confirming"
   else
     fail "(p4) wait for health: rc=$rc polls=$n start=$l_start inspect=$l_insp"
   fi
@@ -386,35 +403,86 @@ no_tmp_left() { [ -z "$(find "$TMPD" -mindepth 1 2>/dev/null)" ]; }
 # call; each good value alone (and both together) is accepted; empty counts as unset (the defaults apply)
 {
   bad=""
-  for e in RESTORE_WAIT_SECONDS=abc RESTORE_WAIT_SECONDS=-1 RESTORE_WAIT_SECONDS=1.5 RESTORE_WAIT_POLL=x RESTORE_WAIT_POLL=1.2.3; do
+  for e in RESTORE_WAIT_SECONDS=abc RESTORE_WAIT_SECONDS=-1 RESTORE_WAIT_SECONDS=1.5 RESTORE_WAIT_POLL=x RESTORE_WAIT_POLL=1.2.3 RESTORE_WAIT_POLL=0 RESTORE_WAIT_POLL=00 RESTORE_WAIT_POLL=0.0 RESTORE_WAIT_SECONDS=1234567890; do
     run_restore "$e" -- --yes "$DUMP"
     { [ "$rc" -eq 2 ] && no_db_calls; } || bad="$bad [$e rc=$rc]"
   done
-  for e in RESTORE_WAIT_SECONDS=5 RESTORE_WAIT_POLL=0.5 "RESTORE_WAIT_SECONDS=5 RESTORE_WAIT_POLL=1" RESTORE_WAIT_SECONDS= RESTORE_WAIT_POLL=; do
+  for e in RESTORE_WAIT_SECONDS=5 RESTORE_WAIT_POLL=0.5 "RESTORE_WAIT_SECONDS=5 RESTORE_WAIT_POLL=1" RESTORE_WAIT_SECONDS= RESTORE_WAIT_POLL= RESTORE_WAIT_SECONDS=08 RESTORE_WAIT_SECONDS=09 RESTORE_WAIT_SECONDS=010 "RESTORE_WAIT_SECONDS=08 RESTORE_WAIT_POLL=0.01"; do
+    # a leading zero is decimal, not octal: 08 and 09 must not break the deadline arithmetic
+    # after the COMMIT (they used to skip the health gate and print "done")
     # shellcheck disable=SC2086
     run_restore $e -- --yes "$DUMP"
-    [ "$rc" -eq 0 ] || bad="$bad [$e rc=$rc]"
+    { [ "$rc" -eq 0 ] && grep -q "restore: backend healthy" <<< "$out_text" && grep -q "^restore: done" <<< "$out_text"; } || bad="$bad [$e rc=$rc]"
   done
   if [ -z "$bad" ]; then pass "(p6) wait settings: bad values refused, good values accepted"; else fail "(p6) wait settings:$bad"; fi
+}
+
+# (p7) a healthy reading counts only when the next poll agrees (same state, same restart
+# count): passes once and then turns unhealthy -> exit 4; a restart in between restarts the
+# confirmation; healthy, then starting until the wait runs out -> exit 4
+{
+  bad7=""
+  run_restore "FAKE_HEALTH_LIST=running healthy 0;running unhealthy 0" RESTORE_WAIT_POLL=0.01 -- --yes "$DUMP"
+  n1="$(wc -l < "$WORKDIR/inspect_count" | tr -d ' ')"
+  { [ "$rc" -eq 4 ] && [ "$n1" = 2 ] && grep -q "is not healthy (unhealthy)" <<< "$out_text" && ! grep -q "backend healthy" <<< "$out_text"; } || bad7="$bad7 [healthy then unhealthy rc=$rc polls=$n1]"
+  run_restore "FAKE_HEALTH_LIST=running healthy 0;running healthy 1;running healthy 1" RESTORE_WAIT_POLL=0.01 -- --yes "$DUMP"
+  n2="$(wc -l < "$WORKDIR/inspect_count" | tr -d ' ')"
+  { [ "$rc" -eq 0 ] && [ "$n2" = 3 ] && grep -q "restore: backend healthy" <<< "$out_text"; } || bad7="$bad7 [restart between polls rc=$rc polls=$n2]"
+  run_restore "FAKE_HEALTH_LIST=running healthy 0;running starting 1" RESTORE_WAIT_SECONDS=1 RESTORE_WAIT_POLL=0.2 -- --yes "$DUMP"
+  { [ "$rc" -eq 4 ] && grep -q "not healthy after 1s (last state: running starting 1)" <<< "$out_text"; } || bad7="$bad7 [healthy then starting rc=$rc]"
+  run_restore "FAKE_HEALTH_LIST=running healthy 0" RESTORE_WAIT_SECONDS=0 RESTORE_WAIT_POLL=0.01 -- --yes "$DUMP"
+  { [ "$rc" -eq 4 ] && grep -q "not stably healthy after 0s" <<< "$out_text"; } || bad7="$bad7 [one reading only rc=$rc]"
+  if [ -z "${bad7:-}" ]; then pass "(p7) healthy must be confirmed by a second poll with the same restart count"; else fail "(p7) health confirmation:$bad7"; fi
+}
+
+# term_run <wait-pattern> <env...>: start restore.sh in the background, wait until the fake
+# docker log shows <wait-pattern>, send TERM, set rc and out_text
+term_run() {
+  local pattern="$1"; shift
+  : > "$FAKE_DOCKER_LOG"; rm -f "$FAKE_PSQL_STDIN"; rm -rf "$BACKUPS"
+  env PATH="$FAKE_BIN:$PATH" BACKUP_COMPOSE_FILE="$COMPOSE_FILE" BACKUP_DIR="$BACKUPS" TMPDIR="$TMPD" "$@" \
+    "$RESTORE_SCRIPT" --yes "${TERM_ARGS[@]}" "$DUMP" > "$WORKDIR/term.out" 2>&1 &
+  local pid=$!
+  for _ in $(seq 1 100); do grep -q -- "$pattern" "$FAKE_DOCKER_LOG" && break; sleep 0.1; done
+  kill -TERM "$pid"
+  rc=0; wait "$pid" || rc=$?
+  out_text="$(cat "$WORKDIR/term.out")"
 }
 
 # (x) TERM while psql is loading: bash runs the trap only after the pipeline has finished, so
 # the load may have committed. Exit 1, and the message says the state is unknown and how to
 # start the backend. TERM before the load: the database is unchanged, the hint still printed.
 {
-  : > "$FAKE_DOCKER_LOG"; rm -f "$FAKE_PSQL_STDIN"; rm -rf "$BACKUPS"
-  env PATH="$FAKE_BIN:$PATH" BACKUP_COMPOSE_FILE="$COMPOSE_FILE" BACKUP_DIR="$BACKUPS" TMPDIR="$TMPD" FAKE_PSQL_SLEEP=2 \
-    "$RESTORE_SCRIPT" --yes --no-pre-backup "$DUMP" > "$WORKDIR/term.out" 2>&1 &
-  pid=$!
-  for _ in $(seq 1 100); do [ -s "$FAKE_PSQL_STDIN" ] && break; sleep 0.1; done
-  kill -TERM "$pid"
-  rc=0; wait "$pid" || rc=$?
-  out_text="$(cat "$WORKDIR/term.out")"
+  TERM_ARGS=(--no-pre-backup)
+  term_run 'psql -v ON_ERROR_STOP' FAKE_PSQL_SLEEP=2
   if [ "$rc" -eq 1 ] && stdin_is_reset_plus_sql && grep -q "state of database 'deploy_panel' is unknown" <<< "$out_text" \
     && grep -q "backend may be stopped" <<< "$out_text" && grep -q "start backend" <<< "$out_text" && no_tmp_left; then
     pass "(x) TERM during the load -> exit 1, state unknown, backend start command printed"
   else
     fail "(x) TERM during the load: rc=$rc out=$out_text"
+  fi
+}
+
+# (x2) TERM while the backend is being stopped (up to its grace period): the stop completes
+# first, so the backend is stopped when the handler runs; the message must say how to start
+# it. (x3) TERM before the load (here: during the pre-restore dump): same hint, database
+# unchanged, and the script must not start the backend itself or touch the database
+{
+  TERM_ARGS=(--no-pre-backup)
+  term_run ' stop backend' FAKE_STOP_SLEEP=1
+  if [ "$rc" -eq 1 ] && grep -q "database is unchanged" <<< "$out_text" && grep -q "backend may be stopped" <<< "$out_text" \
+    && grep -q "start backend" <<< "$out_text" && ! grep -q ' start backend' "$FAKE_DOCKER_LOG" && [ ! -e "$FAKE_PSQL_STDIN" ] && no_tmp_left; then
+    pass "(x2) TERM during the backend stop -> exit 1, start command printed"
+  else
+    fail "(x2) TERM during stop: rc=$rc out=$out_text"
+  fi
+  TERM_ARGS=()
+  term_run ' pg_dump ' FAKE_PGDUMP_SLEEP=1
+  if [ "$rc" -eq 1 ] && grep -q "database is unchanged" <<< "$out_text" && grep -q "backend may be stopped" <<< "$out_text" \
+    && grep -q "start backend" <<< "$out_text" && ! grep -q ' start backend' "$FAKE_DOCKER_LOG" && ! grep -q 'psql' "$FAKE_DOCKER_LOG" && no_tmp_left; then
+    pass "(x3) TERM before the load -> exit 1, database unchanged, start command printed, backend not started, no psql"
+  else
+    fail "(x3) TERM before the load: rc=$rc out=$out_text"
   fi
 }
 
@@ -471,6 +539,38 @@ no_tmp_left() { [ -z "$(find "$TMPD" -mindepth 1 2>/dev/null)" ]; }
     if [ "$rc" -ne 1 ] || ! no_changing_calls || ! grep -q "transaction control" <<< "$out_text"; then bad_w="$stmt"; fi
   done
   if [ -z "$bad_w" ]; then pass "(w) transaction control statement in the dump -> exit 1 before changing anything"; else fail "(w) txn statement not refused: $bad_w"; fi
+}
+
+# (y) backup-roundtrip.sh refuses the production database container, by name and by compose
+# project, before it touches anything (ROUNDTRIP_GUARD_ONLY=1 stops it right after the guard).
+# A fake docker answers the two inspect queries: GUARD_NAME_LABEL for the container under
+# test, GUARD_PROD_LABEL for the one named deploy-panel-db.
+{
+  GBIN="$WORKDIR/guardbin"; mkdir -p "$GBIN"
+  cat > "$GBIN/docker" <<'EOF3'
+#!/usr/bin/env bash
+case "$*" in
+  *"inspect -f {{.Name}}"*) [ "${GUARD_NAME_LABEL-unset}" != unset ] || exit 1; echo "$GUARD_NAME_LABEL" ;;
+  *"inspect -f {{index"*"deploy-panel-db") [ "${GUARD_PROD_LABEL-unset}" != unset ] || exit 1; echo "$GUARD_PROD_LABEL" ;;
+  *) echo "guard fake docker: unexpected call: $*" >&2; exit 9 ;;
+esac
+EOF3
+  chmod +x "$GBIN/docker"
+  guard_rc() { # guard_rc <name label> <prod label> [COMPOSE_PROJECT_NAME]
+    local r=0
+    env PATH="$GBIN:$PATH" DRILL_PG_CONTAINER=scratch ROUNDTRIP_GUARD_ONLY=1 GUARD_NAME_LABEL="$1" GUARD_PROD_LABEL="$2" \
+      ${3:+COMPOSE_PROJECT_NAME="$3"} bash "$SCRIPT_DIR/backup-roundtrip.sh" > "$WORKDIR/guard.out" 2>&1 || r=$?
+    echo "$r"
+  }
+  bad_y=""
+  [ "$(guard_rc '/deploy-panel-db ' 'prodproj')" = 1 ] || bad_y="$bad_y [production name]"
+  [ "$(guard_rc '/renamed-db prodproj' 'prodproj')" = 1 ] || bad_y="$bad_y [production project]"
+  [ "$(guard_rc '/renamed-db sameproj' 'otherproj' 'sameproj')" = 1 ] || bad_y="$bad_y [COMPOSE_PROJECT_NAME]"
+  grep -q "production" "$WORKDIR/guard.out" || bad_y="$bad_y [no message]"
+  [ "$(guard_rc '/scratch-pg ' 'prodproj')" = 0 ] || bad_y="$bad_y [plain scratch container refused]"
+  [ "$(guard_rc '/scratch-pg otherproj' 'prodproj')" = 0 ] || bad_y="$bad_y [other project refused]"
+  [ "$(guard_rc '/scratch-pg ' 'unset-prod' )" = 0 ] || bad_y="$bad_y [scratch refused]"
+  if [ -z "$bad_y" ]; then pass "(y) round-trip guard refuses the production container by name and compose project, accepts scratch ones"; else fail "(y) round-trip guard:$bad_y"; fi
 }
 
 echo "restore tests: $pass_count passed, $fail_count failed"

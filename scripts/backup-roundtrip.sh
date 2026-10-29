@@ -87,11 +87,29 @@ run_script() {
     TMPDIR="$WORK/tmp" PG_USER="$PG_ROLE" "${envs[@]}" "$REPO_ROOT/scripts/$script" "$@"
 }
 
-# The script drops and creates databases: refuse the production container by name.
-guard_container() { # guard_container <container name>
+# The script drops and creates databases: refuse the production container. The name alone
+# is not enough (a container may be addressed by id, or the stack started under another
+# project name), so ask docker for the real name and the compose project label, and refuse
+# the container named deploy-panel-db and every container of its compose project (or of
+# COMPOSE_PROJECT_NAME when that is set).
+guard_container() { # guard_container <container name or id>
+  local info name project prod_project
   [ "$1" != deploy-panel-db ] || fail "refusing to run against the production container deploy-panel-db"
+  info="$("$REAL_DOCKER" inspect -f '{{.Name}} {{index .Config.Labels "com.docker.compose.project"}}' "$1" 2> /dev/null)" \
+    || fail "cannot inspect container $1; is DRILL_PG_CONTAINER a running container?"
+  name="${info%% *}"
+  project="${info#* }"
+  [ "$project" != "$info" ] || project=""
+  [ "$name" != /deploy-panel-db ] || fail "refusing to run against the production container deploy-panel-db"
+  prod_project="$("$REAL_DOCKER" inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' deploy-panel-db 2> /dev/null)" || prod_project=""
+  if [ -n "$project" ]; then
+    [ "$project" != "$prod_project" ] || fail "refusing to run against $name: it belongs to the compose project '$project' of the production container deploy-panel-db"
+    [ "$project" != "${COMPOSE_PROJECT_NAME:-}" ] || fail "refusing to run against $name: it belongs to the compose project '$project' (COMPOSE_PROJECT_NAME), the production stack"
+  fi
 }
 guard_container "$DRILL_PG_CONTAINER"
+# ROUNDTRIP_GUARD_ONLY=1: stop here (used by scripts/restore.test.sh to test the guard)
+[ -z "${ROUNDTRIP_GUARD_ONLY:-}" ] || { echo "roundtrip: guard passed"; exit 0; }
 
 echo "roundtrip: creating the schema of backend/prisma/schema.prisma in fresh databases"
 (cd "$REPO_ROOT/backend" && HOME="$WORK" npx prisma migrate diff --from-empty \
