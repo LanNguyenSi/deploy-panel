@@ -71,6 +71,7 @@ curl -X POST https://panel.example.com/api/v1/deploy \
 | Understand the layers (frontend, backend, relay proxy, data model) | [docs/architecture.md](docs/architecture.md) |
 | Configure env vars, ports, sessions, CORS, Docker deployment | [docs/configuration.md](docs/configuration.md) |
 | Enable GitHub OAuth or the identity-broker registration flow | [docs/configuration.md#authentication](docs/configuration.md#authentication) |
+| Back up and restore the panel's database, restore drill | [docs/configuration.md#backup-and-restore](docs/configuration.md#backup-and-restore) |
 | Call the REST API (panel UI endpoints + `/api/v1` for CI/CD) | [docs/api.md](docs/api.md) |
 | Drive deploys from an AI agent (MCP server) | [mcp/README.md](mcp/README.md) |
 | Deploy from a GitHub Actions workflow | [action/README.md](action/README.md) |

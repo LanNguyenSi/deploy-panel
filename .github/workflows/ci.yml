@@ -322,3 +322,52 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - run: bash scripts/relay-config.test.sh
+
+  backup-scripts:
+    # shellcheck and the stub-docker tests of the database backup, restore and
+    # restore-drill scripts (scripts/backup.sh, restore.sh, restore-drill.sh).
+    # No container or Postgres is needed: a fake `docker` on PATH stands in.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: shellcheck and stub tests
+        run: |
+          shellcheck scripts/backup.sh scripts/backup.test.sh \
+            scripts/restore.sh scripts/restore.test.sh \
+            scripts/restore-drill.sh scripts/restore-drill.test.sh \
+            scripts/backup-roundtrip.sh
+          bash scripts/backup.test.sh
+          bash scripts/restore.test.sh
+          bash scripts/restore-drill.test.sh
+
+  backup-roundtrip:
+    # Round-trips a seeded database through the REAL scripts/backup.sh and
+    # scripts/restore.sh against a Postgres 16 service container (see
+    # scripts/backup-roundtrip.sh). The stub tests above cannot notice a drifted
+    # pg_dump, pg_restore or psql option; this can. A backup that has never been
+    # restored is a hope.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: deploy_panel
+          POSTGRES_PASSWORD: deploy_panel
+          POSTGRES_DB: deploy_panel
+        options: >-
+          --health-cmd "pg_isready -U deploy_panel"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Back up, restore, compare
+        env:
+          # The id of the job's own postgres service container, not a docker ps guess.
+          DRILL_PG_CONTAINER: ${{ job.services.postgres.id }}
+        run: bash scripts/backup-roundtrip.sh
