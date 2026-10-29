@@ -26,7 +26,7 @@ product behavior: `backend/src/lib/secret-crypto.ts` deliberately reads
 `config/index.ts`. `config/index.ts`'s top-level `configSchema.safeParse`
 calls `process.exit(1)` when ANY var is invalid (not just
 `APP_SECRETS_KEY`, e.g. a `SESSION_SECRET` shorter than 16 characters too), see
-`config/index.ts:44-47#"process.exit(1);"`. That side effect is correct for the
+`config/index.ts:46-50#"process.exit(1);"`. That side effect is correct for the
 server entrypoint, but wrong for a leaf crypto module that other modules
 (`apps.ts`, `v1.ts`, `stream-deploy.ts` and its transitive importers) pull
 in. A test suite that mocks Prisma/relay but leaves the env half-configured
