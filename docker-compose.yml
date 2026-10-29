@@ -1,3 +1,14 @@
+# Fixed project name for the dev stack. Without an explicit `name:` Compose
+# derives the project name from the current directory, so running this file
+# from the prod app directory (`docker compose -f docker-compose.yml ...`)
+# would join the prod project and mount the LIVE prod `pgdata` volume. A
+# fixed name keeps dev's volumes (deploy-panel-dev_pgdata) separate no matter
+# which directory the file is run from. docker-compose.prod.yml deliberately
+# sets no name: the live prod stack's project name comes from its directory,
+# and adding one there now would rename the project and orphan the live
+# database volume.
+name: deploy-panel-dev
+
 services:
   db:
     image: postgres:16-alpine
