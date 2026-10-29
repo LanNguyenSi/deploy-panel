@@ -369,9 +369,9 @@ no_tmp_left() { [ -z "$(find "$TMPD" -mindepth 1 2>/dev/null)" ]; }
 
 # (p3) the backend stays in "starting" (crash loop) until the wait runs out: exit 4
 {
-  run_restore FAKE_HEALTH="running starting" RESTORE_WAIT_SECONDS=1 RESTORE_WAIT_POLL=0.2 -- --yes "$DUMP"
+  run_restore FAKE_HEALTH="running starting" RESTORE_WAIT_SECONDS=2 RESTORE_WAIT_POLL=0.2 -- --yes "$DUMP"
   n="$(wc -l < "$WORKDIR/inspect_count" | tr -d ' ')"
-  if [ "$rc" -eq 4 ] && grep -q "not healthy after 1s" <<< "$out_text" && [ "$n" -ge 2 ]; then
+  if [ "$rc" -eq 4 ] && grep -q "not healthy after 2s" <<< "$out_text" && [ "$n" -ge 2 ]; then
     pass "(p3) health wait times out -> exit 4 after polling ($n polls)"
   else
     fail "(p3) timeout: rc=$rc polls=$n out=$out_text"
@@ -573,6 +573,15 @@ EOF3
   [ "$(guard_rc '/scratch-pg ' 'prodproj')" = 0 ] || bad_y="$bad_y [plain scratch container refused]"
   [ "$(guard_rc '/scratch-pg otherproj' 'prodproj')" = 0 ] || bad_y="$bad_y [other project refused]"
   [ "$(guard_rc '/scratch-pg ' 'unset-prod' )" = 0 ] || bad_y="$bad_y [scratch refused]"
+  # Only the exact value 1 stops after the guard: any other value runs on into the round trip
+  # (a stub npx stops it right there, before anything real happens).
+  printf '#!/usr/bin/env bash\necho "guard test: npx reached" >&2\nexit 7\n' > "$GBIN/npx"; chmod +x "$GBIN/npx"
+  for v in 0 yes; do
+    env PATH="$GBIN:$PATH" DRILL_PG_CONTAINER=scratch ROUNDTRIP_GUARD_ONLY="$v" GUARD_NAME_LABEL='/scratch-pg ' GUARD_PROD_LABEL='prodproj' \
+      bash "$SCRIPT_DIR/backup-roundtrip.sh" > "$WORKDIR/guard.out" 2>&1 || true
+    { ! grep -q "roundtrip: guard passed" "$WORKDIR/guard.out" && grep -q "guard test: npx reached" "$WORKDIR/guard.out"; } \
+      || bad_y="$bad_y [ROUNDTRIP_GUARD_ONLY=$v short-circuited]"
+  done
   if [ -z "$bad_y" ]; then pass "(y) round-trip guard refuses the production container by name and compose project, accepts scratch ones"; else fail "(y) round-trip guard:$bad_y"; fi
 }
 

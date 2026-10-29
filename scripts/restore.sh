@@ -224,8 +224,10 @@ fi
 # why not (unhealthy, exited, no container, timeout after N seconds). `ps -a`: plain
 # `ps -q` lists only running containers, so an exited backend would look like "no container".
 # A healthy reading counts only when the next poll, one interval later, shows the same
-# state and restart count. That catches a crash within one poll interval, not a later one:
-# Docker keeps the last health status between its own checks.
+# state and restart count. That catches a crash within one poll interval (the entrypoint
+# execs node, so a crash ends the container); a later crash happens after the wait has
+# returned. A hang without an exit is not seen within one poll either: Docker updates the
+# health status only at each healthcheck interval.
 health_result=""
 wait_healthy() {
   local cid state prev_ok="" deadline=$((SECONDS + WAIT_SECONDS))
