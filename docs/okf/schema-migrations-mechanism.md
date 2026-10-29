@@ -1,37 +1,74 @@
 ---
 type: overview
-title: Schema migrations mechanism — pointer to the migrations README
-description: Pointer doc — backend/prisma/migrations/README.md is the authoritative statement that migration.sql files are documentation-only; every path that actually applies the schema (Docker entrypoint, local `make db-push`) runs `prisma db push`, never `prisma migrate deploy`.
-tags: [prisma, migrations, pointer]
-timestamp: 2026-10-14T04:40:33Z
+title: Schema migrations mechanism — committed Prisma migrations applied by migrate.sh
+description: Every path that applies the schema (Docker entrypoint, local `make db-migrate`) runs backend/scripts/migrate.sh, which uses `prisma migrate deploy` against the committed baseline migration, baselines a db-push database only when it equals schema.prisma, and never runs `prisma db push`; relay rollbacks restore code, not the schema.
+tags: [prisma, migrations, entrypoint, rollback]
+timestamp: 2026-10-29T08:00:00Z
 sources:
   - backend/prisma/migrations/README.md
+  - backend/scripts/migrate.sh
   - backend/backend-entrypoint.sh
+  - backend/Dockerfile
   - Makefile
   - backend/prisma/schema.prisma
+  - .relay.yml
 ---
 
-# Schema migrations mechanism — pointer
+# Schema migrations mechanism
 
-The authoritative reference is
-[`backend/prisma/migrations/README.md`](../../backend/prisma/migrations/README.md):
-`migration.sql` files under this directory are schema-history documentation
-only. Nothing in this repo's actual deploy or dev path reads or applies
-them — it is current against main and deliberately not restated here.
-The README also states that the record is incomplete (no baseline for the
-initial tables, and several later tables and columns have no migration), so
-the folder cannot be replayed onto an empty database as is.
+The schema is applied by the migrations committed under
+[`backend/prisma/migrations`](../../backend/prisma/migrations/README.md), one
+baseline migration generated from `schema.prisma` plus whatever followed it.
+Nothing in the repo runs `prisma db push` any more. Operator-facing detail
+(the production one-time step, recovery commands, rollback limits) is in
+[`docs/configuration.md`](../configuration.md#database-migrations); this doc
+holds the cross-file picture.
 
-The two call sites that actually mutate a live database schema, both running
-`prisma db push` against `prisma/schema.prisma` directly:
+## One script, three callers
 
-- **Docker / production**: `backend/backend-entrypoint.sh` runs
-  `npx prisma db push --schema="$SCHEMA" --skip-generate` on container
-  startup, with a small retry loop.
-- **Local dev**: the root `Makefile`'s `db-push` target (`cd backend && npx
-  prisma db push`), invoked directly or via `make setup`.
+`backend/scripts/migrate.sh` is the only code that touches the schema:
 
-So when `schema.prisma` changes, add a migration folder anyway for the
-reviewable record (per the README's own instructions) — just don't expect
-`prisma migrate dev/deploy` to have touched a live database as part of
-authoring one.
+- **Docker / production**: `backend/backend-entrypoint.sh` runs it before
+  `exec`ing the server, so the port only binds after the migrations applied
+  and the relay's health check cannot pass earlier. It retries only the
+  script's exit 3 ("could not check", the db-not-ready race); exit 1 (a
+  differing database, a failed migration) is final and the container exits.
+- **Local dev**: the root `Makefile`'s `db-migrate` target (also run by
+  `make setup`; `db-push` survives only as an alias of it) and
+  `npm run db:migrate --workspace=backend`.
+- **CI**: the `migrations` job runs it against a Postgres service and
+  `scripts/backend-migrate.test.sh` covers every outcome.
+
+The script picks by database state: history table present or empty database
+means `prisma migrate deploy`; tables without history (a database from the
+`db push` releases) are baselined with `prisma migrate resolve --applied` only
+when `prisma migrate diff --exit-code` says the database equals
+`schema.prisma`, otherwise it exits 1 and changes nothing.
+
+## The Prisma CLI is a runtime dependency
+
+`prisma` sits in `backend/package.json` `dependencies`, so the runtime stage's
+`npm ci --omit=dev` installs the version `package-lock.json` pins and
+`migrate.sh` calls `node_modules/.bin/prisma` (not `npx`, which would fall
+back to the registry). The Dockerfile's `npx --no-install prisma generate`
+fails instead of downloading. A start therefore needs no network beyond the
+database.
+
+## Rollback restores code, not the schema
+
+`.relay.yml` keeps `rollback: true` and declares no `post_update` hook: the
+relay's rollback is `git reset --hard` plus rebuild and restart of the
+previous image, and migrations are forward-only. The honest limits (add-only
+migrations roll back safely, others need a manual step, rolling back past the
+first migrations release makes the old `db push` drop unknown columns) are in
+`docs/configuration.md#rollback-and-the-database-schema`.
+
+## Don't
+
+- Don't reintroduce `prisma db push` in an entrypoint, hook or Makefile path:
+  it changes the schema without a migration and cannot be reviewed or rolled
+  forward.
+- Don't edit an already-deployed migration; add the next one. A schema change
+  without a migration fails the CI `migrations` job.
+- Don't swap `node_modules/.bin/prisma` for `npx prisma` in the script: a
+  missing local install must fail, not download.

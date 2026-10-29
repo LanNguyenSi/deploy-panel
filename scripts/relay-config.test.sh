@@ -45,9 +45,15 @@ for (const key of ["pre_update", "post_update"]) {
     }
   });
 }
-if (total === 0) {
-  console.log("FAIL: no pre_update or post_update entries found");
+// A config without hook entries is valid (the schema step runs in the backend
+// entrypoint, not in a hook). The parse guard keeps an empty or misread file
+// from passing as "no hooks": the config must be a mapping with a health path
+// and a compose file.
+if (doc === null || typeof doc !== "object" || typeof doc.health !== "string" || typeof doc.compose_file !== "string") {
+  console.log("FAIL: .relay.yml did not parse as a mapping with string health and compose_file");
   bad++;
+} else if (total === 0) {
+  console.log("PASS: no pre_update or post_update entries declared");
 }
 // agent-relay runs pre_update against the pre-pull tree, so an image build
 // there builds the OLD code (wasted time, and a likely containerd snapshot

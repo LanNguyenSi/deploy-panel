@@ -41,12 +41,12 @@ npm install
 docker compose up -d db                          # Postgres only, published on 127.0.0.1:5433
 npx prisma generate --schema backend/prisma/schema.prisma
 set -a; . ./.env; set +a                         # host-run processes below don't load .env themselves
-npx prisma db push --schema backend/prisma/schema.prisma   # run from the repo root
+sh backend/scripts/migrate.sh                    # apply the committed migrations (prisma migrate deploy)
 
 make dev                                          # backend on :3001, frontend on :3000, hot reload
 ```
 
-`make build` (build both workspaces) also needs the generated Prisma client: run it after the `prisma generate` step, otherwise the backend `tsc` build fails. An exported `.env` is fine: the frontend build script sets `NODE_ENV=production` for `next build` itself. `make dev` additionally needs Postgres and an exported `.env`; neither `make dev` nor `make db-push` reads `.env` itself. This block mirrors the README [Quick start](README.md#quick-start). The full Docker stack (`make docker-up` / `make setup`) additionally requires `APP_SECRETS_KEY` in `.env`.
+A change to `backend/prisma/schema.prisma` needs a new migration in `backend/prisma/migrations/` in the same PR (how: [the migrations README](backend/prisma/migrations/README.md)); CI fails when the committed migrations do not produce the schema. `make build` (build both workspaces) also needs the generated Prisma client: run it after the `prisma generate` step, otherwise the backend `tsc` build fails. An exported `.env` is fine: the frontend build script sets `NODE_ENV=production` for `next build` itself. `make dev` additionally needs Postgres and an exported `.env`; neither `make dev` nor `make db-migrate` reads `.env` itself. This block mirrors the README [Quick start](README.md#quick-start). The full Docker stack (`make docker-up` / `make setup`) additionally requires `APP_SECRETS_KEY` in `.env`.
 
 ## Style
 

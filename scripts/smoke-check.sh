@@ -127,7 +127,7 @@ code="$(http GET /api/v1/apps)"
 if [ "$code" = "500" ]; then
   fail "apps query" \
     "HTTP 500 on /api/v1/apps — likely Prisma schema drift" \
-    "run: docker compose exec backend npx prisma db push --schema=backend/prisma/schema.prisma --skip-generate"
+    "run: docker compose exec backend sh backend/scripts/migrate.sh"
 fi
 assert_status "apps query (/api/v1/apps)" "$code" "200"
 assert_json_has "apps list shape" '.apps | type == "array"'
