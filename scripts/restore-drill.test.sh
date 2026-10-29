@@ -32,7 +32,7 @@ TABLES="servers apps app_secrets env_var_changes users sessions api_keys deploys
 rows_for() {
   case "$1" in users) echo 2 ;; sessions) echo 1 ;; app_secrets) echo 3 ;; deploys) echo 5 ;; *) echo 0 ;; esac
 }
-make_sql() { # make_sql <file> [omitted table]
+make_sql() { # make_sql <file> [omitted table]; MAKE_COPY_ROW=1: the first users row starts with "COPY "
   : > "$1"
   printf -- '-- PostgreSQL database dump\nSET statement_timeout = 0;\n' >> "$1"
   for t in $TABLES; do
@@ -42,7 +42,11 @@ make_sql() { # make_sql <file> [omitted table]
     i=0
     while [ "$i" -lt "$n" ]; do
       i=$((i + 1))
-      printf 'row-%s\tvalue with COPY text\n' "$i" >> "$1"
+      if [ "${MAKE_COPY_ROW:-0}" = 1 ] && [ "$t" = users ] && [ "$i" = 1 ]; then
+        printf 'COPY public.apps (x)\tdata row that looks like a COPY header\n' >> "$1"
+      else
+        printf 'row-%s\tvalue with COPY text\n' "$i" >> "$1"
+      fi
     done
     printf '\\.\n\n' >> "$1"
   done
@@ -50,6 +54,7 @@ make_sql() { # make_sql <file> [omitted table]
 }
 make_sql "$WORKDIR/full.sql"
 make_sql "$WORKDIR/no_apps.sql" apps
+MAKE_COPY_ROW=1 make_sql "$WORKDIR/copy_row.sql"
 for t in $TABLES; do rows_for "$t" > "$WORKDIR/actual.$t"; done
 # a table with zero rows everywhere
 { printf -- '-- PostgreSQL database dump\n'; for t in $TABLES; do printf 'COPY public.%s (id) FROM stdin;\n\\.\n' "$t"; done; } > "$WORKDIR/empty.sql"
@@ -64,7 +69,14 @@ cat > "$FAKE_BIN/docker" <<'EOF2'
 #!/usr/bin/env bash
 echo "$*" >> "$FAKE_DOCKER_LOG"
 case "$*" in
-  "run "*) [ "${FAKE_RUN_FAIL:-0}" = 1 ] && exit 1; echo fake-container-id; exit 0 ;;
+  "run "*)
+    # FAKE_RUN_FAIL=1: fails before creating anything (name taken); FAKE_RUN_FAIL=created:
+    # the container exists, then the start fails. Only a created container gets an id.
+    all="$*"; cidfile="${all#*--cidfile }"; cidfile="${cidfile%% *}"
+    [ "${FAKE_RUN_FAIL:-0}" = 1 ] && exit 1
+    echo fake-container-id > "$cidfile"
+    [ "${FAKE_RUN_FAIL:-0}" = created ] && exit 1
+    echo fake-container-id; exit 0 ;;
   "rm "*) exit 0 ;;
   *"psql"*"SELECT 1"*) [ "${FAKE_NEVER_READY:-0}" = 1 ] && exit 2; echo 1; exit 0 ;;
   *"pg_restore --exit-on-error"*)
@@ -93,11 +105,11 @@ set_actual() { echo "$2" > "$WORKDIR/actual.$1"; }
 reset_actual() { for t in $TABLES; do rows_for "$t" > "$WORKDIR/actual.$t"; done; }
 no_docker_calls() { [ ! -s "$FAKE_DOCKER_LOG" ]; }
 run_name() { sed -n 's/^run -d --name \([^ ]*\) .*/\1/p' "$FAKE_DOCKER_LOG" | head -1; }
-# every container is removed again, by the exact name it was created with, and only that
+# the container is removed again, by the id docker reported for it, and only that
 removed_ok() {
-  local n; n="$(run_name)"
-  [ -n "$n" ] && [ "$(grep -c '^rm ' "$FAKE_DOCKER_LOG")" = 1 ] && grep -qx "rm -f $n" "$FAKE_DOCKER_LOG"
+  [ -n "$(run_name)" ] && [ "$(grep -c '^rm ' "$FAKE_DOCKER_LOG")" = 1 ] && grep -qx "rm -f fake-container-id" "$FAKE_DOCKER_LOG"
 }
+no_rm() { ! grep -q '^rm ' "$FAKE_DOCKER_LOG"; }
 
 DUMPS="$WORKDIR/dumps"; mkdir -p "$DUMPS"
 make_dump "$DUMPS/deploy-panel-20260101_000000.dump" old
@@ -112,7 +124,7 @@ touch -t 202603010000 "$DUMPS/deploy-panel-20260301_000000.dump"
   if [ "$rc" -eq 0 ] && grep -q "PASSED (11 rows in 10 tables)" <<< "$out_text" \
     && grep -q "drill: ok: users = 2" <<< "$out_text" && grep -q "drill: ok: scheduled_deploys = 0" <<< "$out_text" \
     && grep -q "^FAKEPGDMP new" "$WORKDIR/restore_stdin" && removed_ok \
-    && grep -q "^run -d --name deploy-panel-drill-[0-9]* -e POSTGRES_USER=deploy_panel .* -e POSTGRES_DB=deploy_panel postgres:16-alpine$" "$FAKE_DOCKER_LOG" \
+    && grep -q "^run -d --name deploy-panel-drill-[0-9]* --cidfile [^ ]*/cid -e POSTGRES_USER=deploy_panel .* -e POSTGRES_DB=deploy_panel postgres:16-alpine$" "$FAKE_DOCKER_LOG" \
     && grep -q "pg_restore --exit-on-error --no-owner -U deploy_panel -d deploy_panel" "$FAKE_DOCKER_LOG"; then
     pass "(a) success: newest dump restored into a throwaway container, all tables compared, container removed"
   else
@@ -177,11 +189,22 @@ touch -t 202603010000 "$DUMPS/deploy-panel-20260301_000000.dump"
 # (e) the throwaway database never becomes ready, or docker run fails -> exit 1, still cleaned up
 {
   run_drill FAKE_NEVER_READY=1 DRILL_WAIT_TRIES=1 BACKUP_DIR="$DUMPS" --; r1=$rc; k1=0; { grep -q "was not ready" <<< "$out_text" && removed_ok; } || k1=1
-  run_drill FAKE_RUN_FAIL=1 BACKUP_DIR="$DUMPS" --; r2=$rc; k2=0; { grep -q "could not start" <<< "$out_text" && removed_ok; } || k2=1
+  run_drill FAKE_RUN_FAIL=created BACKUP_DIR="$DUMPS" --; r2=$rc; k2=0; { grep -q "could not start" <<< "$out_text" && removed_ok; } || k2=1
   if [ "$r1" = 1 ] && [ "$k1" = 0 ] && [ "$r2" = 1 ] && [ "$k2" = 0 ]; then
-    pass "(e) database never ready / docker run fails -> exit 1, container removal attempted"
+    pass "(e) database never ready / docker run fails after creating the container -> exit 1, container removed by id"
   else
     fail "(e) startup failures: $r1 $k1 $r2 $k2"
+  fi
+}
+
+# (e2) docker run fails before creating a container (for example the name is taken):
+# no id came back, so nothing is removed, in particular not a container of that name
+{
+  run_drill FAKE_RUN_FAIL=1 BACKUP_DIR="$DUMPS" --
+  if [ "$rc" -eq 1 ] && grep -q "could not start" <<< "$out_text" && no_rm; then
+    pass "(e2) docker run fails without creating a container -> exit 1, no docker rm (not by name either)"
+  else
+    fail "(e2) run failure without id: rc=$rc log=$(cat "$FAKE_DOCKER_LOG")"
   fi
 }
 
@@ -221,12 +244,12 @@ touch -t 202603010000 "$DUMPS/deploy-panel-20260301_000000.dump"
 {
   run_drill PG_USER=other_user PG_DB=other_db DRILL_IMAGE=postgres:17-alpine DRILL_CONTAINER_PREFIX=mydrill BACKUP_DIR="$DUMPS" --
   s1=0
-  { grep -q "^run -d --name mydrill-[0-9]* -e POSTGRES_USER=other_user .* -e POSTGRES_DB=other_db postgres:17-alpine$" "$FAKE_DOCKER_LOG" \
+  { grep -q "^run -d --name mydrill-[0-9]* --cidfile [^ ]*/cid -e POSTGRES_USER=other_user .* -e POSTGRES_DB=other_db postgres:17-alpine$" "$FAKE_DOCKER_LOG" \
     && grep -q "pg_restore --exit-on-error --no-owner -U other_user -d other_db" "$FAKE_DOCKER_LOG" \
     && grep -q 'psql -h 127.0.0.1 -U other_user -d other_db' "$FAKE_DOCKER_LOG"; } || s1=1
   run_drill PG_USER= PG_DB= DRILL_IMAGE= DRILL_CONTAINER_PREFIX= BACKUP_DIR="$DUMPS" --
   s2=0
-  grep -q "^run -d --name deploy-panel-drill-[0-9]* -e POSTGRES_USER=deploy_panel .* -e POSTGRES_DB=deploy_panel postgres:16-alpine$" "$FAKE_DOCKER_LOG" || s2=1
+  grep -q "^run -d --name deploy-panel-drill-[0-9]* --cidfile [^ ]*/cid -e POSTGRES_USER=deploy_panel .* -e POSTGRES_DB=deploy_panel postgres:16-alpine$" "$FAKE_DOCKER_LOG" || s2=1
   if [ "$s1" = 0 ] && [ "$s2" = 0 ]; then pass "(h) PG_USER, PG_DB, DRILL_IMAGE and DRILL_CONTAINER_PREFIX are honoured; empty falls back"; else fail "(h) overrides: $s1 $s2"; fi
 }
 
@@ -247,6 +270,17 @@ touch -t 202603010000 "$DUMPS/deploy-panel-20260301_000000.dump"
     fail "(j) empty dump: rc=$rc"
   fi
   reset_actual
+}
+
+# (j2) a data row that starts with "COPY " is a row, not the header of a new block
+{
+  reset_actual
+  run_drill FAKE_SQL="$WORKDIR/copy_row.sql" BACKUP_DIR="$DUMPS" --
+  if [ "$rc" -eq 0 ] && grep -q "drill: ok: users = 2" <<< "$out_text" && grep -q "PASSED (11 rows in 10 tables)" <<< "$out_text"; then
+    pass "(j2) a data row starting with COPY is counted as a row"
+  else
+    fail "(j2) COPY-looking data row: rc=$rc out=$out_text"
+  fi
 }
 
 # (k) the TABLES list is the set of @@map names in the Prisma schema

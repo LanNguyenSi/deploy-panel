@@ -30,11 +30,17 @@
 #      of input: an input that ends early (the copy unreadable) would commit a dropped,
 #      empty schema. Without the final COMMIT the session ends in a rollback, so any error
 #      or short input leaves the database with its old content,
-#   5. starts the backend again, only after step 4 succeeded. The backend applies its
-#      schema itself when it starts, the same way it does after a deploy, so a dump that
-#      predates a schema change is brought up to the deployed code then; this script does
-#      not run a schema tool of its own. After a failure the backend stays stopped on
-#      purpose: look at the error first.
+#   5. starts the backend again, only after step 4 succeeded, and waits until it is
+#      healthy. `docker compose start` returns as soon as the container is started, long
+#      before the entrypoint has applied the schema and the healthcheck has passed, so a
+#      backend that crash-loops on the restored data would look fine. The wait polls the
+#      container's Docker healthcheck (`docker inspect`; no minimum compose version
+#      needed) until it reports healthy, reports unhealthy or has exited, or
+#      RESTORE_WAIT_SECONDS pass. The backend applies its schema itself when it starts,
+#      the same way it does after a deploy, so a dump that predates a schema change is
+#      brought up to the deployed code then; this script does not run a schema tool of
+#      its own. After a failure in step 4 the backend stays stopped on purpose: look at
+#      the error first.
 #
 # A pre-restore dump of an (almost) empty database is below backup.sh's size floor and
 # fails validation: restore into a fresh database with --no-pre-backup.
@@ -46,16 +52,22 @@
 #   BACKUP_DIR               where the pre-restore dump goes (default: $HOME/deploy-panel-backups)
 #   RESTORE_APP_SERVICE      service stopped during the restore (default: backend; empty = leave alone)
 #   PG_USER / PG_DB          database user and name (default: deploy_panel / deploy_panel)
+#   RESTORE_WAIT_SECONDS     how long to wait for the backend to become healthy (default: 120)
+#   RESTORE_WAIT_POLL        seconds between two health polls (default: 2)
 #
 # Exit codes:
-#   0  restored (backend started)
+#   0  restored, backend healthy (or no healthcheck to wait for: a warning says so)
 #   1  dump invalid or unreadable, the backend could not be stopped (nothing changed), or
 #      psql failed or the dump could not be read (not committed, database unchanged,
-#      backend left stopped)
+#      backend left stopped). Also the exit after SIGTERM/SIGINT/SIGHUP: the restore
+#      state is then unknown, because the signal is handled only after the running
+#      psql pipeline has finished, and that may have committed; the message says so
 #   2  refused: no file, file missing, no --yes, compose file missing or the dev stack
 #      file, db not running
 #   3  the pre-restore dump failed; nothing was changed (use --no-pre-backup to go on)
-#   4  the dump is restored, but the backend did not start; run the printed command by hand
+#   4  the dump is restored (committed), but the backend did not start or did not become
+#      healthy within RESTORE_WAIT_SECONDS; it may be stopped or restarting. Inspect it
+#      with the printed `logs` command, start it with the printed `start` command
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,6 +77,8 @@ DB_SERVICE="${BACKUP_DB_SERVICE:-db}"
 APP_SERVICE="${RESTORE_APP_SERVICE-backend}"
 PG_USER="${PG_USER:-deploy_panel}"
 PG_DB="${PG_DB:-deploy_panel}"
+WAIT_SECONDS="${RESTORE_WAIT_SECONDS:-120}"
+WAIT_POLL="${RESTORE_WAIT_POLL:-2}"
 
 # The public schema as a fresh PostgreSQL 16 database has it (owner, comment, USAGE
 # for everyone), so a restored database matches one created by initdb. The SET keeps
@@ -79,7 +93,21 @@ GRANT USAGE ON SCHEMA public TO PUBLIC;'
 tmp=""
 cleanup() { [ -z "$tmp" ] || rm -f "$tmp"; }
 trap cleanup EXIT
-trap 'exit 1' HUP INT TERM
+# bash runs a trap only after the foreground command has finished, so a signal during
+# the psql pipeline lets that pipeline complete, and it may have committed. Say so, and
+# say how to bring the backend back.
+start_hint=""
+phase=prepare # prepare (nothing changed yet), load (psql pipeline running), loaded
+on_signal() {
+  case "$phase" in
+    prepare) echo "restore: interrupted before the dump was loaded; the database is unchanged." >&2 ;;
+    load) echo "restore: interrupted while the dump was being loaded. The state of database '$PG_DB' is unknown: the restore may have been committed or rolled back." >&2 ;;
+    *) echo "restore: interrupted after the dump was loaded and committed." >&2 ;;
+  esac
+  [ -z "$start_hint" ] || echo "restore: the backend may be stopped; check the database, then start it with: $start_hint" >&2
+  exit 1
+}
+trap on_signal HUP INT TERM
 
 usage="usage: restore.sh --yes [--no-pre-backup] <dump-file>"
 refuse() { echo "restore: $*" >&2; exit 2; }
@@ -98,6 +126,9 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+case "$WAIT_SECONDS" in '' | *[!0-9]*) refuse "RESTORE_WAIT_SECONDS must be a whole number of seconds, got '$WAIT_SECONDS'" ;; esac
+[[ "$WAIT_POLL" =~ ^[0-9]+(\.[0-9]+)?$ ]] || refuse "RESTORE_WAIT_POLL must be a number of seconds, got '$WAIT_POLL'"
 
 [ -n "$file" ] || refuse "no dump file given ($usage)"
 [ -f "$file" ] || refuse "dump file not found: $file"
@@ -161,7 +192,7 @@ if [ -n "$APP_SERVICE" ] && grep -qx "$APP_SERVICE" <<< "$running"; then
   fi
   stopped_app=1
 fi
-start_hint="docker compose -f $COMPOSE_FILE start $APP_SERVICE"
+[ -z "$APP_SERVICE" ] || start_hint="docker compose -f $COMPOSE_FILE start $APP_SERVICE"
 
 if [ "$pre_backup" -eq 1 ]; then
   echo "restore: backing up the current state first (scripts/backup.sh)"
@@ -176,7 +207,32 @@ if [ "$pre_backup" -eq 1 ]; then
   fi
 fi
 
+# Sets health_result: healthy, nocheck (no healthcheck defined, container running), or
+# why not (unhealthy, exited, no container, timeout after N seconds).
+health_result=""
+wait_healthy() {
+  local cid state deadline=$((SECONDS + WAIT_SECONDS))
+  while :; do
+    cid="$("${DC[@]}" ps -q "$APP_SERVICE" 2> /dev/null | head -n 1)" || cid=""
+    if [ -z "$cid" ]; then
+      health_result="no container for $APP_SERVICE"
+    else
+      state="$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid" 2> /dev/null)" || state=""
+      case "$state" in
+        "running healthy") health_result=healthy; return 0 ;;
+        "running none") health_result=nocheck; return 0 ;;
+        *unhealthy) health_result="unhealthy"; return 0 ;;
+        exited* | dead*) health_result="${state%% *}"; return 0 ;;
+        *) health_result="not healthy after ${WAIT_SECONDS}s (last state: ${state:-unknown})" ;;
+      esac
+    fi
+    [ "$SECONDS" -lt "$deadline" ] || return 0
+    sleep "$WAIT_POLL"
+  done
+}
+
 echo "restore: restoring $file into database '$PG_DB'"
+phase=load
 # COMMIT is sent only when the whole copy was read: if cat fails, psql sees end of
 # input inside the open transaction and rolls it back (pipefail turns the failure of
 # the left side into the failure of the pipeline).
@@ -187,6 +243,7 @@ if ! { printf 'BEGIN;\n%s\n' "$RESET_SQL"; cat "$tmp" && printf 'COMMIT;\n'; } \
   [ "$stopped_app" -eq 0 ] || echo "restore: $APP_SERVICE is still stopped; start it with: $start_hint" >&2
   exit 1
 fi
+phase=loaded
 
 if [ "$stopped_app" -eq 1 ]; then
   echo "restore: starting $APP_SERVICE"
@@ -194,5 +251,15 @@ if [ "$stopped_app" -eq 1 ]; then
     echo "restore: the dump is restored, but $APP_SERVICE did not start; run: $start_hint" >&2
     exit 4
   fi
+  wait_healthy
+  case "$health_result" in
+    healthy) echo "restore: $APP_SERVICE healthy" ;;
+    nocheck) echo "restore: warning: $APP_SERVICE has no healthcheck, so only its start was confirmed, not that it works" >&2 ;;
+    *)
+      echo "restore: the dump is restored and committed, but $APP_SERVICE is not healthy ($health_result); it may be stopped or restarting." >&2
+      echo "restore: inspect it with: docker compose -f $COMPOSE_FILE logs --tail 100 $APP_SERVICE ; start it with: $start_hint" >&2
+      exit 4
+      ;;
+  esac
 fi
 echo "restore: done"

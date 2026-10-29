@@ -5,7 +5,14 @@
 # of every table of the panel with the number of rows the dump itself holds for that
 # table, and removes the container again. It never touches the production stack: the
 # only docker commands it runs are `run`, `exec` and `rm -f` on the one container it
-# created, named <prefix>-<pid>.
+# created, named <prefix>-<pid>. The container is removed by the id docker reported
+# for it, never by name, and only when docker reported one.
+#
+# Leftover containers: the throwaway container holds a full copy of the data, so a
+# drill killed with SIGKILL (which no trap can catch) or a failed `docker rm` leaves it
+# behind. List them with `docker ps -a --filter name=deploy-panel-drill` (use your
+# DRILL_CONTAINER_PREFIX if you set one), check that the pid at the end of the name
+# belongs to a drill that is gone, and remove the container with `docker rm -f <id>`.
 #
 # The expected counts do not come from the live database (which keeps changing after
 # the dump) but from the dump: `pg_restore -f -` writes every table as a COPY block,
@@ -70,11 +77,19 @@ size="$(wc -c < "$dump" | tr -d ' ')"
 command -v docker > /dev/null 2>&1 || refuse "docker is not available"
 
 name="$PREFIX-$$"
-started=0
+# docker writes the id of the container it creates into this file. The cleanup removes
+# the container by that id and only when one was written: removing by name could delete
+# an unrelated container of the same name when `docker run` failed because the name was
+# taken. A directory of our own, because docker refuses a --cidfile that already exists.
+cid_dir="$(mktemp -d)" || refuse "could not create a temporary directory"
 cleanup() {
-  if [ "$started" -eq 1 ]; then
-    docker rm -f "$name" > /dev/null 2>&1 || echo "drill: could not remove the container $name; remove it by hand: docker rm -f $name" >&2
+  local cid=""
+  [ ! -s "$cid_dir/cid" ] || cid="$(cat "$cid_dir/cid")"
+  if [ -n "$cid" ]; then
+    docker rm -f "$cid" > /dev/null 2>&1 || echo "drill: could not remove the container $name ($cid); remove it by hand: docker rm -f $cid" >&2
   fi
+  rm -f "$cid_dir/cid"
+  rmdir "$cid_dir" 2> /dev/null || true
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
@@ -82,10 +97,7 @@ trap 'exit 1' HUP INT TERM
 # A password nobody needs to know: the container publishes no port.
 password="drill-$$-$RANDOM$RANDOM"
 echo "drill: dump $dump ($size bytes), throwaway container $name ($IMAGE)"
-# Set before the call: if docker creates the container and then fails, the trap still
-# tries to remove it.
-started=1
-docker run -d --name "$name" \
+docker run -d --name "$name" --cidfile "$cid_dir/cid" \
   -e POSTGRES_USER="$PG_USER" -e POSTGRES_PASSWORD="$password" -e POSTGRES_DB="$PG_DB" \
   "$IMAGE" > /dev/null || fail "could not start the throwaway container"
 
@@ -107,7 +119,7 @@ docker exec -i "$name" pg_restore --exit-on-error --no-owner -U "$PG_USER" -d "$
 
 # Expected rows per table: the data lines of its COPY block in the dump.
 expected="$(docker exec -i "$name" pg_restore -f - < "$dump" | awk '
-  /^COPY / { t = $2; sub(/^public\./, "", t); gsub(/"/, "", t); in_copy = 1; n[t] = 0; next }
+  !in_copy && /^COPY / { t = $2; sub(/^public\./, "", t); gsub(/"/, "", t); in_copy = 1; n[t] = 0; next }
   in_copy && /^\\\.$/ { in_copy = 0; next }
   in_copy { n[t]++ }
   END { for (t in n) print t, n[t] }
