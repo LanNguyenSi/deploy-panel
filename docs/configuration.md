@@ -77,11 +77,14 @@ cp .env.example .env
 #     backend (no /api suffix)
 #   NODE_ENV=production, or delete the NODE_ENV line (.env.example sets
 #     development, which would override the compose default)
+#   ALLOWED_GITHUB_LOGINS to at least one GitHub login: REQUIRED with
+#     NODE_ENV=production, the backend refuses to start with an empty
+#     allowlist (on a PANEL_TOKEN-only panel, one login you control)
 
 docker compose up -d --build
 ```
 
-`docker-compose.yml` forwards `DATABASE_URL`, `PORT`, `SESSION_SECRET`, `APP_SECRETS_KEY`, `CORS_ORIGINS`, `FRONTEND_URL`, `NODE_ENV`, `PANEL_SELF_APP_NAME`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `BACKEND_URL` and `ALLOWED_GITHUB_LOGINS` from `.env` to the backend. The optional ones default to empty (`BACKEND_URL` to `http://localhost:3001`), and the backend treats an empty `SESSION_SECRET` as unset. `PANEL_TOKEN` is deliberately not forwarded: an empty value fails the startup config check and production requires a token, so an empty default would stop the backend from starting. Add it to the backend's `environment:` in an override file, as `docker-compose.ci.yml` does, or take it from `docker-compose.prod.yml`, which forwards it. Without `PANEL_TOKEN`, a backend in development mode treats every request as admin, and a backend in production mode answers 500 on every authenticated route.
+`docker-compose.yml` forwards `DATABASE_URL`, `PORT`, `SESSION_SECRET`, `APP_SECRETS_KEY`, `CORS_ORIGINS`, `FRONTEND_URL`, `NODE_ENV`, `PANEL_SELF_APP_NAME`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `BACKEND_URL` and `ALLOWED_GITHUB_LOGINS` from `.env` to the backend. The optional ones default to empty (`BACKEND_URL` to `http://localhost:3001`); `ALLOWED_GITHUB_LOGINS` also defaults to empty, which only development and test accept, so a production backend needs it set, and the backend treats an empty `SESSION_SECRET` as unset. `PANEL_TOKEN` is deliberately not forwarded: an empty value fails the startup config check and production requires a token, so an empty default would stop the backend from starting. Add it to the backend's `environment:` in an override file, as `docker-compose.ci.yml` does, or take it from `docker-compose.prod.yml`, which forwards it. Without `PANEL_TOKEN`, a backend in development mode treats every request as admin, and a backend in production mode answers 500 on every authenticated route.
 
 Container behaviour:
 
