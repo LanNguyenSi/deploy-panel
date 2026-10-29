@@ -24,6 +24,13 @@ the baseline (`prisma migrate resolve`) by the script, and every later
 migration is then applied; one that differs is left untouched and the
 container refuses to start.
 
+The byte check depends on how the Prisma CLI formats `migrate diff --script`.
+If a Prisma upgrade changes that formatting, the check fails although no schema
+changed: replace it with a semantic comparison (`prisma migrate diff
+--from-migrations <a directory holding only the baseline> --to-schema-datamodel
+backend/prisma/baseline.prisma --shadow-database-url <url> --exit-code`), and
+still never edit `migration.sql` or `baseline.prisma`.
+
 ## The rule: a schema change is a new migration
 
 Every change to `schema.prisma` ships with a new migration folder in the same

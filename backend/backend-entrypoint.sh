@@ -28,8 +28,9 @@
 #
 # Retry only the "could not check" outcome (migrate.sh exit 3, typically the
 # database is not accepting connections yet: the boot race). Any other
-# non-zero exit is definitive (the database differs from the schema and was
-# left untouched, or a migration failed) and ends the container at once.
+# non-zero exit is definitive (the database differs from the baseline schema,
+# or has a history table without a finished migration, and was left untouched;
+# or a migration failed) and ends the container at once.
 # MIGRATE_MAX_ATTEMPTS and MIGRATE_RETRY_DELAY exist so tests can shorten the
 # loop; production uses the defaults (10, 2). An unset or empty variable means
 # the default; a value that is not a plain decimal number (MIGRATE_MAX_ATTEMPTS
