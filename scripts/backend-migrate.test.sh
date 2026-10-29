@@ -381,11 +381,37 @@ check_could_not_check "baseline comparison fails" legacy "migrate diff" 2 "could
 # loop length is what is measured. An unset or empty variable means the
 # default (10 attempts, 2 seconds); the other variable keeps its own default.
 new_db entry_values
+# run_bounded <seconds> <command...>: runs the command in its own process group and
+# kills the whole group after the limit (exit 143, with a TIMEOUT line). A value the
+# entrypoint wrongly accepts (a loop of a million attempts, a delay of a million
+# seconds) then fails the test within seconds instead of hanging the run.
+run_bounded() {
+  local secs="$1" pid wd rc
+  shift
+  set -m
+  "$@" &
+  pid=$!
+  ( i=0
+    while [ "${i}" -lt "${secs}" ]; do
+      sleep 1
+      i=$((i + 1))
+      kill -0 "${pid}" 2>/dev/null || exit 0
+    done
+    echo "TIMEOUT: killed the process group after ${secs}s" >&2
+    kill -TERM -- "-${pid}" 2>/dev/null ) &
+  wd=$!
+  wait "${pid}"
+  rc=$?
+  kill "${wd}" 2>/dev/null
+  wait "${wd}" 2>/dev/null
+  set +m
+  return "${rc}"
+}
 env_entry() { # env_entry <MAX or ""> <DELAY or ""> : run the entrypoint with these values (unset when empty)
   stub_on "db execute" all
   (cd "${REPO_ROOT}" && unset MIGRATE_MAX_ATTEMPTS MIGRATE_RETRY_DELAY \
     && { [ -z "$1" ] || export MIGRATE_MAX_ATTEMPTS="$1"; } && { [ -z "$2" ] || export MIGRATE_RETRY_DELAY="$2"; } \
-    && DATABASE_URL="${URL}" "${SH_BIN}" backend/backend-entrypoint.sh sh -c 'echo SERVER-STARTED') >"${OUT_FILE}" 2>&1
+    && DATABASE_URL="${URL}" run_bounded 20 "${SH_BIN}" backend/backend-entrypoint.sh sh -c 'echo SERVER-STARTED') >"${OUT_FILE}" 2>&1
   RC=$?
   OUT="$(cat "${OUT_FILE}")"
   stub_off
