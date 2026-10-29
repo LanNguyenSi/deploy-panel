@@ -212,3 +212,19 @@ jobs:
           cache: npm
       - run: npm ci --no-audit --no-fund
       - run: bash scripts/relay-config.test.sh
+
+  backup-scripts:
+    # shellcheck and the stub-docker tests of the database backup, restore and
+    # restore-drill scripts (scripts/backup.sh, restore.sh, restore-drill.sh).
+    # No container or Postgres is needed: a fake `docker` on PATH stands in.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: shellcheck and stub tests
+        run: |
+          shellcheck scripts/backup.sh scripts/backup.test.sh \
+            scripts/restore.sh scripts/restore.test.sh \
+            scripts/restore-drill.sh scripts/restore-drill.test.sh
+          bash scripts/backup.test.sh
+          bash scripts/restore.test.sh
+          bash scripts/restore-drill.test.sh
