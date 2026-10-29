@@ -1,0 +1,285 @@
+// FROZEN. This is backend/prisma/schema.prisma as it stood when the repo moved
+// from `prisma db push` to committed migrations, and it must never change.
+// backend/scripts/migrate.sh compares a database that has tables but no
+// migration history (one the db push releases filled) with THIS file, not with
+// schema.prisma, before it records the baseline migration as applied: the
+// baseline migration creates exactly this schema, and every later migration is
+// applied on top by `prisma migrate deploy`. Comparing with the current
+// schema.prisma would refuse a database at the baseline once a second migration
+// exists.
+//
+// CI and scripts/backend-migrate.test.sh assert that
+//   prisma migrate diff --from-empty --to-schema-datamodel \
+//     backend/prisma/baseline.prisma --script
+// equals migrations/20261029120000_baseline/migration.sql byte for byte, so
+// this file cannot drift from the baseline migration. Do not edit it for a
+// schema change; add a migration and change schema.prisma instead.
+
+generator client {
+  provider = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Servers ─────────────────────────────────────────────────────────────────
+
+model Server {
+  id          String   @id @default(uuid())
+  name        String
+  host        String   @unique
+  sshKeyPath  String?
+  relayUrl    String?
+  relayToken  String?
+  // SHA-256 fingerprint (base64) of the SSH host key captured during
+  // the onboarding probe. Re-install pins this: if the VPS was rebuilt
+  // between first-install and re-install, the fingerprint diverges and
+  // ssh-executor refuses the handshake with `host_key_rejected`.
+  // Legacy rows (pre-2026-04-24 wizard) carry null → re-install falls
+  // back to TOFU for those.
+  hostKeySha256 String?
+  // Resolved RELAY_MODE from the last install, parsed out of install.sh
+  // v0.2.0+'s `Mode:` output line. The re-install UI defaults to this
+  // so operators don't have to remember what the original install used.
+  // Null for v0.1.x installers (no Mode line to parse).
+  relayMode   String?
+  // Directory on the VPS where agent-relay's docker-compose.yml lives.
+  // install.sh defaults to /opt/agent-relay but accepts a custom
+  // RELAY_DIR env var; operators who installed manually or under a
+  // custom path (e.g. /root/git/agent-relay) need the update-image
+  // and re-install flows to know where. Null = fall back to
+  // /opt/agent-relay. The value is validated as an absolute path with
+  // no shell metachars before being templated into SSH commands.
+  relayDir    String?
+  // Compose file basename to use with `docker compose -f <file>`. Null
+  // = use `docker-compose.yml` (the installer default). Operators who
+  // installed manually with a prod override (e.g. `docker-compose.prod.yml`
+  // with `container_name: agent-relay` + Traefik labels) must persist
+  // that filename here so update-image + re-install don't accidentally
+  // recreate the container via the dev compose file and strip Traefik
+  // routing. Validated as a simple filename — no slashes, no metachars.
+  relayComposeFile String?
+  status      String   @default("unknown") // unknown, online, offline, no-relay
+  lastSeenAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Ownership. Non-null for broker-registered users (they only see their own).
+  // Null = admin-shared (visible to panel-token / session admins; legacy rows
+  // before this migration also land here). Ownership propagates via serverId
+  // to App, Deploy, EnvVarChange, and ScheduledDeploy — those don't carry
+  // their own userId; their access is gated through this FK.
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  apps             App[]
+  deploys          Deploy[]
+  scheduledDeploys ScheduledDeploy[]
+
+  @@index([userId])
+  @@map("servers")
+}
+
+// ── Apps ─────────────────────────────────────────────────────────────────────
+
+model App {
+  id           String   @id @default(uuid())
+  serverId     String
+  name         String
+  repoUrl      String?
+  branch       String   @default("main")
+  path         String   // path on VPS
+  health       String?  // health endpoint
+  liveUrl      String?  // public URL to the deployed app (manual; not derivable from the relay)
+  status       String   @default("unknown") // unknown, healthy, unhealthy, deploying
+  tag          String?  // production, development, ignored
+  lastDeployAt DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Env keys the app declares as REQUIRED to run (e.g. METRICS_API_TOKEN).
+  // Preflight and the deploy flow both hard-fail when one of these resolves
+  // empty/unset in the compose env — see lib/required-env-gate.ts and
+  // lib/provision-secrets.ts. Empty array = nothing declared, gate is a no-op
+  // (back-compat default for every existing app).
+  requiredEnvKeys String[] @default([])
+
+  server       Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  deploys      Deploy[]
+  envChanges   EnvVarChange[]
+  secrets      AppSecret[]
+
+  @@unique([serverId, name])
+  @@map("apps")
+}
+
+// ── App secrets ──────────────────────────────────────────────────────────────
+// Per-app key/value entries OWNED by the panel's own DB (unlike EnvVarChange
+// above, which only logs that the VPS-filesystem-resident .env changed). This
+// is the durable store for values the deploy flow provisions into the deploy
+// dir's .env before compose runs, so a secret survives `git clean -fdx` /
+// re-clone of the app's working tree on the VPS — it is re-written from here
+// on every deploy instead of living only in an untracked file.
+//
+// Values are encrypted at rest (see lib/secret-crypto.ts) and are write-only:
+// no API route ever returns valueCiphertext or a decrypted value; only the
+// key name + whether it's set is exposed (lib/app-secrets.ts).
+model AppSecret {
+  id              String   @id @default(uuid())
+  appId           String
+  key             String
+  valueCiphertext String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  app App @relation(fields: [appId], references: [id], onDelete: Cascade)
+
+  @@unique([appId, key])
+  @@map("app_secrets")
+}
+
+// ── Env-var change log ──────────────────────────────────────────────────────
+// Records that a given key changed on an app, without ever storing the value.
+// The live value lives on the VPS in the app's .env file; the panel only
+// proxies reads/writes. This table is purely for "who changed what and when".
+model EnvVarChange {
+  id         String   @id @default(uuid())
+  appId      String
+  key        String
+  changeType String   // "create" | "update" | "delete"
+  actor      String?
+  createdAt  DateTime @default(now())
+
+  app App @relation(fields: [appId], references: [id], onDelete: Cascade)
+
+  @@index([appId])
+  @@index([appId, key])
+  @@map("env_var_changes")
+}
+
+// ── Users ───────────────────────────────────────────────────────────────────
+// Minimal multi-user layer provisioned via the identity-broker endpoint
+// (project-pilot). deploy-panel doesn't yet expose per-user UIs or per-user
+// deployment isolation — this table exists so that broker-issued API keys
+// can be attributed to a real identity for audit / later RBAC work. The
+// original PANEL_TOKEN single-secret flow remains the fallback for direct
+// admin access.
+model User {
+  id          String   @id @default(uuid())
+  githubId    String   @unique
+  githubLogin String
+  email       String?
+  avatarUrl   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  apiKeys     ApiKey[]
+  servers     Server[]
+  sessions    Session[]
+  auditLogs   AuditLog[]
+
+  @@map("users")
+}
+
+// Browser sessions issued by the native GitHub OAuth flow. Distinct from
+// the legacy `panel_session` cookie that carries the raw PANEL_TOKEN
+// string — those still work for admin access. A Session row is the
+// canonical proof-of-login for broker-registered users who sign in
+// directly at deploy-panel.
+model Session {
+  id        String   @id @default(uuid())
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+// ── API Keys ────────────────────────────────────────────────────────────────
+
+model ApiKey {
+  id         String   @id @default(uuid())
+  name       String   // e.g. "github-actions-prod"
+  keyHash    String   @unique // SHA-256 hash of the key
+  keyPrefix  String   // first 8 chars for display (dp_xxxx...)
+  userId     String?  // null = admin-created panel-wide key (legacy flow)
+  revokedAt  DateTime?
+  lastUsedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  user       User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("api_keys")
+}
+
+// ── Deploys ─────────────────────────────────────────────────────────────────
+
+model Deploy {
+  id           String   @id @default(uuid())
+  serverId     String
+  appId        String
+  commitBefore String?
+  commitAfter  String?
+  status       String   @default("pending") // running, success, failed, rolled_back, interrupted ("pending" is only the column default and is never written)
+  duration     Int?     // milliseconds
+  log          String?  // full deploy output
+  triggeredBy  String?  // "panel", "mcp", "api"
+  createdAt    DateTime @default(now())
+
+  server       Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+  app          App      @relation(fields: [appId], references: [id], onDelete: Cascade)
+
+  @@index([appId])
+  @@index([serverId])
+  @@map("deploys")
+}
+
+// ── Audit Log ───────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  action    String   // the first argument of audit() (backend/src/lib/audit.ts), e.g. deploy, rollback, server.create, user.login, api_key.create
+  target    String?  // e.g. "myapp on my-server" or "my-server (203.0.113.7)"
+  detail    String?  // extra info like commit hash, status, etc.
+  actor     String?  // free-form label kept for UI display: "panel", "api:github-actions", "session", "broker:project-pilot/<login>"
+  // Structured actor, populated when the triggering credential is bound
+  // to a User (broker API keys, native OAuth sessions). Null for
+  // admin-triggered actions via PANEL_TOKEN / session-as-admin and for
+  // pre-migration rows. Non-admin `/api/audit` callers filter on this;
+  // admins see everything regardless.
+  actorUserId String?
+  actorUser   User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now())
+
+  @@index([action])
+  @@index([createdAt])
+  @@index([actorUserId])
+  @@map("audit_logs")
+}
+
+// ── Scheduled Deploys ───────────────────────────────────────────────────────
+
+model ScheduledDeploy {
+  id        String   @id @default(uuid())
+  serverId  String
+  appName   String
+  scheduledFor DateTime
+  force     Boolean  @default(false)
+  status    String   @default("pending") // pending, triggered, cancelled
+  deployId  String?  // linked deploy once triggered
+  createdAt DateTime @default(now())
+
+  server    Server   @relation(fields: [serverId], references: [id], onDelete: Cascade)
+
+  @@index([scheduledFor])
+  @@index([status])
+  @@map("scheduled_deploys")
+}

@@ -31,16 +31,16 @@ npm install
 docker compose up -d db                          # Postgres only, published on 127.0.0.1:5433
 npx prisma generate --schema backend/prisma/schema.prisma
 set -a; . ./.env; set +a                         # host-run processes below don't load .env themselves (direnv is an alternative)
-npx prisma db push --schema backend/prisma/schema.prisma   # run from the repo root
+sh backend/scripts/migrate.sh                    # apply the committed migrations (prisma migrate deploy)
 
 make dev                                          # backend on :3001, frontend on :3000, both hot reload
 ```
 
-`make dev`, `make db-push` and `cd backend && npx prisma ...` do not read `.env`; export it first as above. Details: [docs/configuration.md](docs/configuration.md#local-development).
+`make dev`, `make db-migrate` and `cd backend && npx prisma ...` do not read `.env`; export it first as above. Details: [docs/configuration.md](docs/configuration.md#local-development).
 
 Open http://localhost:3000, click "+ Add Server", choose "I already have a relay", fill in "Server name" + "Host" + optional "Relay URL" and "Relay token", hit "Test" on the server card, then deploy from the app list.
 
-`make setup` (install, then `make docker-up` for the full db + backend + frontend Docker stack, then Prisma generate/push) exists as an alternative, but its Docker stack is not what `make dev` above needs: the containerized backend requires `APP_SECRETS_KEY` set in `.env` to pass its startup validation (commented out in `.env.example`, so `make setup` fails there on a fresh clone), and if that is fixed, the containerized frontend then occupies host port 3000, the same port `make dev` binds on the host. Use `docker compose up -d db` for local dev as shown above, or see [docs/configuration.md](docs/configuration.md#docker-deployment) to run the full stack in containers instead of on the host.
+`make setup` (install, then `make docker-up` for the full db + backend + frontend Docker stack, then Prisma generate and migrate) exists as an alternative, but its Docker stack is not what `make dev` above needs: the containerized backend requires `APP_SECRETS_KEY` set in `.env` to pass its startup validation (commented out in `.env.example`, so `make setup` fails there on a fresh clone), and if that is fixed, the containerized frontend then occupies host port 3000, the same port `make dev` binds on the host. Use `docker compose up -d db` for local dev as shown above, or see [docs/configuration.md](docs/configuration.md#docker-deployment) to run the full stack in containers instead of on the host.
 
 ## Usage
 
@@ -86,7 +86,7 @@ make setup          # full Docker stack instead of make dev: needs APP_SECRETS_K
 make docker-up      # bring up the full Docker stack (db + backend + frontend)
 make docker-down    # stop the Docker stack
 make db-generate    # prisma generate
-make db-push        # prisma db push (apply schema); export .env first
+make db-migrate     # apply the committed Prisma migrations (migrate deploy); export .env first
 make clean          # remove dist + node_modules
 ```
 

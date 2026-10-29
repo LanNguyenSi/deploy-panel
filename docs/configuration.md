@@ -54,17 +54,17 @@ npm install
 docker compose up -d db                          # Postgres only, published on 127.0.0.1:5433
 npx prisma generate --schema backend/prisma/schema.prisma
 set -a; . ./.env; set +a                         # export .env into the shell; make dev below doesn't load it itself
-npx prisma db push --schema backend/prisma/schema.prisma   # run from the repo root so it picks up the exported DATABASE_URL
+sh backend/scripts/migrate.sh                    # apply the committed migrations; reads the exported DATABASE_URL
 make dev                                          # backend on :3001, frontend on :3000
 ```
 
-Running `cd backend && npx prisma db push` instead fails with `P1012 Environment variable not found: DATABASE_URL`: Prisma 5.22 looks for `.env` next to `backend/package.json` and the schema, not at the repo root. Run it from the repo root with `--schema backend/prisma/schema.prisma` as shown above. `make dev` does not load `.env` itself: export it into the shell first (see `backend/tests/env-loading-guard.test.ts`), otherwise the backend starts without `DATABASE_URL`, `PANEL_TOKEN` and the other variables; neither `make` nor the `tsx watch` process it starts read `.env` on their own.
+Running a Prisma command as `cd backend && npx prisma ...` instead fails with `P1012 Environment variable not found: DATABASE_URL`: Prisma 5.22 looks for `.env` next to `backend/package.json` and the schema, not at the repo root. `backend/scripts/migrate.sh` changes into the repo root itself and passes `--schema backend/prisma/schema.prisma`; run other Prisma commands from the repo root with the same `--schema` flag. `make dev` does not load `.env` itself: export it into the shell first (see `backend/tests/env-loading-guard.test.ts`), otherwise the backend starts without `DATABASE_URL`, `PANEL_TOKEN` and the other variables; neither `make` nor the `tsx watch` process it starts read `.env` on their own.
 
-`make setup` also exists (install, then `make docker-up` for the full db + backend + frontend Docker stack, then Prisma generate/push), but its Docker stack fails to start the backend container without `APP_SECRETS_KEY` set in `.env` (commented out in `.env.example`; see the "App secrets" section and the `APP_SECRETS_KEY` row above), and once that is set, its frontend container occupies host port 3000, the same port `make dev` binds on the host. Bring up only `db` as shown above for host-run dev with hot reload; use `make setup` / `make docker-up` only when you want the full stack running in containers (see "Docker deployment" below). After pulling a schema change, rerun the two `npx prisma ... --schema backend/prisma/schema.prisma` lines above (or `make db-generate` / `make db-push` after exporting `.env`). For a deeper reset, `make clean` wipes `node_modules` and build output (`backend/dist`, `frontend/.next`) first, then rerun `npm install`.
+`make setup` also exists (install, then `make docker-up` for the full db + backend + frontend Docker stack, then Prisma generate and migrate), but its Docker stack fails to start the backend container without `APP_SECRETS_KEY` set in `.env` (commented out in `.env.example`; see the "App secrets" section and the `APP_SECRETS_KEY` row above), and once that is set, its frontend container occupies host port 3000, the same port `make dev` binds on the host. Bring up only `db` as shown above for host-run dev with hot reload; use `make setup` / `make docker-up` only when you want the full stack running in containers (see "Docker deployment" below). After pulling a schema change, rerun the generate line and `sh backend/scripts/migrate.sh` above (or `make db-generate` / `make db-migrate` after exporting `.env`). A local database that an older checkout filled with `prisma db push` is baselined automatically when it matches `backend/prisma/baseline.prisma`; if it differs the script refuses and says how, or run `docker compose down -v` and start the db again for a clean one. For a deeper reset, `make clean` wipes `node_modules` and build output (`backend/dist`, `frontend/.next`) first, then rerun `npm install`.
 
 ## Docker deployment
 
-The `docker-compose.yml` runs PostgreSQL, the backend, and the frontend as containers. Multi-stage builds use Node 22 Alpine; the backend runs `prisma db push` to sync the schema on startup via its entrypoint script.
+The `docker-compose.yml` runs PostgreSQL, the backend, and the frontend as containers. Multi-stage builds use Node 22 Alpine; the backend applies the committed Prisma migrations on startup via its entrypoint script (see [Database migrations](#database-migrations)).
 
 ```bash
 cp .env.example .env
@@ -86,7 +86,7 @@ docker compose up -d --build
 Container behaviour:
 
 - `db`: PostgreSQL 16 Alpine, persistent volume `pgdata`, healthcheck via `pg_isready`, published on 127.0.0.1:5433 (loopback only) for host-run dev tooling.
-- `backend`: multi-stage build, runs `prisma db push` to sync the schema on startup, exposes `:3001` internally. Healthcheck hits `/api/health`. Not published to the host by default. Reachable only from the compose network; route `/api` to it from your proxy.
+- `backend`: multi-stage build, applies the committed Prisma migrations (`prisma migrate deploy`) on startup before the server binds its port, exposes `:3001` internally. Healthcheck hits `/api/health`. Not published to the host by default. Reachable only from the compose network; route `/api` to it from your proxy.
 - `frontend`: multi-stage build with Next.js standalone output, published on `${FRONTEND_PORT:-3000}`.
 
 The backend waits for the db health check before starting, and the frontend waits for the backend health check.
@@ -96,6 +96,68 @@ The frontend is client-side code: the browser calls the backend directly at `NEX
 Prod-file hardening (relative to `docker-compose.yml`): `POSTGRES_PASSWORD` and `ALLOWED_GITHUB_LOGINS` have no defaults (`${VAR:?message}`), so `docker compose -f docker-compose.prod.yml ...` fails immediately with a message naming the variable when the server `.env` does not set them; every service caps its logs (`logging:` json-file, `max-size: 10m`, `max-file: 5`) and memory (`mem_limit`: db 1g, backend 512m, frontend 512m) with no CPU limits.
 
 Project names differ on purpose: `docker-compose.yml` pins `name: deploy-panel-dev` so running the dev file from another directory (e.g. the prod app directory) can never attach to that project's `pgdata` volume. `docker-compose.prod.yml` deliberately sets no `name:`: the live prod stack's project name comes from its app directory, and adding or changing a name would start a fresh project with a new `<name>_pgdata` volume and orphan the live database. Renaming the dev project only orphans the old `<dir>_pgdata` dev volume (dev data, safe to recreate).
+
+## Database migrations
+
+The schema is applied by the committed Prisma migrations in `backend/prisma/migrations`, never by `prisma db push`. `prisma` is a runtime dependency, so the backend image carries the Prisma CLI at the version `package-lock.json` pins and `backend/scripts/migrate.sh` calls `node_modules/.bin/prisma` directly: no npm or npx process runs at start and a start needs no registry access. The entrypoint (`backend/backend-entrypoint.sh`) runs `backend/scripts/migrate.sh` on every start and only then starts the server; `make db-migrate` and `sh backend/scripts/migrate.sh` run the same script against a host-run database (`DATABASE_URL` exported).
+
+The first migration, `20261029120000_baseline`, creates the schema the `db push` releases applied. That schema is frozen in `backend/prisma/baseline.prisma` (never edited; CI asserts that `prisma migrate diff --from-empty --to-schema-datamodel backend/prisma/baseline.prisma --script` equals the baseline migration's SQL byte for byte). A database from the `db push` releases is compared with that file, not with the current `schema.prisma`, which later migrations change.
+
+The script decides by the state of the database:
+
+| Database | What the script does |
+|----------|----------------------|
+| Has `_prisma_migrations` with a finished migration | `prisma migrate deploy` (applies the pending migrations, none is fine) |
+| Has `_prisma_migrations` without a finished migration (empty, or only a failed row), and tables | Changes nothing and exits 1: the baseline SQL would fail on the existing tables and leave a failed row (`P3009` on every later start) |
+| Has `_prisma_migrations` without a finished migration, and no tables | `prisma migrate deploy` (Prisma itself stops with `P3009` on a failed row) |
+| Empty | `prisma migrate deploy`; the baseline migration creates every table |
+| Tables but no `_prisma_migrations` (a database from the `db push` releases), identical to `baseline.prisma` (`prisma migrate diff --exit-code` is 0) | `prisma migrate resolve --applied 20261029120000_baseline` once, then `prisma migrate deploy`, which applies every later migration. The baseline SQL is not run, no data is touched |
+| Tables but no `_prisma_migrations`, differs from `baseline.prisma` | Changes nothing, prints the difference and exits 1 |
+
+The entrypoint retries only exit 3 ("could not check", typically the database is not accepting connections yet) up to 10 times, 2 seconds apart (`MIGRATE_MAX_ATTEMPTS`, a whole number >= 1, and `MIGRATE_RETRY_DELAY`, a whole number >= 0, change this; any other value stops the container with exit 1). Every other failure (a differing database, a failing migration) ends the container at once, so `docker compose logs backend` and the container's restart loop show the message.
+
+**A differing legacy database.** Back it up (`pg_dump`). Then either align the database with the baseline schema (`docker exec deploy-panel-backend sh -c 'npx --no-install prisma migrate diff --from-schema-datasource backend/prisma/schema.prisma --to-schema-datamodel backend/prisma/baseline.prisma --script'` prints the SQL; it can drop columns and data, review it) or, when the difference is known to be harmless, resolve by hand after review with `npx --no-install prisma migrate resolve --applied 20261029120000_baseline --schema backend/prisma/schema.prisma`, then start the backend again; the start applies every later migration. Do not run `prisma db push`.
+
+**A history table without a finished migration next to tables.** The script prints the table check and stops. Back up, look at the table (`SELECT * FROM _prisma_migrations`). If the tables are a database from before migrations and the table is a leftover, drop it (`DROP TABLE _prisma_migrations`) and start the backend again; the next start compares the tables with `baseline.prisma`.
+
+**A failed migration.** Prisma records it in `_prisma_migrations` and refuses further deploys (`P3009`) until it is resolved. Fix the cause, then mark it with `prisma migrate resolve --rolled-back <name>` (after undoing its partial effects by hand) or `--applied <name>` (when the effects are complete) and start the backend again.
+
+**One-time step in production.** The first start of a release with migrations finds a database that `db push` filled. If it equals `baseline.prisma` the script baselines it by itself; if not, the backend refuses to start and the relay rolls the code back (the database is untouched). Before that deploy, take a `pg_dump` backup and run these checks against the running container of the release that still runs `db push`:
+
+```bash
+# 1. No migration history yet. This must print an empty line; anything else: stop.
+#    (migrate diff ignores _prisma_migrations, so the next check cannot see it.)
+docker exec deploy-panel-db psql -U deploy_panel -d deploy_panel -Atc "SELECT to_regclass('public._prisma_migrations')"
+
+# 2. The live database equals the baseline schema. The single quotes keep $DATABASE_URL
+#    out of the host shell: the container's own datasource variable is used and no
+#    password reaches the host's argv. Must print "No difference detected" (exit 0).
+#    The running release has no baseline.prisma yet; its schema.prisma is the baseline as
+#    long as it equals backend/prisma/baseline.prisma of the release to deploy (empty
+#    `git diff <deployed commit> <new commit> -- backend/prisma/schema.prisma`).
+docker exec deploy-panel-backend sh -c 'npx --no-install prisma migrate diff --from-schema-datasource backend/prisma/schema.prisma --to-schema-datamodel backend/prisma/schema.prisma --exit-code'
+#    If those schema.prisma files differ, copy the new baseline in and compare with it:
+#    docker cp backend/prisma/baseline.prisma deploy-panel-backend:/tmp/baseline.prisma
+#    ... --to-schema-datamodel /tmp/baseline.prisma --exit-code
+#    Once a release that contains baseline.prisma is running, use
+#    --to-schema-datamodel backend/prisma/baseline.prisma.
+```
+
+Exit 2 of check 2 prints the difference: fix the database (see "A differing legacy database") before deploying. After the deploy, `_prisma_migrations` holds one row, `20261029120000_baseline`, and the log shows "recording the baseline migration".
+
+**Changing the schema.** Add a migration with the schema change in the same PR; the rule and the commands are in `backend/prisma/migrations/README.md`. CI applies the migrations to an empty Postgres and fails when the result differs from `schema.prisma`.
+
+## Rollback and the database schema
+
+`.relay.yml` sets `rollback: true`. A relay rollback runs `git reset --hard` to the previous commit, then rebuilds and restarts the previous image. It restores code and image only. It does not revert the database: migrations are forward-only. A previous release that already has migrations finds a history that is ahead of its own `prisma/migrations` folder; `prisma migrate deploy` then applies nothing and the old backend starts against the newer schema. Rolling back past the first release with migrations, to one that still ran `prisma db push`, is worse: that `db push` drops columns it does not know, and a column holding data makes it stop and ask for `--accept-data-loss`, which the entrypoint cannot give.
+
+What that means for a release:
+
+- A migration that only adds (nullable columns, columns with a default, new tables or indexes) is safe to roll back over; the previous code ignores what it does not know.
+- A migration the previous code cannot work with (drop or rename of a column or table, a new NOT NULL column without a default) turns a rollback into a different failure: the old backend meets the new schema. Ship such a change in two releases (expand, then contract once nothing reads the old shape), or plan a manual step: restore the pre-deploy `pg_dump` backup, or write a compensating migration and deploy it.
+- A migration that fails during the deploy leaves the container unhealthy, the relay rolls the code back, and the database stays as the failed migration left it (see "A failed migration" above).
+
+The panel's health check, which the relay uses to decide on a rollback, only passes after the migrations applied, because the server binds its port after the entrypoint's migration step.
 
 ## App secrets
 
@@ -152,6 +214,8 @@ curl -sf https://deploy-panel.opentriologue.ai/api/health            # and healt
 ```
 
 After a restore from a different `.env` than the one the dump was taken under, check that the app secrets still decrypt. Opening an app's Env view or running its preflight does **not** prove it: they list only the key names and update times, never decrypting a value. Only a deploy that provisions the stored secrets decrypts them, so run a forward deploy of one app that has stored secrets and read its result; if it fails the cipher's authentication check, enter that app's secrets again.
+
+A restored dump meets the schema migrations on the backend's next start (see "Database migrations"). A dump taken after the move to migrations carries its own `_prisma_migrations` table, so the start applies only the migrations that are newer than the dump. A dump from before that move has no history table: the start compares it with `backend/prisma/baseline.prisma`, records the baseline when it matches and then applies the later migrations, and refuses to start (database left as restored) when it differs, so `restore.sh` then reports the backend as not healthy.
 
 **Restore drill.** A backup that has never been restored is a hope. `scripts/restore-drill.sh [dump-file]` takes the newest `deploy-panel-*.dump` in `BACKUP_DIR` (or the file you give it), starts a throwaway `postgres:16-alpine` container with no published port and a random password, restores the dump into it with `pg_restore`, and compares the row count of every table of the panel (`servers`, `apps`, `app_secrets`, `env_var_changes`, `users`, `sessions`, `api_keys`, `deploys`, `audit_logs`, `scheduled_deploys`) with the number of rows the dump itself holds for it. The expected counts come from the dump, not from the live database, which keeps changing. It removes the container on every exit path, by the id docker reported for it and never by name (so a container that happened to have the same name is safe), and exits 0 only when every table matches (1 on a failed restore or any mismatch, 2 when nothing could be tried, for example no dump). It never touches the production stack. Run it after the first backup and then monthly, for example `23 4 1 * * cd /path/to/deploy-panel && scripts/restore-drill.sh >> "$HOME/deploy-panel-drill.log" 2>&1`. `DRILL_IMAGE` must match the Postgres major version of the compose file. The throwaway container holds a full copy of the data: if a drill is killed with SIGKILL, or `docker rm` fails, it stays behind. Find it with `docker ps -a --filter name=deploy-panel-drill`, check that the pid at the end of the name belongs to a drill that is gone, and remove it with `docker rm -f <container id>`.
 

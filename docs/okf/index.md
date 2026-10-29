@@ -12,10 +12,11 @@ their areas; these docs deliberately do not duplicate them.
   mechanisms for "live" updates — real SSE (backend to relay), SSE-over-POST
   (backend to browser, because `EventSource` only supports GET), and plain
   interval polling (everything else) — and why each one is what it is.
-- [Schema migrations mechanism](schema-migrations-mechanism.md), pointer to
-  the authoritative `backend/prisma/migrations/README.md`: migration.sql
-  files are documentation only, both the Docker entrypoint and local dev
-  actually apply the schema via `prisma db push`.
+- [Schema migrations mechanism](schema-migrations-mechanism.md), how the
+  schema is applied: the Docker entrypoint and local dev both run
+  `backend/scripts/migrate.sh` (`prisma migrate deploy` against the committed
+  migrations, never `db push`), the Prisma CLI ships in the runtime image,
+  and a relay rollback restores code but not the schema.
 - [App secrets config footgun](app-secrets-config-footgun.md), pointer to
   `docs/configuration.md#app-secrets` and `docs/api.md`, plus the one thing
   neither states: why `lib/secret-crypto.ts` reads `process.env` directly

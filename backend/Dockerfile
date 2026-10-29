@@ -3,7 +3,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY backend/package.json backend/
 COPY backend/prisma/ backend/prisma/
-RUN npm ci --workspace=backend && npx prisma generate --schema=backend/prisma/schema.prisma
+RUN npm ci --workspace=backend && npx --no-install prisma generate --schema=backend/prisma/schema.prisma
 COPY backend/tsconfig.json backend/
 COPY backend/src/ backend/src/
 RUN npm run build --workspace=backend
@@ -15,8 +15,13 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY backend/package.json backend/
 COPY backend/prisma/ backend/prisma/
-RUN npm ci --workspace=backend --omit=dev && npx prisma generate --schema=backend/prisma/schema.prisma && npm cache clean --force
+# prisma is a runtime dependency (backend/package.json): the entrypoint runs the
+# CLI installed here, the version package-lock.json pins, and nothing downloads
+# from the npm registry at container start. --no-install makes npx fail instead
+# of falling back to the registry.
+RUN npm ci --workspace=backend --omit=dev && npx --no-install prisma generate --schema=backend/prisma/schema.prisma && npm cache clean --force
 COPY --from=builder /app/backend/dist backend/dist/
+COPY backend/scripts/migrate.sh backend/scripts/migrate.sh
 COPY backend/backend-entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 USER app

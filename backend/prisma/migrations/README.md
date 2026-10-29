@@ -1,32 +1,61 @@
 # Migrations directory
 
-These `migration.sql` files are **documentation of schema history**, not the
-mechanism that applies the schema anywhere this repo actually deploys.
+These migrations are **the mechanism that applies the schema** everywhere this
+repo deploys. `backend/scripts/migrate.sh` runs `prisma migrate deploy` against
+this directory:
 
-- **Docker deployment / production**: the backend container's entrypoint
-  runs `prisma db push` on startup (see docs/configuration.md "Docker
-  deployment" and the root `docker-compose*.yml` files), which diffs
-  `prisma/schema.prisma` against the live database directly — it does not
-  read or apply anything under this directory.
-- **Local development**: `make setup` / `make db-push` also run
-  `prisma db push` (see the root `Makefile`), for the same reason.
+- **Docker deployment / production**: the backend container's entrypoint runs
+  `backend/scripts/migrate.sh` on every start, before the server binds its port
+  (see docs/configuration.md, "Database migrations").
+- **Local development**: `make db-migrate` (also run by `make setup`) runs the
+  same script. No deploy or dev path runs `prisma db push` any more (CI and
+  the test fixtures use it to build legacy databases).
 
-So when `schema.prisma` changes, add a migration folder here anyway (one per
-schema-affecting change, named `YYYYMMDD_description`, following the
-existing folders) — it's the reviewable, human-readable record of what
-changed and why, and it's what a future move to `prisma migrate deploy`
-would replay.
+The folder holds one baseline migration, `20261029120000_baseline`, generated
+from `schema.prisma` as it stood when the repo moved from `db push` to
+migrations (the seven hand-written, replay-incomplete folders before it are in
+git history). That schema is frozen next to it as `../baseline.prisma`, which is
+never edited: CI asserts that `prisma migrate diff --from-empty
+--to-schema-datamodel backend/prisma/baseline.prisma --script` equals the
+baseline migration's `migration.sql` byte for byte. A database from before
+migrations that matches `baseline.prisma` exactly (not the current
+`schema.prisma`, which later migrations change) is recorded as having applied
+the baseline (`prisma migrate resolve`) by the script, and every later
+migration is then applied; one that differs is left untouched and the
+container refuses to start.
 
-The record is incomplete: there is no baseline for the initial tables
-(`servers`, `apps`, `deploys`), and the `users` and `sessions` tables, the
-ownership columns (`servers.userId`, `api_keys.userId`,
-`audit_logs.actorUserId`), `api_keys.revokedAt`, `apps.tag` and
-`apps.liveUrl` have no migration. The folder cannot be replayed onto an empty
-database as is (`20260408_add_scheduled_deploys` already references
-`servers`); a move to `prisma migrate deploy` first needs a baseline generated
-from `schema.prisma`.
+The byte check depends on how the Prisma CLI formats `migrate diff --script`.
+If a Prisma upgrade changes that formatting, the check fails although no schema
+changed: replace it with a semantic comparison (`prisma migrate diff
+--from-migrations <a directory holding only the baseline> --to-schema-datamodel
+backend/prisma/baseline.prisma --shadow-database-url <url> --exit-code`), and
+still never edit `migration.sql` or `baseline.prisma`.
 
-Don't expect `prisma migrate dev/deploy` to have been run
-against a live database as part of authoring one of these; verify a new
-migration's SQL by inspection (and, ideally, by running it against a local
-Postgres once one is available) rather than assuming CI or prod applies it.
+## The rule: a schema change is a new migration
+
+Every change to `schema.prisma` ships with a new migration folder in the same
+commit, named `YYYYMMDDHHMMSS_description`. CI applies the folder to an empty
+Postgres and fails when the result differs from `schema.prisma`, so a schema
+change without a migration does not merge.
+
+Create it with one of:
+
+```bash
+# from the repo root, DATABASE_URL pointing at a dev database that is at the
+# current migrations (a role that may create a shadow database)
+npx prisma migrate dev --name add_something --schema backend/prisma/schema.prisma
+
+# or print the SQL for review and write the folder by hand
+npx prisma migrate diff --from-url "$DATABASE_URL" \
+  --to-schema-datamodel backend/prisma/schema.prisma --script
+```
+
+Review the SQL before committing: Prisma writes `DROP COLUMN` for a removed
+field, and a production table may hold data the dev database does not.
+
+Migrations are forward-only. An already-deployed migration is never edited;
+fix a mistake with the next migration. A relay rollback restores the previous
+code, not the schema (docs/configuration.md, "Rollback and the database
+schema"), so write a migration the previous release can still run against
+(add columns as nullable or with a default, drop or rename in a later release
+once nothing reads the old name).

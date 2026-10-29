@@ -2,7 +2,15 @@ name: deploy-panel
 health: /api/health
 compose_file: docker-compose.prod.yml
 
-post_update:
-  - docker exec deploy-panel-backend npx prisma db push --schema=backend/prisma/schema.prisma --skip-generate
-
+# No post_update hook. The schema is brought to the committed Prisma migrations
+# by the backend container's entrypoint (backend/scripts/migrate.sh, prisma
+# migrate deploy) on every start, before the server binds its port, so the
+# health check below only passes once the migrations are applied. A hook that
+# ran the same step through `docker exec` right after `compose up` would race
+# the entrypoint.
+#
+# rollback: true restores the previous commit and rebuilds and restarts its
+# image. It does NOT revert the database: migrations are forward-only. A
+# release whose migration the previous code cannot work with needs a manual
+# step; see docs/configuration.md, "Rollback and the database schema".
 rollback: true

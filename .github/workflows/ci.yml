@@ -123,6 +123,115 @@ jobs:
       - uses: actions/checkout@v5
       - run: docker compose build
 
+  migrations:
+    # The committed Prisma migrations (backend/prisma/migrations) are what
+    # production applies at every backend start (backend/scripts/migrate.sh,
+    # prisma migrate deploy), so this job runs that script against a real
+    # Postgres: a fresh database, a second run, a database from before
+    # migrations (the baseline schema applied by prisma db push) that is
+    # baselined, and one that differs and must be left untouched. The shell test
+    # then covers the entrypoint's retry loop, the remaining outcomes and a
+    # scratch second migration.
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/deploy_panel
+      PGBASE: postgresql://postgres:postgres@localhost:5432
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: deploy_panel
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+
+      # baseline.prisma is the frozen schema of the baseline migration; the
+      # auto-baseline compares a database from before migrations with it. If it
+      # drifted from the migration's SQL, a database could be baselined that
+      # does not match what the baseline migration creates.
+      - name: Check baseline.prisma matches the baseline migration
+        run: |
+          npx prisma migrate diff --from-empty --to-schema-datamodel backend/prisma/baseline.prisma --script > "$RUNNER_TEMP/baseline.sql"
+          cmp "$RUNNER_TEMP/baseline.sql" backend/prisma/migrations/20261029120000_baseline/migration.sql || { echo "baseline.prisma no longer produces the baseline migration byte for byte"; exit 1; }
+
+      # An empty database takes the empty-database path, so this applies the
+      # committed migrations with prisma migrate deploy.
+      - name: Apply the committed migrations
+        run: sh backend/scripts/migrate.sh
+
+      # Fails when the committed migrations do not produce the schema that
+      # schema.prisma describes: a schema change without a new migration
+      # fails here.
+      - name: Check migrations match schema.prisma
+        run: npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel backend/prisma/schema.prisma --exit-code
+
+      # A second start finds the migration history the first run wrote and
+      # only runs prisma migrate deploy (nothing pending).
+      - name: Migration step on a migrated database
+        run: |
+          out=$(sh backend/scripts/migrate.sh 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          grep -qF "migrate: migration history found" <<< "$out" || { echo "the second run did not detect the migration history"; exit 1; }
+
+      # A database from before migrations: the baseline schema applied by
+      # prisma db push (tables, no migration history). The script records the
+      # baseline migration as applied, once, without running it, and keeps the
+      # existing rows. The fixture is built from baseline.prisma, not from
+      # schema.prisma, which later migrations change.
+      - name: Baseline of a database from before migrations
+        run: |
+          psql "$PGBASE/postgres" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE legacy'
+          export DATABASE_URL="$PGBASE/legacy"
+          npx prisma db push --schema backend/prisma/baseline.prisma --skip-generate
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO servers (id, name, host, status, \"updatedAt\") VALUES ('s1', 'prod', 'prod.example.test', 'unknown', now())"
+          out=$(sh backend/scripts/migrate.sh 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          grep -qF "recording the baseline migration" <<< "$out" || { echo "the baseline was not recorded"; exit 1; }
+          rows=$(psql "$DATABASE_URL" -At -c 'SELECT count(*) FROM _prisma_migrations')
+          [ "$rows" = 1 ] || { echo "expected one _prisma_migrations row, got $rows"; exit 1; }
+          servers=$(psql "$DATABASE_URL" -At -c 'SELECT count(*) FROM servers')
+          [ "$servers" = 1 ] || { echo "the baseline changed the data: $servers servers, expected 1"; exit 1; }
+
+      # A database from before migrations that differs from baseline.prisma
+      # (here: one extra column) must stop with exit 1 and leave the database
+      # without a migration history and with its data.
+      - name: A database from before migrations that differs is left untouched
+        run: |
+          psql "$PGBASE/postgres" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE drifted'
+          export DATABASE_URL="$PGBASE/drifted"
+          npx prisma db push --schema backend/prisma/baseline.prisma --skip-generate
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c 'ALTER TABLE servers ADD COLUMN legacy_note text'
+          set +e
+          out=$(sh backend/scripts/migrate.sh 2>&1)
+          rc=$?
+          set -e
+          echo "$out"
+          [ "$rc" = 1 ] || { echo "expected exit 1 for a differing database, got $rc"; exit 1; }
+          grep -qF "differs from the baseline schema backend/prisma/baseline.prisma" <<< "$out" || { echo "the refusal message is missing"; exit 1; }
+          history=$(psql "$DATABASE_URL" -At -c "SELECT to_regclass('public._prisma_migrations') IS NOT NULL")
+          [ "$history" = f ] || { echo "the script created a migration history on a differing database"; exit 1; }
+          column=$(psql "$DATABASE_URL" -At -c "SELECT count(*) FROM information_schema.columns WHERE table_name = 'servers' AND column_name = 'legacy_note'")
+          [ "$column" = 1 ] || { echo "the script changed the differing database"; exit 1; }
+
+      # Every outcome of backend/scripts/migrate.sh and the entrypoint's retry
+      # loop against the same server (each scenario uses its own database).
+      - name: Migrate script and entrypoint tests
+        env:
+          MIGRATE_TEST_PG: postgresql://postgres:postgres@localhost:5432
+        run: bash scripts/backend-migrate.test.sh
+
   smoke:
     # Runtime guard against the class of regression that caused the
     # 2026-04-12 production incident: silent schema drift between the
@@ -136,7 +245,7 @@ jobs:
     #
     # Gated on the cheap static jobs so a typo doesn't burn ~4min of
     # docker build + compose bring-up before surfacing.
-    needs: [backend-typecheck, backend-test, frontend-typecheck, frontend-build, docker]
+    needs: [backend-typecheck, backend-test, frontend-typecheck, frontend-build, docker, migrations]
     runs-on: ubuntu-latest
     env:
       # A throwaway token for the CI stack only. Never used outside
@@ -166,8 +275,9 @@ jobs:
         run: |
           # Poll /api/health every second for up to 120s. Cold start
           # on a loaded runner eats ~30s for next build alone, and the
-          # entrypoint now runs `prisma db push` with retries before
-          # Hono binds — give headroom. Healthy response exits early.
+          # entrypoint now runs `prisma migrate deploy` (backend/scripts/
+          # migrate.sh, with retries) before Hono binds, so give headroom.
+          # A healthy response exits early.
           for i in $(seq 1 120); do
             if curl -sf http://localhost:3001/api/health >/dev/null 2>&1; then
               echo "backend healthy after ${i}s"
