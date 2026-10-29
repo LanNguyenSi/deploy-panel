@@ -95,7 +95,7 @@ The frontend is client-side code: the browser calls the backend directly at `NEX
 
 Prod-file hardening (relative to `docker-compose.yml`): `POSTGRES_PASSWORD` and `ALLOWED_GITHUB_LOGINS` have no defaults (`${VAR:?message}`), so `docker compose -f docker-compose.prod.yml ...` fails immediately with a message naming the variable when the server `.env` does not set them; every service caps its logs (`logging:` json-file, `max-size: 10m`, `max-file: 5`) and memory (`mem_limit`: db 1g, backend 512m, frontend 512m) with no CPU limits.
 
-Project names differ on purpose: `docker-compose.yml` pins `name: deploy-panel-dev` so running the dev file from another directory (e.g. the prod app directory) can never attach to that project's `pgdata` volume. `docker-compose.prod.yml` deliberately sets no `name:` — the live prod stack's project name comes from its app directory, and adding or changing a name would start a fresh project with a new `<name>_pgdata` volume and orphan the live database. Renaming the dev project only orphans the old `<dir>_pgdata` dev volume (dev data, safe to recreate).
+Project names differ on purpose: `docker-compose.yml` pins `name: deploy-panel-dev` so running the dev file from another directory (e.g. the prod app directory) can never attach to that project's `pgdata` volume. `docker-compose.prod.yml` deliberately sets no `name:`: the live prod stack's project name comes from its app directory, and adding or changing a name would start a fresh project with a new `<name>_pgdata` volume and orphan the live database. Renaming the dev project only orphans the old `<dir>_pgdata` dev volume (dev data, safe to recreate).
 
 ## App secrets
 
