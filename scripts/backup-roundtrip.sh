@@ -109,7 +109,7 @@ guard_container() { # guard_container <container name or id>
 }
 guard_container "$DRILL_PG_CONTAINER"
 # ROUNDTRIP_GUARD_ONLY=1: stop here (used by scripts/restore.test.sh to test the guard)
-[ -z "${ROUNDTRIP_GUARD_ONLY:-}" ] || { echo "roundtrip: guard passed"; exit 0; }
+[ "${ROUNDTRIP_GUARD_ONLY:-}" != 1 ] || { echo "roundtrip: guard passed"; exit 0; }
 
 echo "roundtrip: creating the schema of backend/prisma/schema.prisma in fresh databases"
 (cd "$REPO_ROOT/backend" && HOME="$WORK" npx prisma migrate diff --from-empty \

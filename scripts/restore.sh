@@ -36,7 +36,8 @@
 #      backend that crash-loops on the restored data would look fine. The wait polls the
 #      container's Docker healthcheck (`docker inspect`; no minimum compose version
 #      needed) until it reports healthy twice in a row, one poll interval apart, with the
-#      same restart count (a backend that passes once and then crashes is not healthy),
+#      same restart count (a backend that crashes again within one poll interval is not
+#      healthy; a crash later than that is not seen by this wait),
 #      reports unhealthy or has exited, or RESTORE_WAIT_SECONDS pass. The backend applies its schema itself when it starts,
 #      the same way it does after a deploy, so a dump that predates a schema change is
 #      brought up to the deployed code then; this script does not run a schema tool of
@@ -223,7 +224,8 @@ fi
 # why not (unhealthy, exited, no container, timeout after N seconds). `ps -a`: plain
 # `ps -q` lists only running containers, so an exited backend would look like "no container".
 # A healthy reading counts only when the next poll, one interval later, shows the same
-# state and restart count: a backend that passes once and then crashes is not healthy.
+# state and restart count. That catches a crash within one poll interval, not a later one:
+# Docker keeps the last health status between its own checks.
 health_result=""
 wait_healthy() {
   local cid state prev_ok="" deadline=$((SECONDS + WAIT_SECONDS))
@@ -240,8 +242,8 @@ wait_healthy() {
           health_result="not stably healthy after ${WAIT_SECONDS}s (last state: $state)"
           ;;
         "running none "*) health_result=nocheck; return 0 ;;
-        *unhealthy*) health_result="unhealthy"; return 0 ;;
         exited* | dead*) health_result="${state%% *}"; return 0 ;;
+        *unhealthy*) health_result="unhealthy"; return 0 ;;
         *) prev_ok=""; health_result="not healthy after ${WAIT_SECONDS}s (last state: ${state:-unknown})" ;;
       esac
     fi

@@ -356,7 +356,7 @@ no_tmp_left() { [ -z "$(find "$TMPD" -mindepth 1 2>/dev/null)" ]; }
   bad=""
   # the reason is named at once, not after the timeout as "no container": plain `compose ps -q`
   # does not list a stopped container, so the script must ask with -a
-  for h in "running unhealthy" "exited none" "dead none"; do
+  for h in "running unhealthy" "exited none" "exited unhealthy" "dead none"; do
     why="${h%% *}"; [ "$why" != running ] || why=unhealthy
     run_restore "FAKE_HEALTH=$h" RESTORE_WAIT_SECONDS=30 RESTORE_WAIT_POLL=0.01 -- --yes "$DUMP"
     { [ "$rc" -eq 4 ] && stdin_is_reset_plus_sql && grep -q "restored and committed, but backend is not healthy ($why)" <<< "$out_text" \
