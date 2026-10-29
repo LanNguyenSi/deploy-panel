@@ -1,11 +1,32 @@
+# No top-level `name:` on purpose. The live prod stack's project name comes
+# from the app directory on the server; setting or changing it here would
+# start a new project with its own `<name>_pgdata` volume and orphan the live
+# database. The dev file (docker-compose.yml) sets `name:` because it has no
+# such constraint; see its comment.
+
+# Log rotation for every prod service: capped json-file logs so a chatty
+# container cannot fill the VPS disk (10 MB x 5 files per service).
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   db:
     image: postgres:16-alpine
     container_name: deploy-panel-db
     restart: unless-stopped
+    logging: *default-logging
+    # Generous headroom for a single-panel Postgres (no memory measurements
+    # exist in this repo to size from); a hard cap so a runaway query or
+    # connection storm cannot exhaust the host.
+    mem_limit: 1g
     environment:
       POSTGRES_USER: deploy_panel
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-deploy_panel_prod}
+      # Fail closed: no fallback password (an old `:-` default shipped a
+      # known password whenever the server .env lost the var).
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_DB: deploy_panel
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -26,8 +47,10 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    logging: *default-logging
+    mem_limit: 512m
     environment:
-      DATABASE_URL: postgresql://deploy_panel:${POSTGRES_PASSWORD:-deploy_panel_prod}@deploy-panel-db:5432/deploy_panel
+      DATABASE_URL: postgresql://deploy_panel:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@deploy-panel-db:5432/deploy_panel
       PORT: 3001
       # Reserved: nothing reads it today and startup does not require it.
       # When set it must be at least 16 characters; empty counts as unset.
@@ -43,10 +66,11 @@ services:
       # Optional: relay app name the panel is registered under (default
       # deploy-panel); the stuck-deploy sweep matches it by app name only.
       PANEL_SELF_APP_NAME: ${PANEL_SELF_APP_NAME:-}
-      # Optional. Gates both GitHub paths: the identity-broker register
-      # endpoint and the native OAuth callback. Empty by default (back-compat
-      # accept-any); set in prod .env to restrict.
-      ALLOWED_GITHUB_LOGINS: ${ALLOWED_GITHUB_LOGINS:-}
+      # Gates both GitHub paths: the identity-broker register endpoint and
+      # the native OAuth callback. Fail closed here (no `:-` fallback): an
+      # empty value means "any verified GitHub user", which must never be
+      # the prod default. The backend default stays empty for dev.
+      ALLOWED_GITHUB_LOGINS: ${ALLOWED_GITHUB_LOGINS:?ALLOWED_GITHUB_LOGINS must be set}
       # Native GitHub OAuth (pairs with #60 — standalone login). Empty =
       # disabled (routes 503, frontend hides button). Set all three in
       # prod .env to enable.
@@ -72,6 +96,8 @@ services:
         NEXT_PUBLIC_API_URL: https://deploy-panel.opentriologue.ai
     container_name: deploy-panel-frontend
     restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
     depends_on:
       - backend
     environment:
