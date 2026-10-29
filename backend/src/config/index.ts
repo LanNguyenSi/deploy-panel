@@ -18,9 +18,11 @@ const configSchema = z.object({
   PANEL_TOKEN: z.string().min(1).optional(),
   // Comma-separated GitHub logins allowed through both GitHub paths: the
   // identity-broker endpoint and the native OAuth callback (routes/auth.ts).
-  // Empty/unset = any verified GitHub user (back-compat). Stop-gap until
-  // per-user data isolation lands; with real isolation the allowlist
-  // becomes optional product policy rather than a security guardrail.
+  // Empty/unset = any verified GitHub user (back-compat) in development and
+  // test only; production refuses to start with an empty allowlist (see the
+  // guard below the parse). Stop-gap until per-user data isolation lands;
+  // with real isolation the allowlist becomes optional product policy rather
+  // than a security guardrail.
   ALLOWED_GITHUB_LOGINS: z.string().default(""),
   // Native GitHub OAuth App for the standalone login flow (distinct
   // from the identity-broker path, which forwards a token from
@@ -50,13 +52,31 @@ if (!result.success) {
 export const config = result.data;
 
 /**
- * Parsed allowlist. Empty array means "no allowlist enforced" — callers
- * treat that as "accept any verified login".
+ * Parsed allowlist. Single parse, shared by the production guard below and
+ * every caller. Empty array means "no allowlist enforced": callers treat
+ * that as "accept any verified login". In production an empty array is
+ * refused at startup instead (guard below), so this back-compat meaning only
+ * applies to development and test.
  */
 export const allowedGitHubLogins: string[] = config.ALLOWED_GITHUB_LOGINS
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
+
+// Fail closed in production: an empty allowlist (unset, empty, or only
+// spaces and commas) would let any verified GitHub account register through
+// the always-mounted identity-broker endpoint or the OAuth callback, so a
+// production backend refuses to start without at least one login. A
+// PANEL_TOKEN-only panel is not exempt: the broker endpoint is always
+// mounted, so it must still name one login the operator controls.
+if (config.NODE_ENV === "production" && allowedGitHubLogins.length === 0) {
+  console.error(
+    "Invalid config: ALLOWED_GITHUB_LOGINS must list at least one GitHub login when NODE_ENV=production " +
+      "(unset, empty, or only spaces and commas all count as empty); set it to the logins to admit, " +
+      "or one login you control on a PANEL_TOKEN-only panel",
+  );
+  process.exit(1);
+}
 
 export const hasGitHubOAuthConfigured =
   config.GITHUB_CLIENT_ID.length > 0 && config.GITHUB_CLIENT_SECRET.length > 0;

@@ -257,6 +257,10 @@ jobs:
 
       - name: Write CI .env
         run: |
+          # ALLOWED_GITHUB_LOGINS is required here because docker-compose.yml
+          # defaults NODE_ENV to production and the variable to empty, and a
+          # production backend refuses to start with an empty allowlist. No
+          # smoke check signs in through GitHub, so a CI-only login is enough.
           cat > .env <<'EOF'
           POSTGRES_USER=deploy_panel
           POSTGRES_PASSWORD=ci_postgres_password
@@ -264,6 +268,7 @@ jobs:
           SESSION_SECRET=ci-session-secret-long-enough-to-pass-min-16
           APP_SECRETS_KEY=ci-app-secrets-key-long-enough-to-pass-min-16
           NODE_ENV=production
+          ALLOWED_GITHUB_LOGINS=ci-smoke-check
           EOF
 
       - name: Start db + backend

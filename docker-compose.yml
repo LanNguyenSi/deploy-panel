@@ -66,9 +66,10 @@ services:
       # empty default would break startup without a token. Pass it through
       # an override file (see docker-compose.ci.yml) or use
       # docker-compose.prod.yml.
-      # Optional: gates both GitHub paths, the identity-broker register
-      # endpoint and the native OAuth callback. Empty = any verified GitHub
-      # user (back-compat); set it to restrict.
+      # Gates both GitHub paths, the identity-broker register endpoint and
+      # the native OAuth callback. Required when NODE_ENV=production (the
+      # default here): the backend refuses to start with an empty list.
+      # Empty = any verified GitHub user only in development and test.
       ALLOWED_GITHUB_LOGINS: ${ALLOWED_GITHUB_LOGINS:-}
       # Optional native GitHub OAuth. Empty = disabled (routes 503, frontend
       # hides the button). Set both ID and secret to enable; BACKEND_URL must
