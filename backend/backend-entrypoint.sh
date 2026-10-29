@@ -19,22 +19,50 @@
 #      fatal here, so docker-compose marks the container unhealthy and
 #      restarts it in a loop: noisy and visible in `docker compose logs`.
 #
-#   3. The CLI came from `npx`, which downloaded it from the npm registry on
-#      every start. migrate.sh runs the CLI installed in node_modules, the
-#      version package-lock.json pins; with no network it still works.
+#   3. The schema step ran `npx prisma`, and prisma was only a devDependency
+#      (the image's npx resolution depended on what happened to be installed).
+#      prisma is now an explicit runtime dependency, and migrate.sh runs
+#      node_modules/.bin/prisma, the version package-lock.json pins. No npm or
+#      npx process runs at start, so it works with no network beyond the
+#      database.
 #
 # Retry only the "could not check" outcome (migrate.sh exit 3, typically the
 # database is not accepting connections yet: the boot race). Any other
 # non-zero exit is definitive (the database differs from the schema and was
 # left untouched, or a migration failed) and ends the container at once.
 # MIGRATE_MAX_ATTEMPTS and MIGRATE_RETRY_DELAY exist so tests can shorten the
-# loop; production uses the defaults.
+# loop; production uses the defaults (10, 2). An unset or empty variable means
+# the default; a value that is not a plain decimal number (MIGRATE_MAX_ATTEMPTS
+# >= 1, MIGRATE_RETRY_DELAY >= 0, at most 6 digits) stops the container with
+# exit 1: a loop that never runs would start the server without migrating.
 
 set -e
 
 MIGRATE=backend/scripts/migrate.sh
-MAX_ATTEMPTS="${MIGRATE_MAX_ATTEMPTS:-10}"
-RETRY_DELAY="${MIGRATE_RETRY_DELAY:-2}"
+
+# parse_int <name> <value> <minimum>: sets PARSED to the decimal value (leading
+# zeros dropped, so 08 is 8 and never an octal error) or exits 1.
+parse_int() {
+  _v=$2
+  case $_v in
+    '' | *[!0-9]*) ;;
+    *)
+      while [ "${_v#0}" != "$_v" ]; do _v=${_v#0}; done
+      [ -n "$_v" ] || _v=0
+      if [ "${#_v}" -le 6 ] && [ "$_v" -ge "$3" ]; then
+        PARSED=$_v
+        return 0
+      fi
+      ;;
+  esac
+  echo "[entrypoint] $1 must be a whole number of at least $3 (at most 6 digits), got '$2'. Not starting." >&2
+  exit 1
+}
+
+parse_int MIGRATE_MAX_ATTEMPTS "${MIGRATE_MAX_ATTEMPTS:-10}" 1
+MAX_ATTEMPTS=$PARSED
+parse_int MIGRATE_RETRY_DELAY "${MIGRATE_RETRY_DELAY:-2}" 0
+RETRY_DELAY=$PARSED
 
 echo "[entrypoint] Applying database migrations ($MIGRATE)"
 

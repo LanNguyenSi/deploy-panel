@@ -60,7 +60,7 @@ make dev                                          # backend on :3001, frontend o
 
 Running a Prisma command as `cd backend && npx prisma ...` instead fails with `P1012 Environment variable not found: DATABASE_URL`: Prisma 5.22 looks for `.env` next to `backend/package.json` and the schema, not at the repo root. `backend/scripts/migrate.sh` changes into the repo root itself and passes `--schema backend/prisma/schema.prisma`; run other Prisma commands from the repo root with the same `--schema` flag. `make dev` does not load `.env` itself: export it into the shell first (see `backend/tests/env-loading-guard.test.ts`), otherwise the backend starts without `DATABASE_URL`, `PANEL_TOKEN` and the other variables; neither `make` nor the `tsx watch` process it starts read `.env` on their own.
 
-`make setup` also exists (install, then `make docker-up` for the full db + backend + frontend Docker stack, then Prisma generate and migrate), but its Docker stack fails to start the backend container without `APP_SECRETS_KEY` set in `.env` (commented out in `.env.example`; see the "App secrets" section and the `APP_SECRETS_KEY` row above), and once that is set, its frontend container occupies host port 3000, the same port `make dev` binds on the host. Bring up only `db` as shown above for host-run dev with hot reload; use `make setup` / `make docker-up` only when you want the full stack running in containers (see "Docker deployment" below). After pulling a schema change, rerun the generate line and `sh backend/scripts/migrate.sh` above (or `make db-generate` / `make db-migrate` after exporting `.env`). A local database that an older checkout filled with `prisma db push` is baselined automatically when it matches the schema; if it differs the script refuses and says how, or run `docker compose down -v` and start the db again for a clean one. For a deeper reset, `make clean` wipes `node_modules` and build output (`backend/dist`, `frontend/.next`) first, then rerun `npm install`.
+`make setup` also exists (install, then `make docker-up` for the full db + backend + frontend Docker stack, then Prisma generate and migrate), but its Docker stack fails to start the backend container without `APP_SECRETS_KEY` set in `.env` (commented out in `.env.example`; see the "App secrets" section and the `APP_SECRETS_KEY` row above), and once that is set, its frontend container occupies host port 3000, the same port `make dev` binds on the host. Bring up only `db` as shown above for host-run dev with hot reload; use `make setup` / `make docker-up` only when you want the full stack running in containers (see "Docker deployment" below). After pulling a schema change, rerun the generate line and `sh backend/scripts/migrate.sh` above (or `make db-generate` / `make db-migrate` after exporting `.env`). A local database that an older checkout filled with `prisma db push` is baselined automatically when it matches `backend/prisma/baseline.prisma`; if it differs the script refuses and says how, or run `docker compose down -v` and start the db again for a clean one. For a deeper reset, `make clean` wipes `node_modules` and build output (`backend/dist`, `frontend/.next`) first, then rerun `npm install`.
 
 ## Docker deployment
 
@@ -95,39 +95,57 @@ The frontend is client-side code: the browser calls the backend directly at `NEX
 
 ## Database migrations
 
-The schema is applied by the committed Prisma migrations in `backend/prisma/migrations`, never by `prisma db push`. The backend image carries the Prisma CLI at the version `package-lock.json` pins (`prisma` is a runtime dependency), so a start needs no registry access. The entrypoint (`backend/backend-entrypoint.sh`) runs `backend/scripts/migrate.sh` on every start and only then starts the server; `make db-migrate` and `sh backend/scripts/migrate.sh` run the same script against a host-run database (`DATABASE_URL` exported). The script decides by the state of the database:
+The schema is applied by the committed Prisma migrations in `backend/prisma/migrations`, never by `prisma db push`. `prisma` is a runtime dependency, so the backend image carries the Prisma CLI at the version `package-lock.json` pins and `backend/scripts/migrate.sh` calls `node_modules/.bin/prisma` directly: no npm or npx process runs at start and a start needs no registry access. The entrypoint (`backend/backend-entrypoint.sh`) runs `backend/scripts/migrate.sh` on every start and only then starts the server; `make db-migrate` and `sh backend/scripts/migrate.sh` run the same script against a host-run database (`DATABASE_URL` exported).
+
+The first migration, `20261029120000_baseline`, creates the schema the `db push` releases applied. That schema is frozen in `backend/prisma/baseline.prisma` (never edited; CI asserts that `prisma migrate diff --from-empty --to-schema-datamodel backend/prisma/baseline.prisma --script` equals the baseline migration's SQL byte for byte). A database from the `db push` releases is compared with that file, not with the current `schema.prisma`, which later migrations change.
+
+The script decides by the state of the database:
 
 | Database | What the script does |
 |----------|----------------------|
-| Has `_prisma_migrations` | `prisma migrate deploy` (applies the pending migrations, none is fine) |
+| Has `_prisma_migrations` with a finished migration | `prisma migrate deploy` (applies the pending migrations, none is fine) |
+| Has `_prisma_migrations` without a finished migration (empty, or only a failed row), and tables | Changes nothing and exits 1: the baseline SQL would fail on the existing tables and leave a failed row (`P3009` on every later start) |
+| Has `_prisma_migrations` without a finished migration, and no tables | `prisma migrate deploy` (Prisma itself stops with `P3009` on a failed row) |
 | Empty | `prisma migrate deploy`; the baseline migration creates every table |
-| Tables but no `_prisma_migrations` (a database from the `db push` releases), identical to `schema.prisma` (`prisma migrate diff --exit-code` is 0) | `prisma migrate resolve --applied 20261029120000_baseline` once, then `prisma migrate deploy`. The baseline SQL is not run, no data is touched |
-| Tables but no `_prisma_migrations`, differs from `schema.prisma` | Changes nothing, prints the difference and exits 1 |
+| Tables but no `_prisma_migrations` (a database from the `db push` releases), identical to `baseline.prisma` (`prisma migrate diff --exit-code` is 0) | `prisma migrate resolve --applied 20261029120000_baseline` once, then `prisma migrate deploy`, which applies every later migration. The baseline SQL is not run, no data is touched |
+| Tables but no `_prisma_migrations`, differs from `baseline.prisma` | Changes nothing, prints the difference and exits 1 |
 
-The entrypoint retries only exit 3 ("could not check", typically the database is not accepting connections yet) up to 10 times, 2 seconds apart. Every other failure (a differing database, a failing migration) ends the container at once, so `docker compose logs backend` and the container's restart loop show the message. Nothing in this path downloads from the npm registry.
+The entrypoint retries only exit 3 ("could not check", typically the database is not accepting connections yet) up to 10 times, 2 seconds apart (`MIGRATE_MAX_ATTEMPTS`, a whole number >= 1, and `MIGRATE_RETRY_DELAY`, a whole number >= 0, change this; any other value stops the container with exit 1). Every other failure (a differing database, a failing migration) ends the container at once, so `docker compose logs backend` and the container's restart loop show the message.
 
-**A differing legacy database.** Back it up (`pg_dump`). Then either change the database to match the schema (`npx prisma migrate diff --from-schema-datasource backend/prisma/schema.prisma --to-schema-datamodel backend/prisma/schema.prisma --script` prints the SQL; it can drop columns and data, review it) or, when the difference is known to be harmless, record the baseline by hand with `npx prisma migrate resolve --applied 20261029120000_baseline --schema backend/prisma/schema.prisma`, then start the backend again. Do not run `prisma db push`.
+**A differing legacy database.** Back it up (`pg_dump`). Then either align the database with the baseline schema (`docker exec deploy-panel-backend sh -c 'npx --no-install prisma migrate diff --from-schema-datasource backend/prisma/schema.prisma --to-schema-datamodel backend/prisma/baseline.prisma --script'` prints the SQL; it can drop columns and data, review it) or, when the difference is known to be harmless, resolve by hand after review with `npx --no-install prisma migrate resolve --applied 20261029120000_baseline --schema backend/prisma/schema.prisma`, then start the backend again; the start applies every later migration. Do not run `prisma db push`.
+
+**A history table without a finished migration next to tables.** The script prints the table check and stops. Back up, look at the table (`SELECT * FROM _prisma_migrations`). If the tables are a database from before migrations and the table is a leftover, drop it (`DROP TABLE _prisma_migrations`) and start the backend again; the next start compares the tables with `baseline.prisma`.
 
 **A failed migration.** Prisma records it in `_prisma_migrations` and refuses further deploys (`P3009`) until it is resolved. Fix the cause, then mark it with `prisma migrate resolve --rolled-back <name>` (after undoing its partial effects by hand) or `--applied <name>` (when the effects are complete) and start the backend again.
 
-**One-time step in production.** The first start of a release with migrations finds a database that `db push` filled. If it equals `schema.prisma` the script baselines it by itself; if not, the backend refuses to start and the relay rolls the code back (the database is untouched). Check before that deploy, and take a `pg_dump` backup:
+**One-time step in production.** The first start of a release with migrations finds a database that `db push` filled. If it equals `baseline.prisma` the script baselines it by itself; if not, the backend refuses to start and the relay rolls the code back (the database is untouched). Before that deploy, take a `pg_dump` backup and run these checks against the running container of the release that still runs `db push`:
 
 ```bash
-# inside the running container of the release that still runs db push (its image has no
-# CLI; npx fetches it, so pin the version). The command compares the live database with
-# the schema file in that container, which is the release's schema as long as the release
-# does not change schema.prisma; otherwise copy the new schema.prisma in and point to it.
-docker exec deploy-panel-backend npx prisma@5.22.0 migrate diff \
-  --from-url "$DATABASE_URL" --to-schema-datamodel backend/prisma/schema.prisma --exit-code
+# 1. No migration history yet. This must print an empty line; anything else: stop.
+#    (migrate diff ignores _prisma_migrations, so the next check cannot see it.)
+docker exec deploy-panel-db psql -U deploy_panel -d deploy_panel -Atc "SELECT to_regclass('public._prisma_migrations')"
+
+# 2. The live database equals the baseline schema. The single quotes keep $DATABASE_URL
+#    out of the host shell: the container's own datasource variable is used and no
+#    password reaches the host's argv. Must print "No difference detected" (exit 0).
+#    The running release has no baseline.prisma yet; its schema.prisma is the baseline as
+#    long as it equals backend/prisma/baseline.prisma of the release to deploy (empty
+#    `git diff <deployed commit> <new commit> -- backend/prisma/schema.prisma`).
+docker exec deploy-panel-backend sh -c 'npx --no-install prisma migrate diff --from-schema-datasource backend/prisma/schema.prisma --to-schema-datamodel backend/prisma/schema.prisma --exit-code'
+#    If those schema.prisma files differ, copy the new baseline in and compare with it:
+#    docker cp backend/prisma/baseline.prisma deploy-panel-backend:/tmp/baseline.prisma
+#    ... --to-schema-datamodel /tmp/baseline.prisma --exit-code
+#    Once a release that contains baseline.prisma is running, use
+#    --to-schema-datamodel backend/prisma/baseline.prisma.
 ```
 
-It must print "No difference detected" (exit 0). Exit 2 prints the difference: fix the database (see "A differing legacy database") before deploying. After the deploy, `_prisma_migrations` holds one row, `20261029120000_baseline`, and the log shows "recording the baseline migration".
+Exit 2 of check 2 prints the difference: fix the database (see "A differing legacy database") before deploying. After the deploy, `_prisma_migrations` holds one row, `20261029120000_baseline`, and the log shows "recording the baseline migration".
 
 **Changing the schema.** Add a migration with the schema change in the same PR; the rule and the commands are in `backend/prisma/migrations/README.md`. CI applies the migrations to an empty Postgres and fails when the result differs from `schema.prisma`.
 
 ## Rollback and the database schema
 
-`.relay.yml` sets `rollback: true`. A relay rollback runs `git reset --hard` to the previous commit, then rebuilds and restarts the previous image. It restores code and image only. It does not revert the database: migrations are forward-only. A previous release that already has migrations finds a history that is ahead of its own `prisma/migrations` folder; `prisma migrate deploy` then applies nothing and the old backend starts against the newer schema (checked against a database holding a migration the checkout does not have). Rolling back past the first release with migrations, to one that still ran `prisma db push`, is worse: that `db push` drops columns it does not know (checked with an empty extra column; a column holding data makes it stop and ask for `--accept-data-loss`, which the entrypoint cannot give).
+`.relay.yml` sets `rollback: true`. A relay rollback runs `git reset --hard` to the previous commit, then rebuilds and restarts the previous image. It restores code and image only. It does not revert the database: migrations are forward-only. A previous release that already has migrations finds a history that is ahead of its own `prisma/migrations` folder; `prisma migrate deploy` then applies nothing and the old backend starts against the newer schema. Rolling back past the first release with migrations, to one that still ran `prisma db push`, is worse: that `db push` drops columns it does not know, and a column holding data makes it stop and ask for `--accept-data-loss`, which the entrypoint cannot give.
 
 What that means for a release:
 

@@ -25,8 +25,16 @@ const fs = require("fs");
 const yaml = require("js-yaml");
 const file = process.argv[2];
 const doc = yaml.load(fs.readFileSync(file, "utf8"));
+// The parse guard comes first, so an empty or misread file fails cleanly here
+// instead of throwing in the hook loop below: the config must be a mapping with
+// a health path and a compose file. A config without hook entries is valid (the
+// schema step runs in the backend entrypoint, not in a hook).
 let bad = 0;
 let total = 0;
+if (doc === null || typeof doc !== "object" || typeof doc.health !== "string" || typeof doc.compose_file !== "string") {
+  console.log("FAIL: .relay.yml did not parse as a mapping with string health and compose_file");
+  process.exit(1);
+}
 for (const key of ["pre_update", "post_update"]) {
   const list = doc[key];
   if (list === undefined) continue;
@@ -45,14 +53,7 @@ for (const key of ["pre_update", "post_update"]) {
     }
   });
 }
-// A config without hook entries is valid (the schema step runs in the backend
-// entrypoint, not in a hook). The parse guard keeps an empty or misread file
-// from passing as "no hooks": the config must be a mapping with a health path
-// and a compose file.
-if (doc === null || typeof doc !== "object" || typeof doc.health !== "string" || typeof doc.compose_file !== "string") {
-  console.log("FAIL: .relay.yml did not parse as a mapping with string health and compose_file");
-  bad++;
-} else if (total === 0) {
+if (total === 0) {
   console.log("PASS: no pre_update or post_update entries declared");
 }
 // agent-relay runs pre_update against the pre-pull tree, so an image build

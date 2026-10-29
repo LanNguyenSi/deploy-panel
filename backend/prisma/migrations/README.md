@@ -8,15 +8,21 @@ this directory:
   `backend/scripts/migrate.sh` on every start, before the server binds its port
   (see docs/configuration.md, "Database migrations").
 - **Local development**: `make db-migrate` (also run by `make setup`) runs the
-  same script. Nothing in the repo runs `prisma db push` any more.
+  same script. No deploy or dev path runs `prisma db push` any more (CI and
+  the test fixtures use it to build legacy databases).
 
 The folder holds one baseline migration, `20261029120000_baseline`, generated
 from `schema.prisma` as it stood when the repo moved from `db push` to
 migrations (the seven hand-written, replay-incomplete folders before it are in
-git history). A database from before migrations that matches `schema.prisma`
-exactly is recorded as having applied the baseline (`prisma migrate resolve`)
-by the script; one that differs is left untouched and the container refuses to
-start.
+git history). That schema is frozen next to it as `../baseline.prisma`, which is
+never edited: CI asserts that `prisma migrate diff --from-empty
+--to-schema-datamodel backend/prisma/baseline.prisma --script` equals the
+baseline migration's `migration.sql` byte for byte. A database from before
+migrations that matches `baseline.prisma` exactly (not the current
+`schema.prisma`, which later migrations change) is recorded as having applied
+the baseline (`prisma migrate resolve`) by the script, and every later
+migration is then applied; one that differs is left untouched and the
+container refuses to start.
 
 ## The rule: a schema change is a new migration
 
