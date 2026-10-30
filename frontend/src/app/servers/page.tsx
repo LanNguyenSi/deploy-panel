@@ -163,6 +163,7 @@ export default function ServersPage() {
           {servers.map((s) => {
             const rs = relayStatuses[s.id];
             const isOutdated = rs?.relayOutdated === true;
+            const badge = serverStatusBadge(s.status);
             return (
             <div key={s.id} className="card" style={{ padding: "var(--space-4) var(--space-5)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "var(--space-3)" }}>
@@ -198,9 +199,17 @@ export default function ServersPage() {
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--space-2)" }}>
-                  <span className={`badge ${serverStatusBadge(s.status).className}`} title={serverStatusBadge(s.status).title}>
-                    {s.status}
+                  <span className={`badge ${badge.className}`} title={badge.title}>
+                    {badge.label}
                   </span>
+                  {badge.hint && (
+                    <span
+                      data-testid={`status-hint-${s.id}`}
+                      style={{ fontSize: "var(--text-xs)", color: "var(--muted)" }}
+                    >
+                      {badge.hint}
+                    </span>
+                  )}
                   {isOutdated && (
                     <button
                       type="button"

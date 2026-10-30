@@ -43,15 +43,17 @@ describe("serverStatusBadge", () => {
     expect(serverStatusBadge(status)).toEqual(expected);
   });
 
-  it("maps auth to the warning badge with a title naming the relay token", () => {
+  it("maps auth to an explicit label so it cannot read as 'authenticated'", () => {
     const badge = serverStatusBadge("auth");
     expect(badge.className).toBe("badge-warning");
-    expect(badge.label).toBe("auth");
+    expect(badge.label).toBe("auth failed");
+    expect(badge.hint).toContain("relay token");
     expect(badge.title).toContain("check the relay token");
   });
 
-  it("only auth carries a title; the others render none", () => {
+  it("only auth carries a hint and a title; the others render neither", () => {
     for (const status of ["online", "offline", "no-relay", "unknown", "whatever"]) {
+      expect(serverStatusBadge(status).hint).toBeUndefined();
       expect(serverStatusBadge(status).title).toBeUndefined();
     }
   });

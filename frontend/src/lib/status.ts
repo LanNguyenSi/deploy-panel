@@ -16,13 +16,18 @@ export function deployStatusBadge(status: string, blocked = false): { className:
   return map[status] ?? { className: "badge-neutral", label: status };
 }
 
-// Server status -> badge. Auth (the relay rejected the stored token)
-// is amber with a title naming the fix; unknown (404/5xx/timeout from the
-// relay) is neutral; unexpected values fall back to neutral like the deploy
-// badge does.
+// Server status -> badge. Auth (the relay rejected the stored token) is
+// amber with an explicit label (a bare "auth" could read as "authenticated")
+// and a short hint the pages render as visible text next to the badge, so
+// the fix reaches every user, not only mouse users hovering the title.
+// unknown (404/5xx/timeout from the relay) is neutral; unexpected values
+// fall back to neutral like the deploy badge does.
 export function serverStatusBadge(status: string): {
   className: string;
   label: string;
+  /** Short fix text to render next to the badge (visible, not only a tooltip). */
+  hint?: string;
+  /** Extra tooltip; the hint above is the accessible source of this text. */
   title?: string;
 } {
   switch (status) {
@@ -35,7 +40,8 @@ export function serverStatusBadge(status: string): {
     case "auth":
       return {
         className: "badge-warning",
-        label: status,
+        label: "auth failed",
+        hint: "check relay token",
         title: "The relay rejected the stored token; check the relay token on this server",
       };
     default:

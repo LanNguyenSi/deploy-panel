@@ -126,9 +126,11 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div style={{ display: "grid", gap: "var(--space-2)" }}>
-              {servers.map((s) => (
+              {servers.map((s) => {
+                const badge = serverStatusBadge(s.status);
+                return (
                 <Link key={s.id} href={`/servers/${s.id}`} className="card card-interactive" style={{ padding: "var(--space-3) var(--space-4)", display: "block" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "var(--space-2)", flexWrap: "wrap" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
                       <span className={`status-dot status-dot-${s.status}`} />
                       <div>
@@ -138,12 +140,20 @@ export default function DashboardPage() {
                         </div>
                       </div>
                     </div>
-                    <span className={`badge ${serverStatusBadge(s.status).className}`} title={serverStatusBadge(s.status).title}>
-                      {s.status}
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "var(--space-2)" }}>
+                      <span className={`badge ${badge.className}`} title={badge.title}>
+                        {badge.label}
+                      </span>
+                      {badge.hint && (
+                        <span style={{ fontSize: "var(--text-xs)", color: "var(--muted)" }}>
+                          {badge.hint}
+                        </span>
+                      )}
                     </span>
                   </div>
                 </Link>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>

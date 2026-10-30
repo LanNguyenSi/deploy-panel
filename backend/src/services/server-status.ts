@@ -67,9 +67,11 @@ export function probeStatusFromHttp(httpStatus: number): "auth" | "unknown" {
  * Map a thrown probe failure (no HTTP answer at all) to a
  * `Server.status`.
  *
- *   - Probe timeout -> "unknown": `AbortSignal.timeout` rejects with
- *     a `TimeoutError` DOMException; the relay was reachable but too
- *     busy/slow to answer in time. Transient, not "offline".
+ *   - Probe timeout or aborted signal -> "unknown": `AbortSignal.timeout`
+ *     rejects with a `TimeoutError` DOMException (an abort with an
+ *     `AbortError` reason reads the same way); the call was cut short
+ *     while the relay was reachable, not refused. Transient, not
+ *     "offline".
  *   - everything else (connection refused, DNS failure, other
  *     network errors) -> "offline": the relay is genuinely
  *     unreachable.

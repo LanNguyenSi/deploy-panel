@@ -138,3 +138,52 @@ describe("ServersPage — relay outdated badge, one-click self-update, and SSH f
     ).toBeInTheDocument();
   });
 });
+
+describe("ServersPage — relay probe status badges (auth, unknown)", () => {
+  it("renders the auth badge label, warning class and visible token hint; unknown stays neutral without a hint", async () => {
+    mGetServers.mockResolvedValue({
+      servers: [
+        {
+          id: "srv-auth",
+          name: "Edge VPS",
+          host: "203.0.113.40",
+          status: "auth",
+          lastSeenAt: null,
+          createdAt: "2026-10-01T00:00:00Z",
+          _count: { apps: 1 },
+        },
+        {
+          id: "srv-unk",
+          name: "Lab VPS",
+          host: "203.0.113.50",
+          status: "unknown",
+          lastSeenAt: null,
+          createdAt: "2026-10-01T00:00:00Z",
+          _count: { apps: 0 },
+        },
+      ],
+    });
+    mGetServerSystem.mockRejectedValue(new Error("skip metrics"));
+    mGetServerRelayStatus.mockResolvedValue({
+      relayRevision: null,
+      latestRevision: null,
+      relayOutdated: null,
+      state: "unknown",
+    });
+
+    render(
+      <Providers>
+        <ServersPage />
+      </Providers>,
+    );
+
+    const authBadge = await screen.findByText("auth failed");
+    expect(authBadge).toHaveClass("badge", "badge-warning");
+    expect(authBadge.getAttribute("title")).toMatch(/relay token/);
+    expect(screen.getByTestId("status-hint-srv-auth")).toHaveTextContent("check relay token");
+
+    const unknownBadge = screen.getByText("unknown");
+    expect(unknownBadge).toHaveClass("badge", "badge-neutral");
+    expect(screen.queryByTestId("status-hint-srv-unk")).not.toBeInTheDocument();
+  });
+});
