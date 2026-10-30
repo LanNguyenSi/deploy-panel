@@ -3,7 +3,7 @@ type: overview
 title: Schema migrations mechanism, committed Prisma migrations applied by migrate.sh
 description: Every path that applies the schema (Docker entrypoint, local `make db-migrate`) runs backend/scripts/migrate.sh, which uses `prisma migrate deploy` against the committed baseline migration, baselines a db-push database only when it equals the frozen baseline.prisma, and never runs `prisma db push`; relay rollbacks restore code, not the schema.
 tags: [prisma, migrations, entrypoint, rollback]
-timestamp: 2026-10-29T10:28:17Z
+timestamp: 2026-10-30T06:12:45Z
 sources:
   - backend/prisma/migrations/README.md
   - backend/scripts/migrate.sh
