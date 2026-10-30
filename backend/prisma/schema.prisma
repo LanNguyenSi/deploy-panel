@@ -45,7 +45,7 @@ model Server {
   // recreate the container via the dev compose file and strip Traefik
   // routing. Validated as a simple filename — no slashes, no metachars.
   relayComposeFile String?
-  status      String   @default("unknown") // unknown, online, offline, no-relay
+  status      String   @default("unknown") // unknown (404/5xx/timeout probe), online, offline (refused/DNS), auth (401/403, relay token rejected), no-relay
   lastSeenAt  DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

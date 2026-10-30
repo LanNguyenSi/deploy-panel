@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deployStatusBadge } from "./status";
+import { deployStatusBadge, serverStatusBadge } from "./status";
 
 describe("deployStatusBadge", () => {
   it.each([
@@ -29,5 +29,32 @@ describe("deployStatusBadge", () => {
       className: "badge-neutral",
       label: "totally-unknown",
     });
+  });
+});
+
+describe("serverStatusBadge", () => {
+  it.each([
+    ["online", { className: "badge-success", label: "online" }],
+    ["offline", { className: "badge-danger", label: "offline" }],
+    ["no-relay", { className: "badge-warning", label: "no-relay" }],
+    ["unknown", { className: "badge-neutral", label: "unknown" }],
+    ["bogus-future-status", { className: "badge-neutral", label: "bogus-future-status" }],
+  ] as const)("maps %s to the exact badge", (status, expected) => {
+    expect(serverStatusBadge(status)).toEqual(expected);
+  });
+
+  it("maps auth to an explicit label so it cannot read as 'authenticated'", () => {
+    const badge = serverStatusBadge("auth");
+    expect(badge.className).toBe("badge-warning");
+    expect(badge.label).toBe("auth failed");
+    expect(badge.hint).toContain("relay token");
+    expect(badge.title).toContain("check the relay token");
+  });
+
+  it("only auth carries a hint and a title; the others render neither", () => {
+    for (const status of ["online", "offline", "no-relay", "unknown", "whatever"]) {
+      expect(serverStatusBadge(status).hint).toBeUndefined();
+      expect(serverStatusBadge(status).title).toBeUndefined();
+    }
   });
 });

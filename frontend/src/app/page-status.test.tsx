@@ -119,9 +119,9 @@ describe("DashboardPage status lead", () => {
     fixture.servers = [serverRow("s1", "online"), serverRow("s2", "unknown")];
     fixture.deploys = [{ ...failedDeploy, status: "success" }];
     renderDashboard();
-    const panel = (await screen.findByRole("heading", { name: "No problems found" })).closest("section")!;
-    expect(panel).toHaveAttribute("data-level", "unchecked");
-    expect(within(panel).getByText(/1 of 2 servers online, 1 status unknown\./)).toBeInTheDocument();
+    const panel = (await screen.findByRole("heading", { name: "1 item needs attention" })).closest("section")!;
+    expect(panel).toHaveAttribute("data-level", "attention");
+    expect(within(panel).getByRole("link", { name: /srv-s2\s+status unknown/ })).toHaveAttribute("href", "/servers/s2");
     expect(screen.queryByText("All systems operational")).toBeNull();
   });
 

@@ -41,10 +41,45 @@ export type ServerStatusSource = "action" | "probe";
 
 export interface SetServerStatusOpts {
   serverId: string;
-  status: "online" | "offline" | "unknown" | "no-relay";
+  status: "online" | "auth" | "offline" | "unknown" | "no-relay";
   source: ServerStatusSource;
   /** Always updates lastSeenAt alongside status. Defaults to now. */
   lastSeenAt?: Date;
+}
+
+/**
+ * Map an HTTP status from a FAILED relay probe to a `Server.status`.
+ * The relay answered, so the result is never
+ * "offline": the relay process is alive, only its answer is wrong.
+ *
+ *   - 401 / 403 -> "auth": the stored relay token is wrong, missing
+ *     or no longer accepted. Operator fix: check/rotate the relay
+ *     token on this server (nothing about the VPS is down).
+ *   - anything else (404, 5xx, ...) -> "unknown": a transient or
+ *     relay-side fault (broken route, crashing handler); a later
+ *     probe may well go back to "online" by itself.
+ */
+export function probeStatusFromHttp(httpStatus: number): "auth" | "unknown" {
+  return httpStatus === 401 || httpStatus === 403 ? "auth" : "unknown";
+}
+
+/**
+ * Map a thrown probe failure (no HTTP answer at all) to a
+ * `Server.status`.
+ *
+ *   - Probe timeout or aborted signal -> "unknown": `AbortSignal.timeout`
+ *     rejects with a `TimeoutError` DOMException (an abort with an
+ *     `AbortError` reason reads the same way); the call was cut short
+ *     while the relay was reachable, not refused. Transient, not
+ *     "offline".
+ *   - everything else (connection refused, DNS failure, other
+ *     network errors) -> "offline": the relay is genuinely
+ *     unreachable.
+ */
+export function probeStatusFromError(err: unknown): "unknown" | "offline" {
+  const name = (err as { name?: unknown } | null)?.name;
+  if (name === "TimeoutError" || name === "AbortError") return "unknown";
+  return "offline";
 }
 
 /**

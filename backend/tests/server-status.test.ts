@@ -9,7 +9,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 }));
 
 import { prisma } from "../src/lib/prisma.js";
-import { setServerStatus } from "../src/services/server-status.js";
+import { setServerStatus, probeStatusFromError } from "../src/services/server-status.js";
 import { activeInstalls, isServerMutating } from "../src/services/active-installs.js";
 
 const mUpdate = (prisma.server as unknown as { update: ReturnType<typeof vi.fn> }).update;
@@ -154,5 +154,26 @@ describe("isServerMutating", () => {
 
   it("returns false when nothing in flight", () => {
     expect(isServerMutating("srv-a")).toBe(false);
+  });
+});
+
+// Direct branch pin for the probe failure classifier. The route tests in
+// server-probe-status.test.ts cover it end to end but only through the
+// shapes the two routes produce today (TimeoutError from
+// AbortSignal.timeout, TypeError from a refused connection); the AbortError
+// name is what fetch rejects with when the signal aborts with an AbortError
+// reason (manual abort, older Node timeout rejections), and it must land on
+// "unknown", not on the offline default.
+describe("probeStatusFromError", () => {
+  it("maps an AbortError DOMException to unknown (aborted, not unreachable)", () => {
+    expect(probeStatusFromError(new DOMException("x", "AbortError"))).toBe("unknown");
+  });
+
+  it("maps a TimeoutError DOMException to unknown", () => {
+    expect(probeStatusFromError(new DOMException("x", "TimeoutError"))).toBe("unknown");
+  });
+
+  it("maps a plain Error (refused, DNS, other network failure) to offline", () => {
+    expect(probeStatusFromError(new Error("fetch failed"))).toBe("offline");
   });
 });

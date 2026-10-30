@@ -162,7 +162,7 @@ echo "$SERVERS_JSON" | jq -r '.servers[] | "\(.id) \(.name)"' | while IFS=' ' re
     online)
       pass "  $srv_name — online"
       ;;
-    offline|no-relay)
+    offline|no-relay|auth|unknown)
       if [ -n "$msg" ] && [ "$msg" != "null" ]; then
         warn "  $srv_name — $status ($msg)"
       else
