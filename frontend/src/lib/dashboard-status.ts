@@ -28,7 +28,7 @@ export interface StatusIssue {
   /** Short state in words, e.g. "offline" or "last deploy failed". */
   detail: string;
   /** Status dot suffix (status-dot-<tone>). */
-  tone: "offline" | "failed" | "no-relay" | "warning";
+  tone: "offline" | "failed" | "no-relay" | "warning" | "unknown";
   href: string;
 }
 
@@ -45,7 +45,7 @@ export interface DashboardStatus {
   running: RunningDeploy[];
   serversOnline: number;
   serversTotal: number;
-  /** Servers that are neither online nor flagged (offline, no relay), e.g. status unknown. */
+  /** Servers whose status this summary does not recognize (offline, no-relay, auth and unknown are issues, not gaps). */
   serversUnchecked: number;
 }
 
@@ -60,8 +60,12 @@ export function summarizeDashboardStatus(servers: StatusServer[], deploys: Statu
   for (const s of servers) {
     if (s.status === "offline") {
       issues.push({ key: `server-${s.id}`, subject: s.name, detail: "offline", tone: "offline", href: `/servers/${s.id}` });
+    } else if (s.status === "auth") {
+      issues.push({ key: `server-${s.id}`, subject: s.name, detail: "relay auth failed, check the relay token", tone: "warning", href: `/servers/${s.id}` });
     } else if (s.status === "no-relay") {
       issues.push({ key: `server-${s.id}`, subject: s.name, detail: "no relay installed", tone: "no-relay", href: `/servers/${s.id}` });
+    } else if (s.status === "unknown") {
+      issues.push({ key: `server-${s.id}`, subject: s.name, detail: "status unknown", tone: "unknown", href: `/servers/${s.id}` });
     }
   }
 
@@ -85,7 +89,9 @@ export function summarizeDashboardStatus(servers: StatusServer[], deploys: Statu
   }
 
   const serversOnline = servers.filter((s) => s.status === "online").length;
-  const serversUnchecked = servers.filter((s) => s.status !== "online" && s.status !== "offline" && s.status !== "no-relay").length;
+  // "Unchecked" is only for statuses this summary does not know how to
+  // explain; offline, no-relay, auth and unknown are listed issues, not gaps.
+  const serversUnchecked = servers.filter((s) => !["online", "offline", "auth", "no-relay", "unknown"].includes(s.status)).length;
   const level: DashboardLevel =
     issues.length > 0
       ? "attention"

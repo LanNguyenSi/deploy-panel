@@ -14,7 +14,7 @@ import { executeSshCommand, SshError, SshTimeoutError } from "../services/ssh-ex
 import { buildInstallCommand, parseInstallOutput } from "../services/install-relay.js";
 import { probeVps } from "../services/probe-vps.js";
 import { activeInstalls, isServerMutating } from "../services/active-installs.js";
-import { setServerStatus } from "../services/server-status.js";
+import { setServerStatus, probeStatusFromHttp, probeStatusFromError } from "../services/server-status.js";
 import { assertHostAllowedForNonAdmin, consumeProbeQuota } from "../services/probe-guard.js";
 import {
   computeRelayOutdated,
@@ -181,20 +181,28 @@ serversRouter.post("/:id/test", async (c) => {
       });
     }
 
-    await setServerStatus({ serverId: server.id, status: "offline", source: "probe" });
+    // The relay answered, so never "offline": 401/403 is a wrong
+    // or missing relay token ("auth"), any other non-2xx is "unknown".
+    const status = probeStatusFromHttp(response.status);
+    await setServerStatus({ serverId: server.id, status, source: "probe" });
     const latestRevision = await getLatestRelayRevision();
     return c.json({
-      status: "offline",
-      message: `Relay responded with ${response.status}`,
+      status,
+      message:
+        status === "auth"
+          ? `Relay rejected the token (${response.status}); check the relay token`
+          : `Relay responded with ${response.status}`,
       relayRevision: null,
       latestRevision,
       relayOutdated: null,
     });
   } catch (err: any) {
-    await setServerStatus({ serverId: server.id, status: "offline", source: "probe" });
+    // Probe timeout is transient ("unknown"); refused/DNS stays "offline".
+    const status = probeStatusFromError(err);
+    await setServerStatus({ serverId: server.id, status, source: "probe" });
     const latestRevision = await getLatestRelayRevision();
     return c.json({
-      status: "offline",
+      status,
       message: err.message ?? "Connection failed",
       relayRevision: null,
       latestRevision,

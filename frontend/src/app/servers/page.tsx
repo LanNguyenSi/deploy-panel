@@ -16,6 +16,7 @@ import {
 } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
+import { serverStatusBadge } from "@/lib/status";
 import { ServerInstallWizard } from "@/components/ServerInstallWizard";
 import { ServerUpdateImageDialog } from "@/components/ServerUpdateImageDialog";
 import { EmptyStateIcon } from "@/components/EmptyStateIcon";
@@ -197,7 +198,7 @@ export default function ServersPage() {
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "var(--space-2)" }}>
-                  <span className={`badge badge-${s.status === "online" ? "success" : s.status === "offline" ? "danger" : s.status === "no-relay" ? "warning" : "neutral"}`}>
+                  <span className={`badge ${serverStatusBadge(s.status).className}`} title={serverStatusBadge(s.status).title}>
                     {s.status}
                   </span>
                   {isOutdated && (

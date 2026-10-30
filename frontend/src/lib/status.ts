@@ -15,3 +15,30 @@ export function deployStatusBadge(status: string, blocked = false): { className:
   };
   return map[status] ?? { className: "badge-neutral", label: status };
 }
+
+// Server status -> badge. Auth (the relay rejected the stored token)
+// is amber with a title naming the fix; unknown (404/5xx/timeout from the
+// relay) is neutral; unexpected values fall back to neutral like the deploy
+// badge does.
+export function serverStatusBadge(status: string): {
+  className: string;
+  label: string;
+  title?: string;
+} {
+  switch (status) {
+    case "online":
+      return { className: "badge-success", label: status };
+    case "offline":
+      return { className: "badge-danger", label: status };
+    case "no-relay":
+      return { className: "badge-warning", label: status };
+    case "auth":
+      return {
+        className: "badge-warning",
+        label: status,
+        title: "The relay rejected the stored token; check the relay token on this server",
+      };
+    default:
+      return { className: "badge-neutral", label: status };
+  }
+}

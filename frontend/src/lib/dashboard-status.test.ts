@@ -48,16 +48,48 @@ describe("summarizeDashboardStatus", () => {
     expect(s.issues[0]).toMatchObject({ detail: "no relay installed", tone: "no-relay" });
   });
 
-  it("does not flag servers in other states (e.g. unknown) but does not call them ok either", () => {
+  it("flags an unknown-status server as an issue with the neutral tone, not as unchecked", () => {
     const s = summarizeDashboardStatus([server("s1", "online"), server("s2", "unknown")], []);
+    expect(s.level).toBe("attention");
+    expect(s.issues).toEqual([
+      { key: "server-s2", subject: "srv-s2", detail: "status unknown", tone: "unknown", href: "/servers/s2" },
+    ]);
+    expect(s).toMatchObject({ serversOnline: 1, serversTotal: 2, serversUnchecked: 0 });
+  });
+
+  it("flags an auth server with a warning tone and a hint to check the relay token, not as unchecked", () => {
+    const s = summarizeDashboardStatus([server("s1", "auth", "vps-9")], []);
+    expect(s.level).toBe("attention");
+    expect(s.issues).toEqual([
+      {
+        key: "server-s1",
+        subject: "vps-9",
+        detail: "relay auth failed, check the relay token",
+        tone: "warning",
+        href: "/servers/s1",
+      },
+    ]);
+    expect(s.serversUnchecked).toBe(0);
+  });
+
+  it("an auth issue alone keeps the lead dot amber, like other non-failure issues", () => {
+    // The panel picks the red lead dot only for offline/failed tones; an
+    // auth server is amber. Pin the tone here so the panel rule holds.
+    const s = summarizeDashboardStatus([server("s1", "auth")], []);
+    expect(s.issues[0].tone).not.toBe("offline");
+    expect(s.issues[0].tone).not.toBe("failed");
+  });
+
+  it("counts a status the summary does not know as unchecked, not as an issue", () => {
+    const s = summarizeDashboardStatus([server("s1", "online"), server("s2", "probing")], []);
     expect(s.level).toBe("unchecked");
     expect(s.issues).toEqual([]);
     expect(s).toMatchObject({ serversOnline: 1, serversTotal: 2, serversUnchecked: 1 });
   });
 
   it("an unchecked server does not hide a real issue or a running deploy", () => {
-    expect(summarizeDashboardStatus([server("s1", "unknown"), server("s2", "offline")], []).level).toBe("attention");
-    expect(summarizeDashboardStatus([server("s1", "unknown")], [deploy({ id: "d1", status: "running" })]).level).toBe("running");
+    expect(summarizeDashboardStatus([server("s1", "probing"), server("s2", "offline")], []).level).toBe("attention");
+    expect(summarizeDashboardStatus([server("s1", "probing")], [deploy({ id: "d1", status: "running" })]).level).toBe("running");
   });
 
   it("flags a failed latest deploy and links to the deploy list", () => {

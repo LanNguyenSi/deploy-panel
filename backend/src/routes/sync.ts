@@ -1,8 +1,12 @@
 import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
-import { relayRequest } from "../lib/relay.js";
+import { relayRequest, RelayError } from "../lib/relay.js";
 import { findOwnedServer, getActorContext } from "../lib/ownership.js";
-import { setServerStatus } from "../services/server-status.js";
+import {
+  setServerStatus,
+  probeStatusFromHttp,
+  probeStatusFromError,
+} from "../services/server-status.js";
 
 export const syncRouter = new Hono();
 
@@ -88,7 +92,15 @@ syncRouter.post("/:serverId/sync", async (c) => {
       updated,
     });
   } catch (err: any) {
-    await setServerStatus({ serverId, status: "offline", source: "probe" });
-    return c.json({ error: err.message }, 500);
+    // Classify the failure the same way POST /:id/test does.
+    // A RelayError carries the relay's HTTP status (401/403 -> "auth",
+    // other non-2xx -> "unknown"); a thrown timeout is "unknown";
+    // refused / DNS / other network errors stay "offline".
+    const status =
+      err instanceof RelayError
+        ? probeStatusFromHttp(err.status)
+        : probeStatusFromError(err);
+    await setServerStatus({ serverId, status, source: "probe" });
+    return c.json({ error: err.message, status }, 500);
   }
 });

@@ -472,6 +472,7 @@ a:hover { color: var(--primary-hover); }
 }
 
 .status-dot-no-relay,
+.status-dot-auth,
 .status-dot-warning,
 .status-dot-rolled_back {
   background: var(--warning);

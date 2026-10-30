@@ -9,6 +9,7 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { EmptyStateIcon } from "@/components/EmptyStateIcon";
 import { StatusPanel } from "@/components/DashboardStatusPanel";
 import { summarizeDashboardStatus } from "@/lib/dashboard-status";
+import { serverStatusBadge } from "@/lib/status";
 
 export default function DashboardPage() {
   const [servers, setServers] = useState<ServerWithCount[]>([]);
@@ -137,7 +138,7 @@ export default function DashboardPage() {
                         </div>
                       </div>
                     </div>
-                    <span className={`badge badge-${s.status === "online" ? "success" : s.status === "offline" ? "danger" : s.status === "no-relay" ? "warning" : "neutral"}`}>
+                    <span className={`badge ${serverStatusBadge(s.status).className}`} title={serverStatusBadge(s.status).title}>
                       {s.status}
                     </span>
                   </div>
