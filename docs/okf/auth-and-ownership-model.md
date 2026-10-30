@@ -3,7 +3,7 @@ type: invariant
 title: Auth and ownership model — three credential shapes, one actor context
 description: requireAuth resolves API key / PANEL_TOKEN / session cookie into a single { userId, isAdmin } actor context that lib/ownership.ts uses to gate every server-scoped route; admin-shared servers (userId = null) are invisible to non-admin broker actors by design, and requirePanelAuth carves API-key auth out of the api-keys management routes.
 tags: [auth, authz, ownership, security]
-timestamp: 2026-10-30T06:12:45Z
+timestamp: 2026-10-30T12:57:11Z
 sources:
   - backend/src/middleware/auth.ts
   - backend/src/lib/ownership.ts
