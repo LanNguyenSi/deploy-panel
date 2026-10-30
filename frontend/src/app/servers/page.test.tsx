@@ -59,7 +59,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("ServersPage — relay outdated badge, one-click self-update, and SSH fallback", () => {
+describe("ServersPage: relay outdated badge, one-click self-update, and SSH fallback", () => {
   it("shows '▲ Relay outdated (89b3f8b → 6b2c7bb)' only for outdated relays, never for current or unknown", async () => {
     mGetServers.mockResolvedValue(SERVERS);
     mGetServerSystem.mockRejectedValue(new Error("skip metrics"));
@@ -139,7 +139,7 @@ describe("ServersPage — relay outdated badge, one-click self-update, and SSH f
   });
 });
 
-describe("ServersPage — relay probe status badges (auth, unknown)", () => {
+describe("ServersPage: relay probe status badges (auth, unknown)", () => {
   it("renders the auth badge label, warning class and visible token hint; unknown stays neutral without a hint", async () => {
     mGetServers.mockResolvedValue({
       servers: [

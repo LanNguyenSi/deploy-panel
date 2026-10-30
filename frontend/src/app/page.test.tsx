@@ -39,7 +39,7 @@ describe("DashboardPage recent deploys", () => {
   });
 });
 
-describe("DashboardPage servers list — relay probe status badges (auth, unknown)", () => {
+describe("DashboardPage servers list: relay probe status badges (auth, unknown)", () => {
   it("renders the auth badge label, warning class and visible token hint; unknown stays neutral without a hint", async () => {
     fixture.servers = [
       { id: "s-auth", name: "edge", host: "203.0.113.40", status: "auth", _count: { apps: 1 } },
