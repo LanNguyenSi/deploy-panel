@@ -77,7 +77,7 @@ model App {
   path         String   // path on VPS
   health       String?  // health endpoint
   liveUrl      String?  // public URL to the deployed app (manual; not derivable from the relay)
-  status       String   @default("unknown") // unknown, healthy, unhealthy, deploying
+  status       String   @default("unknown") // unknown, healthy, unhealthy, deploying, offline (app-level: sync stores it when the relay lists the app as configured but its detail call fails; distinct from the Server status offline)
   tag          String?  // production, development, ignored
   lastDeployAt DateTime?
   createdAt    DateTime @default(now())
