@@ -678,6 +678,101 @@ describe("ServerDetailPage - bulk result polling", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Stopped waiting for 1 deploy(s)");
   });
 
+  it("after giving up, a still-running entry shows Unknown with a hint instead of a stale Running", async () => {
+    mGetDeployStatus.mockResolvedValue({ deploy: { id: "d-2", status: "running", log: null } });
+    await startBulk();
+
+    while (pollCalls() < BULK_MAX_POLLS - 1) await tick();
+    expect(pollCalls()).toBe(BULK_MAX_POLLS - 1);
+    const result = screen.getByRole("region", { name: "Bulk deploy result" });
+    const line = () => within(result).getByText("other-app").closest("li")!;
+    // still polling: running is the honest state
+    expect(line()).toHaveTextContent("Running");
+    expect(line()).not.toHaveTextContent("Unknown");
+    expect(line()).not.toHaveTextContent("no failure details recorded");
+
+    await tick();
+    expect(pollCalls()).toBe(BULK_MAX_POLLS);
+    expect(line()).toHaveTextContent("Unknown");
+    expect(line()).not.toHaveTextContent("Running");
+    expect(line()).toHaveTextContent("check the deploy history");
+    // the unknown entry gets only its hint, not the failure line of a settled entry
+    expect(line()).not.toHaveTextContent("no failure details recorded");
+    // the entry that failed to start keeps its badge and failure line, never Unknown
+    const failed = within(result).getByText("my-app").closest("li")!;
+    expect(failed).toHaveTextContent("Failed");
+    expect(failed).toHaveTextContent("deploy (Invalid app name)");
+    expect(failed).not.toHaveTextContent("Unknown");
+  });
+
+  it("an entry that settled failed during polling keeps its failure line after the cap", async () => {
+    // other-app (d-2) fails on its first poll, third-app (d-3) stays running until the cap
+    mGetDeployStatus.mockImplementation(async (_srv: string, _app: string, deployId: string) =>
+      deployId === "d-2"
+        ? { deploy: { id: "d-2", status: "failed", log: JSON.stringify([{ name: "build", status: "failure", durationMs: 0, output: "boom" }]) } }
+        : { deploy: { id: deployId, status: "running", log: null } },
+    );
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mGetServer.mockResolvedValue(SERVER);
+    mGetApps.mockResolvedValue({
+      apps: [APPS.apps[0], { ...APPS.apps[0], id: "app-b", name: "other-app" }, { ...APPS.apps[0], id: "app-c", name: "third-app" }],
+    });
+    mSyncServer.mockResolvedValue({ synced: true, apps: 3, created: 0, updated: 0 });
+    mBulkDeploy.mockResolvedValueOnce({
+      deploys: [
+        { app: "my-app", deployId: "", status: "failed", error: "Invalid app name" },
+        { app: "other-app", deployId: "d-2", status: "running" },
+        { app: "third-app", deployId: "d-3", status: "running" },
+      ],
+    });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(
+      <Providers>
+        <ServerDetailPage />
+      </Providers>,
+    );
+    await screen.findByText("third-app");
+    await user.click(screen.getByRole("checkbox", { name: "Select my-app" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select other-app" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select third-app" }));
+    await user.click(screen.getByRole("button", { name: "Deploy 3 apps" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Deploy 3" }));
+    const result = await screen.findByRole("region", { name: "Bulk deploy result" });
+
+    const d3Calls = () => mGetDeployStatus.mock.calls.filter((c) => c[2] === "d-3").length;
+    while (d3Calls() < BULK_MAX_POLLS) await tick();
+    await tick();
+
+    expect(d3Calls()).toBe(BULK_MAX_POLLS);
+    expect(screen.getByRole("status")).toHaveTextContent("Stopped waiting for 1 deploy(s)");
+    const failedLine = within(result).getByText("other-app").closest("li")!;
+    expect(failedLine).toHaveTextContent("Failed");
+    expect(failedLine).toHaveTextContent("build (boom)");
+    expect(failedLine).not.toHaveTextContent("Unknown");
+    expect(failedLine).not.toHaveTextContent("still running when polling stopped");
+    const unknownLine = within(result).getByText("third-app").closest("li")!;
+    expect(unknownLine).toHaveTextContent("Unknown");
+    expect(unknownLine).not.toHaveTextContent("build (boom)");
+  });
+
+  it("a deploy that takes longer than two minutes still settles to Success", async () => {
+    // depsight-like: about 150 s until the relay reports success (old cap was ~2 min)
+    let calls = 0;
+    mGetDeployStatus.mockImplementation(async () => {
+      calls += 1;
+      return { deploy: { id: "d-2", status: calls > 50 ? "success" : "running", log: null } };
+    });
+    await startBulk();
+
+    for (let i = 0; i < 55; i++) await tick();
+
+    const result = screen.getByRole("region", { name: "Bulk deploy result" });
+    expect(within(result).getByText("other-app").closest("li")).toHaveTextContent("Success");
+    expect(screen.getByRole("status")).toHaveTextContent("All 2 deploys finished.");
+    expect(pollCalls()).toBe(51);
+  });
+
   it("while polling the live region only carries the short waiting line", async () => {
     mGetDeployStatus.mockResolvedValue({ deploy: { id: "d-2", status: "running", log: null } });
     await startBulk();

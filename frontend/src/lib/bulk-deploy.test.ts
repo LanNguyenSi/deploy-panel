@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BULK_MAX_POLLS, bulkSummary, describeFailures, failuresFromLog, initialBulkEntries, isBlockedEntry, isSettled } from "./bulk-deploy";
+import { BULK_MAX_POLLS, BULK_POLL_MS, bulkSummary, describeFailures, failuresFromLog, initialBulkEntries, isBlockedEntry, isSettled, isUnknownEntry, pollingStopped } from "./bulk-deploy";
 
 describe("failuresFromLog", () => {
   it("returns the failed steps of a steps array, skipping success and skipped", () => {
@@ -98,5 +98,30 @@ describe("bulkSummary", () => {
     expect(bulkSummary({ entries: [entry("running")], polls: BULK_MAX_POLLS - 1 })).toBe("Waiting for 1 deploy(s).");
     expect(bulkSummary({ entries: [entry("running")], polls: BULK_MAX_POLLS })).toMatch(/^Stopped waiting for 1 deploy\(s\)/);
     expect(bulkSummary({ entries: [entry("success"), entry("failed")], polls: BULK_MAX_POLLS })).toBe("All 2 deploys finished.");
+  });
+});
+
+describe("poll budget and unknown entries", () => {
+  const entry = (status: string) => ({ app: "a", deployId: "d", status, failures: [] });
+
+  it("the poll budget is about ten minutes, roughly the relay stream timeout", () => {
+    // Last poll lands at BULK_POLL_MS * (BULK_MAX_POLLS - 1) after the 202.
+    const lastPollMs = BULK_POLL_MS * (BULK_MAX_POLLS - 1);
+    expect(lastPollMs).toBeGreaterThanOrEqual(9.5 * 60 * 1000);
+    expect(lastPollMs).toBeLessThanOrEqual(10.5 * 60 * 1000);
+  });
+
+  it("pollingStopped flips exactly at the cap", () => {
+    expect(pollingStopped({ entries: [], polls: BULK_MAX_POLLS - 1 })).toBe(false);
+    expect(pollingStopped({ entries: [], polls: BULK_MAX_POLLS })).toBe(true);
+  });
+
+  it("only a still-running entry after the cap is unknown", () => {
+    const stopped = { entries: [], polls: BULK_MAX_POLLS };
+    const polling = { entries: [], polls: BULK_MAX_POLLS - 1 };
+    expect(isUnknownEntry(entry("running"), stopped)).toBe(true);
+    expect(isUnknownEntry(entry("running"), polling)).toBe(false);
+    expect(isUnknownEntry(entry("success"), stopped)).toBe(false);
+    expect(isUnknownEntry(entry("failed"), stopped)).toBe(false);
   });
 });

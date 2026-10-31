@@ -15,7 +15,7 @@ import { isPinned, togglePin } from "@/lib/pinned";
 import EnvVarsPanel from "@/components/EnvVarsPanel";
 import AppSecretsPanel from "@/components/AppSecretsPanel";
 import { DeployStepList, isBlockedSteps, normalizeDeploySteps, type DeployStep } from "@/components/DeploySteps";
-import { BULK_MAX_POLLS, BULK_POLL_MS, bulkSummary, describeFailures, failuresFromLog, initialBulkEntries, isBlockedEntry, isSettled, type BulkResult } from "@/lib/bulk-deploy";
+import { BULK_POLL_MS, UNKNOWN_BADGE, UNKNOWN_HINT, bulkSummary, describeFailures, failuresFromLog, initialBulkEntries, isBlockedEntry, isSettled, isUnknownEntry, pollingStopped, type BulkResult } from "@/lib/bulk-deploy";
 import { ServerReinstallDialog } from "@/components/ServerReinstallDialog";
 import { ServerUpdateImageDialog } from "@/components/ServerUpdateImageDialog";
 import { countOutdated, describeUpstream, failedUpstream, formatCheckedAt, githubCompareUrl, shortSha } from "@/lib/upstream";
@@ -104,7 +104,7 @@ export default function ServerDetailPage() {
   // pending deploy (first poll at once, then every BULK_POLL_MS) and keep the
   // outcome, with the failed checks, in the result panel.
   useEffect(() => {
-    if (!bulkResult || bulkResult.polls >= BULK_MAX_POLLS || bulkResult.entries.every(isSettled)) return;
+    if (!bulkResult || pollingStopped(bulkResult) || bulkResult.entries.every(isSettled)) return;
     let cancelled = false;
     const timer = setTimeout(async () => {
       const entries = await Promise.all(
@@ -507,11 +507,17 @@ export default function ServerDetailPage() {
           </p>
           <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "var(--space-2)" }}>
             {bulkResult.entries.map((entry) => {
-              const badge = deployStatusBadge(entry.status, isBlockedEntry(entry));
+              const unknown = isUnknownEntry(entry, bulkResult);
+              const badge = unknown ? UNKNOWN_BADGE : deployStatusBadge(entry.status, isBlockedEntry(entry));
               return (
                 <li key={entry.app} style={{ fontSize: "var(--text-sm)" }}>
                   <span style={{ fontWeight: 500 }}>{entry.app}</span>{" "}
                   <span className={`badge ${badge.className}`}>{badge.label}</span>
+                  {unknown && (
+                    <div style={{ color: "var(--text-secondary)", marginTop: "var(--space-1)", overflowWrap: "anywhere" }}>
+                      {UNKNOWN_HINT}
+                    </div>
+                  )}
                   {entry.status !== "running" && entry.status !== "success" && (
                     <div style={{ color: "var(--text-secondary)", marginTop: "var(--space-1)", overflowWrap: "anywhere" }}>
                       {entry.failures.length > 0 ? describeFailures(entry.failures) : "no failure details recorded"}
