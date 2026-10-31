@@ -104,11 +104,11 @@ describe("bulkSummary", () => {
 describe("poll budget and unknown entries", () => {
   const entry = (status: string) => ({ app: "a", deployId: "d", status, failures: [] });
 
-  it("the poll budget covers the backend's ten-minute deploy timeout", () => {
-    // A deploy may legitimately run up to 10 minutes on the backend; polling must not give up earlier.
-    expect(BULK_POLL_MS * (BULK_MAX_POLLS - 1)).toBeGreaterThanOrEqual(9.5 * 60 * 1000);
-    // And it must comfortably outlive the slowest builds seen so far (about 3 minutes).
-    expect(BULK_POLL_MS * (BULK_MAX_POLLS - 1)).toBeGreaterThan(3 * 60 * 1000);
+  it("the poll budget is about ten minutes, roughly the relay stream timeout", () => {
+    // Last poll lands at BULK_POLL_MS * (BULK_MAX_POLLS - 1) after the 202.
+    const lastPollMs = BULK_POLL_MS * (BULK_MAX_POLLS - 1);
+    expect(lastPollMs).toBeGreaterThanOrEqual(9.5 * 60 * 1000);
+    expect(lastPollMs).toBeLessThanOrEqual(10.5 * 60 * 1000);
   });
 
   it("pollingStopped flips exactly at the cap", () => {

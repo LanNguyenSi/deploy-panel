@@ -26,9 +26,9 @@ export interface BulkResult {
 
 /**
  * First poll fires at once, then every BULK_POLL_MS; about ten minutes in total,
- * the same budget the backend gives a single deploy (servers.ts, stream-deploy.ts).
- * Two minutes was too short: apps with a long build (depsight takes 100-180 s)
- * outlived the polling and their badge froze on "Running".
+ * roughly the relay stream timeout of a deploy (backend/src/lib/stream-deploy.ts).
+ * A deploy that runs into that timeout, or spends long before or after the
+ * stream, can still settle after polling stops; it then shows as unknown.
  */
 export const BULK_POLL_MS = 3000;
 export const BULK_MAX_POLLS = 200;

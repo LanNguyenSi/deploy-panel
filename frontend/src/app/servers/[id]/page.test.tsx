@@ -689,12 +689,34 @@ describe("ServerDetailPage - bulk result polling", () => {
     // still polling: running is the honest state
     expect(line()).toHaveTextContent("Running");
     expect(line()).not.toHaveTextContent("Unknown");
+    expect(line()).not.toHaveTextContent("no failure details recorded");
 
     await tick();
     expect(pollCalls()).toBe(BULK_MAX_POLLS);
     expect(line()).toHaveTextContent("Unknown");
     expect(line()).not.toHaveTextContent("Running");
     expect(line()).toHaveTextContent("check the deploy history");
+    // the unknown entry gets only its hint, not the failure line of a settled entry
+    expect(line()).not.toHaveTextContent("no failure details recorded");
+    // the entry that failed to start keeps its badge and failure line, never Unknown
+    const failed = within(result).getByText("my-app").closest("li")!;
+    expect(failed).toHaveTextContent("Failed");
+    expect(failed).toHaveTextContent("deploy (Invalid app name)");
+    expect(failed).not.toHaveTextContent("Unknown");
+  });
+
+  it("an entry that settled failed during polling keeps its failure line after the cap", async () => {
+    // other-app fails on the first poll; my-app (failed to start) is settled too, so polling ends at once
+    mGetDeployStatus.mockResolvedValue({ deploy: { id: "d-2", status: "failed", log: JSON.stringify([{ name: "build", status: "failure", durationMs: 0, output: "boom" }]) } });
+    await startBulk();
+    for (let i = 0; i < 3; i++) await tick();
+
+    const result = screen.getByRole("region", { name: "Bulk deploy result" });
+    const line = within(result).getByText("other-app").closest("li")!;
+    expect(line).toHaveTextContent("Failed");
+    expect(line).toHaveTextContent("build (boom)");
+    expect(line).not.toHaveTextContent("Unknown");
+    expect(screen.getByRole("status")).toHaveTextContent("All 2 deploys finished.");
   });
 
   it("a deploy that takes longer than two minutes still settles to Success", async () => {
