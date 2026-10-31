@@ -706,17 +706,54 @@ describe("ServerDetailPage - bulk result polling", () => {
   });
 
   it("an entry that settled failed during polling keeps its failure line after the cap", async () => {
-    // other-app fails on the first poll; my-app (failed to start) is settled too, so polling ends at once
-    mGetDeployStatus.mockResolvedValue({ deploy: { id: "d-2", status: "failed", log: JSON.stringify([{ name: "build", status: "failure", durationMs: 0, output: "boom" }]) } });
-    await startBulk();
-    for (let i = 0; i < 3; i++) await tick();
+    // other-app (d-2) fails on its first poll, third-app (d-3) stays running until the cap
+    mGetDeployStatus.mockImplementation(async (_srv: string, _app: string, deployId: string) =>
+      deployId === "d-2"
+        ? { deploy: { id: "d-2", status: "failed", log: JSON.stringify([{ name: "build", status: "failure", durationMs: 0, output: "boom" }]) } }
+        : { deploy: { id: deployId, status: "running", log: null } },
+    );
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mGetServer.mockResolvedValue(SERVER);
+    mGetApps.mockResolvedValue({
+      apps: [APPS.apps[0], { ...APPS.apps[0], id: "app-b", name: "other-app" }, { ...APPS.apps[0], id: "app-c", name: "third-app" }],
+    });
+    mSyncServer.mockResolvedValue({ synced: true, apps: 3, created: 0, updated: 0 });
+    mBulkDeploy.mockResolvedValueOnce({
+      deploys: [
+        { app: "my-app", deployId: "", status: "failed", error: "Invalid app name" },
+        { app: "other-app", deployId: "d-2", status: "running" },
+        { app: "third-app", deployId: "d-3", status: "running" },
+      ],
+    });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(
+      <Providers>
+        <ServerDetailPage />
+      </Providers>,
+    );
+    await screen.findByText("third-app");
+    await user.click(screen.getByRole("checkbox", { name: "Select my-app" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select other-app" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select third-app" }));
+    await user.click(screen.getByRole("button", { name: "Deploy 3 apps" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Deploy 3" }));
+    const result = await screen.findByRole("region", { name: "Bulk deploy result" });
 
-    const result = screen.getByRole("region", { name: "Bulk deploy result" });
-    const line = within(result).getByText("other-app").closest("li")!;
-    expect(line).toHaveTextContent("Failed");
-    expect(line).toHaveTextContent("build (boom)");
-    expect(line).not.toHaveTextContent("Unknown");
-    expect(screen.getByRole("status")).toHaveTextContent("All 2 deploys finished.");
+    const d3Calls = () => mGetDeployStatus.mock.calls.filter((c) => c[2] === "d-3").length;
+    while (d3Calls() < BULK_MAX_POLLS) await tick();
+    await tick();
+
+    expect(d3Calls()).toBe(BULK_MAX_POLLS);
+    expect(screen.getByRole("status")).toHaveTextContent("Stopped waiting for 1 deploy(s)");
+    const failedLine = within(result).getByText("other-app").closest("li")!;
+    expect(failedLine).toHaveTextContent("Failed");
+    expect(failedLine).toHaveTextContent("build (boom)");
+    expect(failedLine).not.toHaveTextContent("Unknown");
+    expect(failedLine).not.toHaveTextContent("still running when polling stopped");
+    const unknownLine = within(result).getByText("third-app").closest("li")!;
+    expect(unknownLine).toHaveTextContent("Unknown");
+    expect(unknownLine).not.toHaveTextContent("build (boom)");
   });
 
   it("a deploy that takes longer than two minutes still settles to Success", async () => {
