@@ -678,6 +678,42 @@ describe("ServerDetailPage - bulk result polling", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Stopped waiting for 1 deploy(s)");
   });
 
+  it("after giving up, a still-running entry shows Unknown with a hint instead of a stale Running", async () => {
+    mGetDeployStatus.mockResolvedValue({ deploy: { id: "d-2", status: "running", log: null } });
+    await startBulk();
+
+    while (pollCalls() < BULK_MAX_POLLS - 1) await tick();
+    expect(pollCalls()).toBe(BULK_MAX_POLLS - 1);
+    const result = screen.getByRole("region", { name: "Bulk deploy result" });
+    const line = () => within(result).getByText("other-app").closest("li")!;
+    // still polling: running is the honest state
+    expect(line()).toHaveTextContent("Running");
+    expect(line()).not.toHaveTextContent("Unknown");
+
+    await tick();
+    expect(pollCalls()).toBe(BULK_MAX_POLLS);
+    expect(line()).toHaveTextContent("Unknown");
+    expect(line()).not.toHaveTextContent("Running");
+    expect(line()).toHaveTextContent("check the deploy history");
+  });
+
+  it("a deploy that takes longer than two minutes still settles to Success", async () => {
+    // depsight-like: about 150 s until the relay reports success (old cap was ~2 min)
+    let calls = 0;
+    mGetDeployStatus.mockImplementation(async () => {
+      calls += 1;
+      return { deploy: { id: "d-2", status: calls > 50 ? "success" : "running", log: null } };
+    });
+    await startBulk();
+
+    for (let i = 0; i < 55; i++) await tick();
+
+    const result = screen.getByRole("region", { name: "Bulk deploy result" });
+    expect(within(result).getByText("other-app").closest("li")).toHaveTextContent("Success");
+    expect(screen.getByRole("status")).toHaveTextContent("All 2 deploys finished.");
+    expect(pollCalls()).toBe(51);
+  });
+
   it("while polling the live region only carries the short waiting line", async () => {
     mGetDeployStatus.mockResolvedValue({ deploy: { id: "d-2", status: "running", log: null } });
     await startBulk();

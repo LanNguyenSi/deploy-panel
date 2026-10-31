@@ -24,13 +24,37 @@ export interface BulkResult {
   polls: number;
 }
 
-/** First poll fires at once, then every BULK_POLL_MS; about two minutes in total. */
+/**
+ * First poll fires at once, then every BULK_POLL_MS; about ten minutes in total,
+ * the same budget the backend gives a single deploy (servers.ts, stream-deploy.ts).
+ * Two minutes was too short: apps with a long build (depsight takes 100-180 s)
+ * outlived the polling and their badge froze on "Running".
+ */
 export const BULK_POLL_MS = 3000;
-export const BULK_MAX_POLLS = 40;
+export const BULK_MAX_POLLS = 200;
 
 export function isSettled(entry: BulkEntry): boolean {
   return entry.status !== "running";
 }
+
+/** Polling has given up; entries that are still running now have an unknown outcome. */
+export function pollingStopped(result: BulkResult): boolean {
+  return result.polls >= BULK_MAX_POLLS;
+}
+
+/**
+ * An entry polling gave up on: its last known status is "running", but that is
+ * no longer being refreshed, so the page must not keep showing it as running.
+ */
+export function isUnknownEntry(entry: BulkEntry, result: BulkResult): boolean {
+  return !isSettled(entry) && pollingStopped(result);
+}
+
+/** Badge for an entry whose outcome polling never saw (see isUnknownEntry). */
+export const UNKNOWN_BADGE = { className: "badge-neutral", label: "Unknown" } as const;
+
+/** Line shown under an unknown entry, pointing to where the outcome is recorded. */
+export const UNKNOWN_HINT = "still running when polling stopped; check the deploy history for its outcome";
 
 /** A finished entry whose failures are failed preflight checks. */
 export function isBlockedEntry(entry: BulkEntry): boolean {
@@ -82,7 +106,7 @@ export function describeFailures(failures: BulkFailure[]): string {
 export function bulkSummary(result: BulkResult): string {
   const pending = result.entries.filter((e) => !isSettled(e)).length;
   if (pending === 0) return `All ${result.entries.length} deploys finished.`;
-  if (result.polls >= BULK_MAX_POLLS) {
+  if (pollingStopped(result)) {
     return `Stopped waiting for ${pending} deploy(s). Check the deploy history for their outcome.`;
   }
   return `Waiting for ${pending} deploy(s).`;
