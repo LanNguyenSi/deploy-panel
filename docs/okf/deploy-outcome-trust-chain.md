@@ -3,9 +3,10 @@ type: invariant
 title: Deploy-outcome trust chain — the relay's "success" is never taken at face value
 description: finalizeDeploy is the choke point for the three relay outcome shapes that could report success (SSE done, JSON fallback, stream-ended-without-done); a relay 4xx rejection is written failed directly and bypasses it, since it can never be a success claim. Every relay-reported success runs verifyDeployHealth and can be downgraded to failed, while connection-lost recovery uses the gate's stricter fail-closed mode and additionally needs the relay's proof that the deploy or rollback reached its target, and startup recovery applies the same fail-closed posture via a relay preflight plus, for every app except the panel itself, the same proof; this is the mechanism behind the self-deploy-502-but-succeeds quirk.
 tags: [deploy, health-gate, recovery, invariant]
-timestamp: 2026-10-27T19:16:23Z
+timestamp: 2026-11-01T06:11:57Z
 sources:
   - backend/src/lib/stream-deploy.ts
+  - backend/src/lib/deploy-log.ts
   - backend/src/lib/rollback-app-status.ts
   - backend/src/lib/relay.ts
   - backend/src/lib/post-deploy-gate.ts
@@ -113,3 +114,7 @@ Deploying deploy-panel's own backend kills the backend process mid-HTTP-response
 - Driving a deploy record's terminal status directly (not via `streamDeploy`, and not via `recoverBrokenDeploy`) without first calling `registerActiveDeploy` on its id: the periodic stuck-sweep has no other way to know the record is still genuinely in flight, and can finalize it out from under the caller once it crosses `STUCK_THRESHOLD_MS`. Both rollback routes (routes/apps.ts, routes/v1.ts) do this registration around their own `relayRequest` call for exactly this reason.
 - Flipping `requireHealthyEvidence` between the connection-lost recovery path and the post-success path, or defaulting it to `true` for the post-success path — the optimistic default there is what keeps a transient relay blip after a genuinely successful deploy from turning it red.
 - Calling the relay directly for any new deploy trigger (a second scheduler-style call site) instead of `streamDeploy` — that was the exact scheduler bug scheduler.ts:83-92 documents, and it silently drops secret provisioning + the required-env gate, not just the health gate.
+
+## A failed row is not always an outage
+
+`failed` does not say whether the app is up. agent-relay health-checks the restored stack after an automatic rollback and streams a step `rollback: health check`. `classifyDeployOutcome` (`lib/deploy-log.ts`) reads the stored steps when a row is served (`routes/deploys.ts`, `routes/v1.ts`) and derives `outcome`: `rolled_back_healthy` only when the last such step has status `success`; every other failed deploy is `outage`, including a missing step (rollback disabled, stopped before the health check, or a relay that predates the step) and a skipped one, so healthy is never inferred without the step. Only a failed row whose log is a steps array (a relay step stream) gets a verdict. A failed manual rollback stores the raw relay result object, a nested `{ result: { blocked } }` preflight block, `[{ error }]` or a bare string instead (`routes/apps.ts`, `routes/v1.ts`), and the app may well still be running, so those rows, a missing or unparsable log, and blocked-at-preflight and 409-conflict rows have no verdict. It changes no row: `finalizeDeploy` still writes `failed` and `App.status` `unhealthy`, and the verdict is not part of the trust chain above.

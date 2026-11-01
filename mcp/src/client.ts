@@ -16,7 +16,12 @@ export interface DeployInfo {
   id: string; status: string; server: string; app: string;
   commitBefore?: string; commitAfter?: string; duration?: number;
   steps: unknown[]; triggeredBy?: string; createdAt: string;
+  /** Verdict computed by the backend (classifyDeployOutcome); absent from older backends. */
+  outcome?: DeployOutcome | null;
 }
+
+/** See backend/src/lib/deploy-log.ts: `rolled_back_healthy` is a failed deploy whose automatic rollback passed its health check. */
+export type DeployOutcome = "success" | "rolled_back_healthy" | "outage";
 
 export class DeployPanelClient {
   private readonly apiUrl: string;
@@ -116,6 +121,7 @@ export class DeployPanelClient {
         commitBefore: string | null;
         commitAfter: string | null;
         duration: number | null;
+        outcome?: DeployOutcome | null;
         triggeredBy: string | null;
         createdAt: string;
       }>;

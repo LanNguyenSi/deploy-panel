@@ -207,4 +207,16 @@ describe("summarizeDashboardStatus", () => {
     expect(s.level).toBe("running");
     expect(s.issues).toEqual([]);
   });
+
+  it("a failed deploy that rolled back healthy is a warning, an outage stays a failure", () => {
+    const healthy = summarizeDashboardStatus([server("s1", "online")], [deploy({ id: "d1", status: "failed", outcome: "rolled_back_healthy" })]);
+    expect(healthy.level).toBe("attention");
+    expect(healthy.issues).toEqual([
+      expect.objectContaining({ subject: "my-app on srv-s1", detail: "last deploy failed, rolled back (healthy)", tone: "warning" }),
+    ]);
+    const down = summarizeDashboardStatus([server("s1", "online")], [deploy({ id: "d2", status: "failed", outcome: "outage" })]);
+    expect(down.issues).toEqual([expect.objectContaining({ detail: "last deploy failed", tone: "failed" })]);
+    const unknown = summarizeDashboardStatus([server("s1", "online")], [deploy({ id: "d3", status: "failed" })]);
+    expect(unknown.issues).toEqual([expect.objectContaining({ detail: "last deploy failed", tone: "failed" })]);
+  });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { DeployStepList, isBlockedSteps, normalizeDeploySteps } from "./DeploySteps";
+import { DeployOutcomeNote, DeployStepList, isBlockedSteps, normalizeDeploySteps } from "./DeploySteps";
 
 describe("normalizeDeploySteps", () => {
   it("keeps well-formed steps and drops entries that are not steps", () => {
@@ -68,5 +68,43 @@ describe("DeployStepList", () => {
     render(<DeployStepList steps={[{ name: "d", status: "failure", durationMs: 0, output: "the output", message: "the message" }]} />);
     expect(screen.getByText("the output")).toBeInTheDocument();
     expect(screen.queryByText("the message")).not.toBeInTheDocument();
+  });
+});
+
+describe("DeployOutcomeNote", () => {
+  const health = (status: string) => [{ name: "rollback: health check", status, durationMs: 0 }];
+
+  it("says the app is up on the previous version for a healthy rollback", () => {
+    render(<DeployOutcomeNote outcome="rolled_back_healthy" steps={health("success")} />);
+    const note = screen.getByTestId("deploy-outcome-note");
+    expect(note).toHaveClass("alert-warning");
+    expect(note).toHaveTextContent("app is up on the previous version");
+  });
+
+  it("calls an unhealthy rollback out loudly as a danger alert", () => {
+    render(<DeployOutcomeNote outcome="outage" steps={health("failure")} />);
+    const note = screen.getByTestId("deploy-outcome-note");
+    expect(note).toHaveClass("alert-danger");
+    expect(note).toHaveTextContent("Rollback unhealthy");
+  });
+
+  it("with two health steps the last one decides the danger note", () => {
+    const ok = { name: "rollback: health check", status: "success", durationMs: 0 };
+    const bad = { name: "rollback: health check", status: "failure", durationMs: 0 };
+    const { container, rerender } = render(<DeployOutcomeNote outcome="outage" steps={[ok, bad]} />);
+    expect(screen.getByTestId("deploy-outcome-note")).toHaveClass("alert-danger");
+    rerender(<DeployOutcomeNote outcome="outage" steps={[bad, ok]} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("says nothing without a failed health step: older relay, skipped check, no verdict", () => {
+    const { container, rerender } = render(<DeployOutcomeNote outcome="outage" steps={[]} />);
+    expect(container).toBeEmptyDOMElement();
+    rerender(<DeployOutcomeNote outcome="outage" steps={health("skipped")} />);
+    expect(container).toBeEmptyDOMElement();
+    rerender(<DeployOutcomeNote outcome={null} steps={health("failure")} />);
+    expect(container).toBeEmptyDOMElement();
+    rerender(<DeployOutcomeNote outcome={undefined} steps={health("success")} />);
+    expect(container).toBeEmptyDOMElement();
   });
 });

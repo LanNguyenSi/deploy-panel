@@ -533,6 +533,72 @@ describe("v1 GET /deploy/:id — foreign-server isolation", () => {
   });
 });
 
+describe("v1 deploy outcome (rolled back healthy vs outage)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const healthyLog = JSON.stringify([
+    { name: "health check", status: "failure" },
+    { name: "rollback: health check", status: "success" },
+  ]);
+  const unhealthyLog = JSON.stringify([
+    { name: "health check", status: "failure" },
+    { name: "rollback: health check", status: "failure" },
+  ]);
+
+  function deployRow(id: string, status: string, log: string | null) {
+    return {
+      id,
+      status,
+      serverId: "srv-a",
+      appId: "app-a",
+      commitBefore: null,
+      commitAfter: null,
+      duration: null,
+      log,
+      triggeredBy: "panel",
+      createdAt: new Date(),
+      app: { name: "my-app" },
+      server: { name: "my-server", userId: "user-a" },
+    };
+  }
+
+  it("GET /deploy/:id reports rolled_back_healthy only with a successful rollback health step", async () => {
+    mDeploy.findUnique.mockResolvedValue(deployRow("d1", "failed", healthyLog));
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy/d1");
+    expect(((await res.json()) as { deploy: { outcome: string } }).deploy.outcome).toBe("rolled_back_healthy");
+  });
+
+  it("GET /deploy/:id reports outage for a failed rollback health step", async () => {
+    mDeploy.findUnique.mockResolvedValue(deployRow("d2", "failed", unhealthyLog));
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy/d2");
+    expect(((await res.json()) as { deploy: { outcome: string } }).deploy.outcome).toBe("outage");
+  });
+
+  it("GET /deploy/:id gives a failed manual rollback row (raw relay result object) no verdict", async () => {
+    mDeploy.findUnique.mockResolvedValue(deployRow("d4", "failed", JSON.stringify({ success: false, steps: [{ name: "rollback: git reset", status: "failure" }] })));
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy/d4");
+    expect(((await res.json()) as { deploy: { outcome: unknown } }).deploy.outcome).toBeNull();
+  });
+
+  it("GET /deploys carries the outcome per row", async () => {
+    mDeploy.findMany.mockResolvedValue([
+      deployRow("d1", "failed", healthyLog),
+      deployRow("d2", "failed", unhealthyLog),
+      deployRow("d3", "success", null),
+    ]);
+    mDeploy.count.mockResolvedValue(3);
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploys");
+    const body = (await res.json()) as { deploys: Array<{ id: string; outcome: string }> };
+    expect(Object.fromEntries(body.deploys.map((d) => [d.id, d.outcome]))).toEqual({
+      d1: "rolled_back_healthy",
+      d2: "outage",
+      d3: "success",
+    });
+  });
+});
+
 describe("v1 GET /deploy/:id — steps normalisation", () => {
   beforeEach(() => {
     vi.clearAllMocks();

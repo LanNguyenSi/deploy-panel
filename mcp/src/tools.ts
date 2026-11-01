@@ -181,6 +181,7 @@ function compactDeploy(deploy: DeployInfo) {
     commitBefore: deploy.commitBefore,
     commitAfter: deploy.commitAfter,
     duration: deploy.duration,
+    ...(deploy.outcome ? { outcome: deploy.outcome } : {}),
     steps: compact,
     ...(steps.length > MAX_COMPACT_STEPS ? { stepsOmitted: steps.length - MAX_COMPACT_STEPS } : {}),
     ...(budget.truncated ? { detailsTruncated: true } : {}),
@@ -249,7 +250,7 @@ export function registerTools(server: McpServer, client: DeployPanelClient) {
 
   server.tool(
     "deploy_status",
-    "Check the status of a deploy by its ID",
+    "Check the status of a deploy by its ID. A failed deploy carries an `outcome`: `rolled_back_healthy` (the relay rolled back and the restored app passed its health check, so it is up on the previous version, not an outage) or `outage` (rollback unhealthy or not confirmed healthy).",
     {
       deploy_id: z.string().describe("Deploy ID"),
     },
@@ -284,6 +285,7 @@ export function registerTools(server: McpServer, client: DeployPanelClient) {
             commitBefore: d.commitBefore,
             commitAfter: d.commitAfter,
             duration: d.duration,
+            ...(d.outcome ? { outcome: d.outcome } : {}),
             createdAt: d.createdAt,
           })),
         );

@@ -537,6 +537,49 @@ describe("ServerDetailPage - blocked deploys", () => {
     expect(screen.getByText("failed")).toBeVisible();
   });
 
+  const FORWARD_FAIL = [
+    { name: "git pull", status: "success", durationMs: 1 },
+    { name: "health check", status: "failure", durationMs: 1, output: "503" },
+    { name: "rollback: compose up", status: "success", durationMs: 1 },
+  ];
+
+  it("the deploy log header and note say rolled back (healthy) when the rollback health check succeeded", async () => {
+    const user = await renderPage();
+    mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
+    const log = [...FORWARD_FAIL, { name: "rollback: health check", status: "success", durationMs: 1 }];
+    mGetDeployStatus.mockResolvedValueOnce({ deploy: { id: "deploy-1", status: "failed", log: JSON.stringify(log) } });
+
+    await clickDeployAndConfirm(user);
+
+    expect(await screen.findByText("Failed, rolled back (healthy)", {}, { timeout: 3000 })).toBeVisible();
+    expect(screen.getByTestId("deploy-outcome-note")).toHaveClass("alert-warning");
+  });
+
+  it("the deploy log view shows a loud danger note when the rollback health check failed", async () => {
+    const user = await renderPage();
+    mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
+    const log = [...FORWARD_FAIL, { name: "rollback: health check", status: "failure", durationMs: 1, output: "ROLLBACK UNHEALTHY" }];
+    mGetDeployStatus.mockResolvedValueOnce({ deploy: { id: "deploy-1", status: "failed", log: JSON.stringify(log) } });
+
+    await clickDeployAndConfirm(user);
+
+    expect(await screen.findByTestId("deploy-outcome-note", {}, { timeout: 3000 })).toHaveClass("alert-danger");
+    expect(screen.queryByText("Failed, rolled back (healthy)")).not.toBeInTheDocument();
+    expect(screen.getByText("failed")).toBeVisible();
+  });
+
+  it("a failed deploy without the rollback health step (older relay) shows no outcome note", async () => {
+    const user = await renderPage();
+    mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
+    mGetDeployStatus.mockResolvedValueOnce({ deploy: { id: "deploy-1", status: "failed", log: JSON.stringify(FORWARD_FAIL) } });
+
+    await clickDeployAndConfirm(user);
+
+    expect(await screen.findByText("503", {}, { timeout: 3000 })).toBeVisible();
+    expect(screen.queryByTestId("deploy-outcome-note")).not.toBeInTheDocument();
+    expect(screen.queryByText("Failed, rolled back (healthy)")).not.toBeInTheDocument();
+  });
+
   it("the deploy log view still renders an old-format preflight report log", async () => {
     const user = await renderPage();
     mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });

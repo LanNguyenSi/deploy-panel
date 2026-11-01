@@ -163,3 +163,75 @@ export function normalizeDeployLog(parsed: unknown): unknown[] {
   }
   return [parsed];
 }
+
+/**
+ * Name of the step agent-relay streams after an automatic rollback has rebuilt
+ * and restarted the previous stack and probed it with the pre-deploy health
+ * config. `success` means the restored stack is healthy; `failure` means
+ * ROLLBACK UNHEALTHY (the app is down). The relay emits no such step when the
+ * rollback is disabled, or blocked or failed earlier (git reset, preflight,
+ * compose build, compose up), and older relays never emit it.
+ */
+export const ROLLBACK_HEALTH_STEP_NAME = "rollback: health check";
+
+/**
+ * How a finished deploy ended, as far as the app being up is concerned:
+ *  - `success`: the deploy succeeded.
+ *  - `rolled_back_healthy`: the deploy failed, the relay rolled back and its
+ *    `rollback: health check` step succeeded, so the app runs the previous
+ *    version (a warning, not an outage).
+ *  - `outage`: a failed forward deploy whose step stream shows the rollback
+ *    health check failed or was skipped, or has no such step (no rollback, a
+ *    rollback that stopped before the health check, or an older relay). This
+ *    is the behaviour from before the step existed; healthy is never assumed
+ *    without the step.
+ *  - `null`: no verdict here: not finished (running, pending), interrupted, a
+ *    manual rollback row (`rolled_back`, or a `failed` row whose log is not a
+ *    relay step stream: the raw relay result object, a nested `{ result }`
+ *    preflight block, `[{ error }]` or a bare string; the app may well still
+ *    be running), a missing or unparsable log, or a deploy blocked at
+ *    preflight (nothing ran, the existing "Blocked" handling applies).
+ *
+ * The frontend repeats this rule in frontend/src/lib/status.ts for the live
+ * deploy log, which only has steps; each side has its own tests for the same
+ * cases, so change both together.
+ */
+export type DeployOutcome = "success" | "rolled_back_healthy" | "outage";
+
+/** A relay step as streamed for a forward deploy: an object with a string `name` and `status`. */
+function isRelayStep(step: unknown): boolean {
+  if (!step || typeof step !== "object") return false;
+  const s = step as { name?: unknown; status?: unknown };
+  return typeof s.name === "string" && typeof s.status === "string";
+}
+
+export function classifyDeployOutcome(status: string, steps: readonly unknown[]): DeployOutcome | null {
+  if (status === "success") return "success";
+  if (status !== "failed") return null;
+  if (steps.some((s) => isPreflightCheckStep(s) || isConflictStep(s))) return null;
+  // Not a relay step stream (manual rollback payloads, error-only logs): no claim either way.
+  if (!steps.some(isRelayStep)) return null;
+  let health: unknown;
+  for (const s of steps) {
+    if (s && typeof s === "object" && (s as { name?: unknown }).name === ROLLBACK_HEALTH_STEP_NAME) health = s;
+  }
+  return (health as { status?: unknown } | undefined)?.status === "success" ? "rolled_back_healthy" : "outage";
+}
+
+/** classifyDeployOutcome for a stored `deploy.log` text of any historic shape. */
+export function classifyDeployLogOutcome(status: string, log: string | null | undefined): DeployOutcome | null {
+  if (status === "success") return "success";
+  if (status !== "failed") return null;
+  if (!log) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(log);
+  } catch {
+    return null;
+  }
+  // Only a steps array is a forward deploy's stream. A raw relay result object (manual rollback),
+  // a nested `{ result }`, a preflight report and a bare string are not.
+  if (!Array.isArray(parsed)) return null;
+  if (matchBlockedLog(log, true)) return null;
+  return classifyDeployOutcome(status, parsed);
+}

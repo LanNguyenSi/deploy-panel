@@ -9,7 +9,7 @@ import { useConfirm } from "@/components/ConfirmDialog";
 import { EmptyStateIcon } from "@/components/EmptyStateIcon";
 import { StatusPanel } from "@/components/DashboardStatusPanel";
 import { summarizeDashboardStatus } from "@/lib/dashboard-status";
-import { serverStatusBadge } from "@/lib/status";
+import { deployStatusBadge, serverStatusBadge } from "@/lib/status";
 
 export default function DashboardPage() {
   const [servers, setServers] = useState<ServerWithCount[]>([]);
@@ -172,7 +172,12 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div className="card" style={{ overflow: "hidden" }}>
-              {deploys.map((d, i) => (
+              {deploys.map((d, i) => {
+                // A failed deploy whose rollback passed its health check is a warning (amber), not an outage.
+                const rolledBackHealthy = d.status === "failed" && d.outcome === "rolled_back_healthy";
+                const dotStatus = rolledBackHealthy ? "warning" : d.status;
+                const statusLabel = rolledBackHealthy ? deployStatusBadge(d.status, d.blocked, d.outcome).label : d.status;
+                return (
                 <div
                   key={d.id}
                   style={{
@@ -187,10 +192,10 @@ export default function DashboardPage() {
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
                     <span
-                      className={`status-dot status-dot-${d.status}`}
+                      className={`status-dot status-dot-${dotStatus}`}
                       role="img"
-                      aria-label={`Status: ${d.status}`}
-                      title={d.status}
+                      aria-label={`Status: ${statusLabel}`}
+                      title={statusLabel}
                     />
                     <div>
                       <span style={{ fontWeight: 500, color: "var(--text)" }}>{d.app.name}</span>
@@ -200,11 +205,12 @@ export default function DashboardPage() {
                     </div>
                   </div>
                   <span style={{ color: "var(--muted)", fontSize: "var(--text-xs)" }}>
-                    <span style={{ textTransform: "capitalize", marginRight: "var(--space-2)" }}>{d.status}</span>
+                    <span style={{ textTransform: "capitalize", marginRight: "var(--space-2)" }}>{statusLabel}</span>
                     {timeAgo(d.createdAt)}
                   </span>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>

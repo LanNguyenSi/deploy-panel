@@ -3,6 +3,9 @@
 // row plus an optional collapsible block for the step's stored output (a
 // relay 4xx rejection or an SSE error, per PR #128).
 
+import type { CSSProperties } from "react";
+import { ROLLBACK_HEALTH_STEP_NAME, type DeployOutcome } from "@/lib/status";
+
 export interface DeployStep {
   name: string;
   status: string;
@@ -67,6 +70,38 @@ export function normalizeDeploySteps(raw: unknown): DeployStep[] {
     });
   }
   return [];
+}
+
+/**
+ * One-line explanation above the steps of a finished failed deploy, when the
+ * relay reported the rollback's health. Without the `rollback: health check`
+ * step, or with a skipped one, nothing is said (older relays, rollback disabled): no claim either way.
+ */
+export function DeployOutcomeNote({
+  outcome,
+  steps,
+  style,
+}: {
+  outcome: DeployOutcome | null | undefined;
+  steps: DeployStep[];
+  style?: CSSProperties;
+}) {
+  if (outcome === "rolled_back_healthy") {
+    return (
+      <div className="alert alert-warning" role="status" style={style} data-testid="deploy-outcome-note">
+        <strong>Deploy failed, rolled back.</strong> The restored version passed its health check, so the app is up on the previous version.
+      </div>
+    );
+  }
+  const rollbackHealth = steps.filter((s) => s.name === ROLLBACK_HEALTH_STEP_NAME).at(-1);
+  if (outcome === "outage" && rollbackHealth?.status === "failure") {
+    return (
+      <div className="alert alert-danger" role="alert" style={style} data-testid="deploy-outcome-note">
+        <strong>Rollback unhealthy.</strong> The deploy failed and the restored version did not pass its health check. The app may be down.
+      </div>
+    );
+  }
+  return null;
 }
 
 function statusModifier(status: string): "success" | "skipped" | "failed" {

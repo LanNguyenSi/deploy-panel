@@ -56,8 +56,8 @@ All app endpoints are nested under a server: `/api/servers/:serverId/apps`.
 
 | Method | Path           | Description                                                        |
 |--------|----------------|--------------------------------------------------------------------|
-| GET    | `/api/deploys` | List deploys with optional filters: `serverId`, `appId`, `status`, `limit`, `offset`. Response includes `total` for pagination. Rows carry no raw `log`; a derived boolean `blocked` is `true` for a deploy blocked at preflight (refused by the relay or by the panel's env preflight), so clients can tell it from a real failure; a relay 409 conflict stays `false` (status `failed`). |
-| GET    | `/api/deploys/:id` | Get one deploy with its app and server summary. Non-admins only see deploys on servers they own (404 otherwise). |
+| GET    | `/api/deploys` | List deploys with optional filters: `serverId`, `appId`, `status`, `limit`, `offset`. Response includes `total` for pagination. Rows carry no raw `log`; a derived boolean `blocked` is `true` for a deploy blocked at preflight (refused by the relay or by the panel's env preflight), so clients can tell it from a real failure; a relay 409 conflict stays `false` (status `failed`). Rows and the detail of `GET /api/deploys/:id` also carry `outcome` (see [Deploy outcome](#deploy-outcome)). |
+| GET    | `/api/deploys/:id` | Get one deploy with its app and server summary. Non-admins only see deploys on servers they own (404 otherwise). The detail carries `outcome` (see [Deploy outcome](#deploy-outcome)). |
 
 ## Audit
 
@@ -82,8 +82,8 @@ All v1 endpoints are prefixed with `/api/v1` and authenticated with a Bearer cre
 | GET    | `/api/v1/servers`     | List all servers                                                   |
 | GET    | `/api/v1/apps`        | List all apps (optionally filtered by `server_id`, which accepts a server name or id). `server_id` set to a server you don't own, or that doesn't resolve, answers 404 rather than an empty list. Apps tagged `ignored` are always excluded; there is no `showIgnored` equivalent here |
 | POST   | `/api/v1/deploy`      | Trigger a deploy for a given app                                   |
-| GET    | `/api/v1/deploy/:id`  | Get status of a specific deploy. `steps` is always an array: a deploy blocked by preflight has one failed step per failed check (`name`, `kind: "preflight-check"`, `status: "failure"`, `message`, `output`, `critical`); older rows that stored a raw preflight report or a string are converted on read |
-| GET    | `/api/v1/deploys`     | List deploys with `limit` (default 50, max 200) and `offset` / `total` pagination, optionally filtered by `server_id` (accepts a server name or id), `app_id`, `status`. `server_id` set to a server you don't own, or that doesn't resolve, answers 404 rather than an empty list. `app_id` is an app id only (app names are unique per server, not globally) |
+| GET    | `/api/v1/deploy/:id`  | Get status of a specific deploy. `steps` is always an array: a deploy blocked by preflight has one failed step per failed check (`name`, `kind: "preflight-check"`, `status: "failure"`, `message`, `output`, `critical`); older rows that stored a raw preflight report or a string are converted on read. Carries `outcome` (see [Deploy outcome](#deploy-outcome)). |
+| GET    | `/api/v1/deploys`     | List deploys with `limit` (default 50, max 200) and `offset` / `total` pagination, optionally filtered by `server_id` (accepts a server name or id), `app_id`, `status`. `server_id` set to a server you don't own, or that doesn't resolve, answers 404 rather than an empty list. `app_id` is an app id only (app names are unique per server, not globally). Carries `outcome` (see [Deploy outcome](#deploy-outcome)). |
 | POST   | `/api/v1/rollback`    | Trigger a rollback for a given app. Answers `202` with `deploy.status: "running"` and finishes asynchronously: poll `GET /api/v1/deploy/:id` until `status` leaves `running` (`rolled_back` or `failed` from the relay's answer, or `success`, `failed` or `interrupted` when connection-lost recovery finalized the row; a rollback the panel cannot prove ran ends `interrupted`). App status: blocked by preflight or a relay-reported `success: false` sets `unhealthy`; a relay-reported success sets `healthy` only after the post-deploy health gate passes, `unhealthy` otherwise (the app status can lag the polled row by the length of the gate). A relay 4xx marks the row `failed`; the relay tags its rollback error with a `phase`, and an `after_reset` 4xx (the relay attempted `git reset --hard`, e.g. `Rebuild failed` or a reset that failed part-way) sets the app `unhealthy`, while a `before_reset` 4xx (bad ref, unknown app; HEAD did not move) or an untagged one from an older relay leaves the app status untouched |
 | GET    | `/api/v1/logs`        | Fetch logs for a given app                                         |
 | POST   | `/api/v1/preflight`   | Run preflight checks for a given app                               |
@@ -115,3 +115,16 @@ The backend also exposes endpoints that the panel UI itself uses. They are not p
 - `/api/auth/*`: admin token login and logout (`POST /login`, `POST /logout`), GitHub OAuth (`/github/config`, `/github/start`, `/github/callback`), the identity-broker registration endpoint (`POST /api/auth/register-from-project-pilot`), and `/api/auth/check`. See [configuration.md#authentication](configuration.md#authentication).
 - `/api/api-keys`: create, list, and revoke `dp_` API keys (panel-session auth only; rejects API-key auth).
 - `/api/servers/probe-vps` and `/api/servers/:id/update-relay-image`: VPS provisioning helpers used by the server-management UI. `update-relay-image` also streams progress as SSE.
+
+### Deploy outcome
+
+A deploy row ends `failed` for two very different situations, so the deploy responses (`GET /api/deploys`, `GET /api/deploys/:id`, `GET /api/v1/deploy/:id`, `GET /api/v1/deploys`) carry a derived `outcome`, computed from the stored steps (`classifyDeployOutcome` in `backend/src/lib/deploy-log.ts`):
+
+| `outcome` | When |
+|-----------|------|
+| `success` | status `success` |
+| `rolled_back_healthy` | status `failed` and the last `rollback: health check` step (streamed by agent-relay after an automatic rollback) has status `success`: the app runs the previous version, a warning and not an outage |
+| `outage` | status `failed`, the log is a relay step stream (a steps array with at least one step), and that step failed or was skipped (`ROLLBACK UNHEALTHY`), or it is absent: rollback disabled, blocked or failed before the health check, or a relay that predates the step. Healthy is never assumed without the step, so an older relay keeps today's behaviour: every failed forward deploy with a step stream is an `outage` (red "Failed") |
+| `null` | no verdict: `running`, `pending`, `interrupted`, `rolled_back` (a manual rollback row), a `failed` row whose log is not a relay step stream (a failed manual rollback stores the raw relay result object, a nested `{ result }` preflight block, `[{ error }]` or a bare string; the app may well still be running), a missing or unparsable log, a failed deploy with no steps (the stream ended before the first step), a deploy blocked at preflight and a relay 409 conflict |
+
+The status stays `failed` and `App.status` is unchanged (`unhealthy` after a failed deploy); `outcome` only tells the UI and the MCP tools whether the app is down. The panel shows `rolled_back_healthy` as an amber "Failed, rolled back (healthy)" badge with a note, an `outage` as the red "Failed" badge (with a danger note when the rollback health check itself failed).

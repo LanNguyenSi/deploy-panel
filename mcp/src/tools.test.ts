@@ -270,6 +270,15 @@ describe("deploy_app", () => {
       expect(body.note).toContain("deploy_status");
     });
 
+    it("compact result carries the backend outcome, and omits it when the backend sends none", async () => {
+      mockDeploy({ status: "failed", outcome: "rolled_back_healthy", steps: okSteps });
+      expect(textOf(await cb({ server: "s", app: "a" })).outcome).toBe("rolled_back_healthy");
+      mockDeploy({ status: "failed", outcome: "outage", steps: okSteps });
+      expect(textOf(await cb({ server: "s", app: "a" })).outcome).toBe("outage");
+      mockDeploy({ status: "failed", steps: okSteps });
+      expect("outcome" in textOf(await cb({ server: "s", app: "a" }))).toBe(false);
+    });
+
     it("verbose: true returns the full deploy including step output", async () => {
       mockDeploy({ status: "success", steps: okSteps });
       const result = await cb({ server: "s", app: "a", verbose: true });
@@ -632,6 +641,12 @@ describe("deploy_status", () => {
     expect(textOf(result)).toEqual(deploy);
   });
 
+  it("passes the backend outcome of a failed deploy through unchanged", async () => {
+    const deploy = { id: "d1", status: "failed", outcome: "rolled_back_healthy", server: "s", app: "a", steps: [], createdAt: "now" };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ deploy }));
+    expect(textOf(await cb({ deploy_id: "d1" })).outcome).toBe("rolled_back_healthy");
+  });
+
   it("wraps a fetch failure into an isError result instead of throwing", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ message: "boom" }, 500));
 
@@ -651,6 +666,23 @@ describe("deploy_list", () => {
     expect(shape.safeParse({ app: "a", server: "s", status: "failed", limit: 5 }).success).toBe(true);
     expect(shape.safeParse({ status: "bogus" }).success).toBe(false);
     expect(shape.safeParse({ limit: "5" }).success).toBe(false);
+  });
+
+  it("lists the backend outcome per deploy and omits it when absent", async () => {
+    const base = { server: "s", app: "a", commitBefore: null, commitAfter: null, duration: 1, createdAt: "now" };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({
+        deploys: [
+          { ...base, id: "d1", status: "failed", outcome: "rolled_back_healthy" },
+          { ...base, id: "d2", status: "failed", outcome: "outage" },
+          { ...base, id: "d3", status: "failed" },
+        ],
+        total: 3,
+      }),
+    );
+    const rows = textOf(await cb({}));
+    expect(rows.map((r: { outcome?: string }) => r.outcome)).toEqual(["rolled_back_healthy", "outage", undefined]);
+    expect("outcome" in rows[2]).toBe(false);
   });
 
   it("accepts a limit of 200 and rejects a limit of 201", () => {
