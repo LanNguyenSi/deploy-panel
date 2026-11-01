@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-01
+
 ### Security
 
 - **`@hono/node-server` 2.1.5** (GHSA-rmxm-3fg6-px4f): both lockfiles (root and `mcp/`) resolve 2.1.5 (was 2.0.12), which fixes `serveStatic` decoding the request path a second time and so letting a request bypass middleware on static paths (affected: `>= 1.19.10, < 2.1.3`). Lockfiles only, ranges unchanged (a direct `backend` dependency at the root, pulled in through `@modelcontextprotocol/sdk` in `mcp/`).
