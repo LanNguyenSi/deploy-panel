@@ -70,8 +70,15 @@ describe("classifyDeployOutcome: failed deploy x rollback health step", () => {
     ).toBe("outage");
   });
 
-  it("non-object steps are ignored", () => {
-    expect(classifyDeployOutcome("failed", [null, "x", 3])).toBe("outage");
+  it("non-object entries are ignored next to a real step", () => {
+    expect(classifyDeployOutcome("failed", [null, "x", 3, fail("build")])).toBe("outage");
+  });
+
+  it.each([
+    ["no entries", []],
+    ["entries that are not steps", [null, "x", 3, { error: "boom" }]],
+  ])("failed with %s: no verdict", (_label, steps) => {
+    expect(classifyDeployOutcome("failed", steps)).toBeNull();
   });
 });
 
@@ -104,8 +111,23 @@ describe("classifyDeployLogOutcome: stored log shapes", () => {
     ["no log", null],
     ["unparsable log", "{nope"],
     ["bare error string", JSON.stringify("Relay returned invalid JSON")],
-  ])("failed with %s: outage", (_label, log) => {
-    expect(classifyDeployLogOutcome("failed", log)).toBe("outage");
+    ["raw relay result object (manual rollback)", JSON.stringify({ success: false, commitBefore: "a", steps: [fail("rollback: git reset")] })],
+    ["nested blocked preflight result (manual rollback)", JSON.stringify({ result: { blocked: true, success: false, preflight: { passed: false, checks: [] } } })],
+    ["error-only array (manual rollback relay error)", JSON.stringify([{ error: "Rebuild failed" }])],
+    ["empty steps array", JSON.stringify([])],
+  ])("failed with %s: no verdict", (_label, log) => {
+    expect(classifyDeployLogOutcome("failed", log)).toBeNull();
+  });
+
+  it("a failed forward deploy stored as a one-step relay rejection stays an outage", () => {
+    expect(classifyDeployLogOutcome("failed", JSON.stringify([{ name: "deploy", status: "failure", durationMs: 0, output: "Relay rejected the deploy" }]))).toBe(
+      "outage",
+    );
+  });
+
+  it("non-failed statuses short-circuit before parsing", () => {
+    expect(classifyDeployLogOutcome("success", null)).toBe("success");
+    expect(classifyDeployLogOutcome("running", "{nope")).toBeNull();
   });
 
   it("legacy blocked string and raw preflight report: no verdict", () => {

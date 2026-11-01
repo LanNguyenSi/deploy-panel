@@ -61,7 +61,7 @@ describe("serverStatusBadge", () => {
 
 describe("deployStatusBadge: rollback outcome", () => {
   it("labels a failed deploy whose rollback is healthy as a warning, apart from Failed", () => {
-    expect(deployStatusBadge("failed", false, "rolled_back_healthy")).toEqual({ className: "badge-warning", label: "Rolled back (healthy)" });
+    expect(deployStatusBadge("failed", false, "rolled_back_healthy")).toEqual({ className: "badge-warning", label: "Failed, rolled back (healthy)" });
   });
 
   it("an outage, no outcome and a null outcome stay a red Failed", () => {
@@ -94,6 +94,17 @@ describe("classifyDeployOutcome", () => {
   it("health step failure or skipped: outage", () => {
     expect(classifyDeployOutcome("failed", [...forward, ...rollback, step("rollback: health check", "failure")])).toBe("outage");
     expect(classifyDeployOutcome("failed", [...forward, ...rollback, step("rollback: health check", "skipped")])).toBe("outage");
+  });
+
+  it("two health steps: the last one decides", () => {
+    const ok = step("rollback: health check", "success");
+    const bad = step("rollback: health check", "failure");
+    expect(classifyDeployOutcome("failed", [...forward, ok, bad])).toBe("outage");
+    expect(classifyDeployOutcome("failed", [...forward, bad, ok])).toBe("rolled_back_healthy");
+  });
+
+  it("a failed row without steps has no verdict", () => {
+    expect(classifyDeployOutcome("failed", [])).toBeNull();
   });
 
   it("a rollback step failed before the health check: outage", () => {

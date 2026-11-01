@@ -576,6 +576,12 @@ describe("v1 deploy outcome (rolled back healthy vs outage)", () => {
     expect(((await res.json()) as { deploy: { outcome: string } }).deploy.outcome).toBe("outage");
   });
 
+  it("GET /deploy/:id gives a failed manual rollback row (raw relay result object) no verdict", async () => {
+    mDeploy.findUnique.mockResolvedValue(deployRow("d4", "failed", JSON.stringify({ success: false, steps: [{ name: "rollback: git reset", status: "failure" }] })));
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy/d4");
+    expect(((await res.json()) as { deploy: { outcome: unknown } }).deploy.outcome).toBeNull();
+  });
+
   it("GET /deploys carries the outcome per row", async () => {
     mDeploy.findMany.mockResolvedValue([
       deployRow("d1", "failed", healthyLog),

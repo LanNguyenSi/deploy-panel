@@ -24,13 +24,17 @@ interface OutcomeStep {
  * absent (rollback disabled, blocked or failed before the health check, or an
  * older relay that never emits the step), which is how every failed deploy
  * looked before the step existed. Healthy is never assumed without the step.
- * No verdict (null) for unfinished, interrupted and manual-rollback rows and
- * for deploys blocked at preflight or refused with a 409 conflict.
+ * No verdict (null) for unfinished, interrupted and manual-rollback rows, for
+ * a failed row without steps, and for deploys blocked at preflight or refused
+ * with a 409 conflict. The same rule as backend/src/lib/deploy-log.ts (each
+ * side has its own tests for the same cases, so change both together).
  */
 export function classifyDeployOutcome(status: string, steps: readonly OutcomeStep[]): DeployOutcome | null {
   if (status === "success") return "success";
   if (status !== "failed") return null;
   if (steps.some((s) => s.kind === "preflight-check" || s.kind === "deploy-conflict")) return null;
+  // No steps: not a relay step stream (the backend gives manual rollback payloads and error-only logs no verdict either).
+  if (steps.length === 0) return null;
   const health = steps.filter((s) => s.name === ROLLBACK_HEALTH_STEP_NAME).at(-1);
   return health?.status === "success" ? "rolled_back_healthy" : "outage";
 }
@@ -43,7 +47,7 @@ export function deployStatusBadge(
   // A deploy the relay refused at preflight never touched the app: say so instead of "Failed".
   if (blocked && status === "failed") return { className: "badge-warning", label: "Blocked (preflight)" };
   // The deploy failed but the relay restored the previous version and it passed its health check: the app is up.
-  if (status === "failed" && outcome === "rolled_back_healthy") return { className: "badge-warning", label: "Rolled back (healthy)" };
+  if (status === "failed" && outcome === "rolled_back_healthy") return { className: "badge-warning", label: "Failed, rolled back (healthy)" };
   const map: Record<string, { className: string; label: string }> = {
     success: { className: "badge-success", label: "Success" },
     failed: { className: "badge-danger", label: "Failed" },

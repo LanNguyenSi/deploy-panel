@@ -43,7 +43,7 @@ describe("DashboardPage recent deploys: rollback outcome", () => {
     await screen.findAllByText("healthy-app");
     const rows = container.querySelectorAll("section .card > div");
     const rowOf = (name: string) => [...rows].find((r) => r.textContent?.startsWith(name))!;
-    expect(within(rowOf("healthy-app") as HTMLElement).getByRole("img", { name: "Status: Rolled back (healthy)" })).toHaveClass("status-dot-warning");
+    expect(within(rowOf("healthy-app") as HTMLElement).getByRole("img", { name: "Status: Failed, rolled back (healthy)" })).toHaveClass("status-dot-warning");
     expect(within(rowOf("down-app") as HTMLElement).getByRole("img", { name: "Status: failed" })).toHaveClass("status-dot-failed");
     fixture.deploys = null;
   });

@@ -551,7 +551,7 @@ describe("ServerDetailPage - blocked deploys", () => {
 
     await clickDeployAndConfirm(user);
 
-    expect(await screen.findByText("Rolled back (healthy)", {}, { timeout: 3000 })).toBeVisible();
+    expect(await screen.findByText("Failed, rolled back (healthy)", {}, { timeout: 3000 })).toBeVisible();
     expect(screen.getByTestId("deploy-outcome-note")).toHaveClass("alert-warning");
   });
 
@@ -564,7 +564,7 @@ describe("ServerDetailPage - blocked deploys", () => {
     await clickDeployAndConfirm(user);
 
     expect(await screen.findByTestId("deploy-outcome-note", {}, { timeout: 3000 })).toHaveClass("alert-danger");
-    expect(screen.queryByText("Rolled back (healthy)")).not.toBeInTheDocument();
+    expect(screen.queryByText("Failed, rolled back (healthy)")).not.toBeInTheDocument();
     expect(screen.getByText("failed")).toBeVisible();
   });
 
@@ -577,7 +577,7 @@ describe("ServerDetailPage - blocked deploys", () => {
 
     expect(await screen.findByText("503", {}, { timeout: 3000 })).toBeVisible();
     expect(screen.queryByTestId("deploy-outcome-note")).not.toBeInTheDocument();
-    expect(screen.queryByText("Rolled back (healthy)")).not.toBeInTheDocument();
+    expect(screen.queryByText("Failed, rolled back (healthy)")).not.toBeInTheDocument();
   });
 
   it("the deploy log view still renders an old-format preflight report log", async () => {

@@ -88,6 +88,15 @@ describe("DeployOutcomeNote", () => {
     expect(note).toHaveTextContent("Rollback unhealthy");
   });
 
+  it("with two health steps the last one decides the danger note", () => {
+    const ok = { name: "rollback: health check", status: "success", durationMs: 0 };
+    const bad = { name: "rollback: health check", status: "failure", durationMs: 0 };
+    const { container, rerender } = render(<DeployOutcomeNote outcome="outage" steps={[ok, bad]} />);
+    expect(screen.getByTestId("deploy-outcome-note")).toHaveClass("alert-danger");
+    rerender(<DeployOutcomeNote outcome="outage" steps={[bad, ok]} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it("says nothing without a failed health step: older relay, skipped check, no verdict", () => {
     const { container, rerender } = render(<DeployOutcomeNote outcome="outage" steps={[]} />);
     expect(container).toBeEmptyDOMElement();

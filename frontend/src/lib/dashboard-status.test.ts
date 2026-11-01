@@ -212,7 +212,7 @@ describe("summarizeDashboardStatus", () => {
     const healthy = summarizeDashboardStatus([server("s1", "online")], [deploy({ id: "d1", status: "failed", outcome: "rolled_back_healthy" })]);
     expect(healthy.level).toBe("attention");
     expect(healthy.issues).toEqual([
-      expect.objectContaining({ subject: "my-app on srv-s1", detail: "last deploy rolled back (healthy)", tone: "warning" }),
+      expect.objectContaining({ subject: "my-app on srv-s1", detail: "last deploy failed, rolled back (healthy)", tone: "warning" }),
     ]);
     const down = summarizeDashboardStatus([server("s1", "online")], [deploy({ id: "d2", status: "failed", outcome: "outage" })]);
     expect(down.issues).toEqual([expect.objectContaining({ detail: "last deploy failed", tone: "failed" })]);

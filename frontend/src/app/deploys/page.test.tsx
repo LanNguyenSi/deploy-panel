@@ -231,7 +231,7 @@ describe("DeploysPage - status labels and filter", () => {
     expect(rowOf("app-s").textContent).toContain("Success");
   });
 
-  it("labels a failed deploy by its rollback outcome: healthy rollback is 'Rolled back (healthy)', an outage stays 'Failed'", async () => {
+  it("labels a failed deploy by its rollback outcome: healthy rollback is 'Failed, rolled back (healthy)', an outage stays 'Failed'", async () => {
     mGetDeploys.mockResolvedValue(
       listWith([
         { id: "h", status: "failed", blocked: false, outcome: "rolled_back_healthy" },
@@ -246,7 +246,7 @@ describe("DeploysPage - status labels and filter", () => {
     );
     await screen.findByText("app-h");
     const rowOf = (name: string) => screen.getByText(name).closest("tr")!;
-    expect(rowOf("app-h").textContent).toContain("Rolled back (healthy)");
+    expect(rowOf("app-h").textContent).toContain("Failed, rolled back (healthy)");
     expect(rowOf("app-o").textContent).toContain("Failed");
     expect(rowOf("app-o").textContent).not.toContain("Rolled back");
     expect(rowOf("app-n").textContent).toContain("Failed");
