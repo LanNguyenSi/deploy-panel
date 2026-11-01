@@ -115,6 +115,7 @@ describe("classifyDeployLogOutcome: stored log shapes", () => {
     ["nested blocked preflight result (manual rollback)", JSON.stringify({ result: { blocked: true, success: false, preflight: { passed: false, checks: [] } } })],
     ["error-only array (manual rollback relay error)", JSON.stringify([{ error: "Rebuild failed" }])],
     ["empty steps array", JSON.stringify([])],
+    ["steps array whose entry has a name but no status", JSON.stringify([{ name: "deploy" }])],
   ])("failed with %s: no verdict", (_label, log) => {
     expect(classifyDeployLogOutcome("failed", log)).toBeNull();
   });
