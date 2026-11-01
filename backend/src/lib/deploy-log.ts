@@ -163,3 +163,55 @@ export function normalizeDeployLog(parsed: unknown): unknown[] {
   }
   return [parsed];
 }
+
+/**
+ * Name of the step agent-relay streams after an automatic rollback has rebuilt
+ * and restarted the previous stack and probed it with the pre-deploy health
+ * config. `success` means the restored stack is healthy; `failure` means
+ * ROLLBACK UNHEALTHY (the app is down). The relay emits no such step when the
+ * rollback is disabled, or blocked or failed earlier (git reset, preflight,
+ * compose build, compose up), and older relays never emit it.
+ */
+export const ROLLBACK_HEALTH_STEP_NAME = "rollback: health check";
+
+/**
+ * How a finished deploy ended, as far as the app being up is concerned:
+ *  - `success`: the deploy succeeded.
+ *  - `rolled_back_healthy`: the deploy failed, the relay rolled back and its
+ *    `rollback: health check` step succeeded, so the app runs the previous
+ *    version (a warning, not an outage).
+ *  - `outage`: the deploy failed and either the rollback health check failed
+ *    or was skipped, or no such step exists (no rollback, a rollback that
+ *    stopped before the health check, or an older relay). This is the
+ *    behaviour from before the step existed; healthy is never assumed
+ *    without the step.
+ *  - `null`: no verdict here: not finished (running, pending), interrupted,
+ *    a manual rollback row (`rolled_back`), or a deploy blocked at preflight
+ *    (nothing ran, the existing "Blocked" handling applies).
+ */
+export type DeployOutcome = "success" | "rolled_back_healthy" | "outage";
+
+export function classifyDeployOutcome(status: string, steps: readonly unknown[]): DeployOutcome | null {
+  if (status === "success") return "success";
+  if (status !== "failed") return null;
+  if (steps.some((s) => isPreflightCheckStep(s) || isConflictStep(s))) return null;
+  let health: unknown;
+  for (const s of steps) {
+    if (s && typeof s === "object" && (s as { name?: unknown }).name === ROLLBACK_HEALTH_STEP_NAME) health = s;
+  }
+  return (health as { status?: unknown } | undefined)?.status === "success" ? "rolled_back_healthy" : "outage";
+}
+
+/** classifyDeployOutcome for a stored `deploy.log` text of any historic shape. */
+export function classifyDeployLogOutcome(status: string, log: string | null | undefined): DeployOutcome | null {
+  let steps: unknown[] = [];
+  if (log) {
+    try {
+      steps = normalizeDeployLog(JSON.parse(log));
+    } catch {
+      // unparsable log: no steps, so a failed deploy classifies as outage
+    }
+  }
+  if (status === "failed" && matchBlockedLog(log, true)) return null;
+  return classifyDeployOutcome(status, steps);
+}

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { getServer, getApps, getAppsUpstream, getServerRelayStatus, selfUpdateServerRelay, deployApp, getDeployStatus, rollbackApp, getAppLogs, getAppPreflight, syncServer, tagApp, hideApp, setAppLiveUrl, bulkDeploy, type AppUpstream, type AppWithCount, type RelayMode, type ServerRelayStatus } from "@/lib/api";
-import { deployStatusBadge } from "@/lib/status";
+import { classifyDeployOutcome, deployStatusBadge } from "@/lib/status";
 import { describeRollbackResult } from "@/lib/rollback";
 import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
@@ -14,7 +14,7 @@ import { requestPermission, notifyDeployResult } from "@/lib/notifications";
 import { isPinned, togglePin } from "@/lib/pinned";
 import EnvVarsPanel from "@/components/EnvVarsPanel";
 import AppSecretsPanel from "@/components/AppSecretsPanel";
-import { DeployStepList, isBlockedSteps, normalizeDeploySteps, type DeployStep } from "@/components/DeploySteps";
+import { DeployOutcomeNote, DeployStepList, isBlockedSteps, normalizeDeploySteps, type DeployStep } from "@/components/DeploySteps";
 import { BULK_POLL_MS, UNKNOWN_BADGE, UNKNOWN_HINT, bulkSummary, describeFailures, failuresFromLog, initialBulkEntries, isBlockedEntry, isSettled, isUnknownEntry, pollingStopped, type BulkResult } from "@/lib/bulk-deploy";
 import { ServerReinstallDialog } from "@/components/ServerReinstallDialog";
 import { ServerUpdateImageDialog } from "@/components/ServerUpdateImageDialog";
@@ -702,12 +702,24 @@ export default function ServerDetailPage() {
                     <div className="log-panel" style={{ fontFamily: "inherit", whiteSpace: "normal" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", marginBottom: "var(--space-3)" }}>
                         <span style={{ fontWeight: 600 }}>Status:</span>
-                        <span className={`badge ${deployStatusBadge(deployLog.status, isBlockedSteps(deployLog.steps)).className}`}>
-                          {isBlockedSteps(deployLog.steps) && deployLog.status === "failed"
-                            ? deployStatusBadge(deployLog.status, true).label
-                            : deployLog.status}
-                        </span>
+                        {(() => {
+                          const blocked = isBlockedSteps(deployLog.steps);
+                          const outcome = classifyDeployOutcome(deployLog.status, deployLog.steps);
+                          const badge = deployStatusBadge(deployLog.status, blocked, outcome);
+                          return (
+                            <span className={`badge ${badge.className}`}>
+                              {(blocked && deployLog.status === "failed") || outcome === "rolled_back_healthy"
+                                ? badge.label
+                                : deployLog.status}
+                            </span>
+                          );
+                        })()}
                       </div>
+                      <DeployOutcomeNote
+                        outcome={classifyDeployOutcome(deployLog.status, deployLog.steps)}
+                        steps={deployLog.steps}
+                        style={{ marginBottom: "var(--space-3)" }}
+                      />
                       {deployLog.steps.length === 0 && deployLog.status === "running" && (
                         <div style={{ color: "var(--muted)", fontSize: "var(--text-sm)" }}>Waiting for steps...</div>
                       )}

@@ -654,6 +654,8 @@ export async function getAppPreflight(serverId: string, name: string): Promise<{
 /** A row of `GET /api/deploys`: no raw log, only the derived `blocked` flag (true for a deploy blocked at preflight, not a relay 409 conflict). */
 export interface DeployWithRelations extends Omit<Deploy, "log"> {
   blocked: boolean;
+  /** Backend verdict for a finished deploy (see lib/status.ts); null when it has none, absent from an older backend. */
+  outcome?: import("./status").DeployOutcome | null;
   app: { name: string };
   server: { name: string; host: string };
 }
@@ -663,6 +665,7 @@ export interface DeployDetail extends Deploy {
   server: { name: string; host: string };
   /** Parsed `Deploy.log`; usually a steps array, but older rows hold other shapes: render via normalizeDeploySteps. */
   steps: unknown;
+  outcome?: import("./status").DeployOutcome | null;
   compareUrl: string | null;
 }
 

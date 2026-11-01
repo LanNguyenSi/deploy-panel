@@ -231,6 +231,51 @@ describe("DeploysPage - status labels and filter", () => {
     expect(rowOf("app-s").textContent).toContain("Success");
   });
 
+  it("labels a failed deploy by its rollback outcome: healthy rollback is 'Rolled back (healthy)', an outage stays 'Failed'", async () => {
+    mGetDeploys.mockResolvedValue(
+      listWith([
+        { id: "h", status: "failed", blocked: false, outcome: "rolled_back_healthy" },
+        { id: "o", status: "failed", blocked: false, outcome: "outage" },
+        { id: "n", status: "failed", blocked: false },
+      ]),
+    );
+    render(
+      <Providers>
+        <DeploysPage />
+      </Providers>,
+    );
+    await screen.findByText("app-h");
+    const rowOf = (name: string) => screen.getByText(name).closest("tr")!;
+    expect(rowOf("app-h").textContent).toContain("Rolled back (healthy)");
+    expect(rowOf("app-o").textContent).toContain("Failed");
+    expect(rowOf("app-o").textContent).not.toContain("Rolled back");
+    expect(rowOf("app-n").textContent).toContain("Failed");
+  });
+
+  it("the detail panel explains a healthy rollback and calls out an unhealthy one", async () => {
+    const user = await renderPage();
+    const detail = (outcome: string, healthStatus: string) => ({
+      deploy: {
+        id: "deploy-1", serverId: "srv-a", appId: "app-a", commitBefore: "aaa", commitAfter: "bbb", status: "failed",
+        duration: 4200, log: null, triggeredBy: "manual", createdAt: "2026-08-24T00:00:00.000Z",
+        app: { name: "my-app", repoUrl: null, branch: "main" }, server: { name: "srv-a", host: "1.2.3.4" },
+        outcome,
+        steps: [
+          { name: "health check", status: "failure", durationMs: 1 },
+          { name: "rollback: health check", status: healthStatus, durationMs: 1 },
+        ],
+        compareUrl: null,
+      },
+    });
+    mGetDeployDetail.mockResolvedValueOnce(detail("rolled_back_healthy", "success"));
+    await user.click(screen.getByText("my-app"));
+    expect(await screen.findByTestId("deploy-outcome-note")).toHaveClass("alert-warning");
+    await user.click(screen.getByText("my-app"));
+    mGetDeployDetail.mockResolvedValueOnce(detail("outage", "failure"));
+    await user.click(screen.getByText("my-app"));
+    await waitFor(() => expect(screen.getByTestId("deploy-outcome-note")).toHaveClass("alert-danger"));
+  });
+
   it("offers an Interrupted status filter that queries status=interrupted", async () => {
     mGetDeploys.mockResolvedValue(listWith([{ id: "i", status: "interrupted", blocked: false }]));
     const user = userEvent.setup();

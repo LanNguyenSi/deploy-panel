@@ -3,26 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 import { Providers } from "@/components/Providers";
 import DashboardPage from "./page";
 
-const fixture = vi.hoisted(() => ({ servers: [] as unknown[] }));
+const failedDeploy = { id: "d1", status: "failed", createdAt: new Date().toISOString(), app: { name: "my-app" }, server: { name: "srv-a" } };
+const fixture = vi.hoisted(() => ({ servers: [] as unknown[], deploys: null as unknown[] | null }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return {
     ...actual,
     getServers: () => Promise.resolve({ servers: fixture.servers }),
-    getDeploys: () =>
-      Promise.resolve({
-        deploys: [
-          {
-            id: "d1",
-            status: "failed",
-            createdAt: new Date().toISOString(),
-            app: { name: "my-app" },
-            server: { name: "srv-a" },
-          },
-        ],
-        total: 1,
-      }),
+    getDeploys: () => Promise.resolve({ deploys: fixture.deploys ?? [failedDeploy], total: 1 }),
   };
 });
 
@@ -36,6 +25,27 @@ describe("DashboardPage recent deploys", () => {
     await screen.findByText("my-app");
     expect(screen.getByRole("img", { name: "Status: failed" })).toBeInTheDocument();
     expect(screen.getByText("failed")).toBeInTheDocument();
+  });
+});
+
+describe("DashboardPage recent deploys: rollback outcome", () => {
+  it("shows a healthy rollback amber with its own label and an outage red as failed", async () => {
+    fixture.servers = [];
+    fixture.deploys = [
+      { ...failedDeploy, id: "h", outcome: "rolled_back_healthy", app: { name: "healthy-app" } },
+      { ...failedDeploy, id: "o", outcome: "outage", app: { name: "down-app" } },
+    ];
+    const { container } = render(
+      <Providers>
+        <DashboardPage />
+      </Providers>,
+    );
+    await screen.findAllByText("healthy-app");
+    const rows = container.querySelectorAll("section .card > div");
+    const rowOf = (name: string) => [...rows].find((r) => r.textContent?.startsWith(name))!;
+    expect(within(rowOf("healthy-app") as HTMLElement).getByRole("img", { name: "Status: Rolled back (healthy)" })).toHaveClass("status-dot-warning");
+    expect(within(rowOf("down-app") as HTMLElement).getByRole("img", { name: "Status: failed" })).toHaveClass("status-dot-failed");
+    fixture.deploys = null;
   });
 });
 

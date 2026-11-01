@@ -2,7 +2,7 @@
 // from the server list and the recent deploy list the dashboard already loads.
 // Pure function so every state is unit-testable without rendering.
 
-import { deployStatusBadge } from "./status";
+import { deployStatusBadge, type DeployOutcome } from "./status";
 
 export interface StatusServer {
   id: string;
@@ -14,6 +14,8 @@ export interface StatusDeploy {
   id: string;
   status: string;
   blocked?: boolean;
+  /** Backend verdict (see status.ts); `rolled_back_healthy` turns a failed deploy into a warning, not an outage. */
+  outcome?: DeployOutcome | null;
   createdAt: string;
   serverId?: string;
   appId?: string;
@@ -81,7 +83,7 @@ export function summarizeDashboardStatus(servers: StatusServer[], deploys: Statu
     seen.add(key);
     if (d.status === "running") running.push({ key: `run-${d.id}`, subject });
     if (PROBLEM_DEPLOY_STATUS.has(d.status)) {
-      const badge = deployStatusBadge(d.status, d.blocked);
+      const badge = deployStatusBadge(d.status, d.blocked, d.outcome);
       const tone: StatusIssue["tone"] = badge.className === "badge-danger" ? "failed" : "warning";
       const label = badge.label.toLowerCase();
       issues.push({ key: `deploy-${d.id}`, subject, detail: `last deploy ${label}`, tone, href: "/deploys" });

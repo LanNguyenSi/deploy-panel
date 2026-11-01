@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { getActorContext } from "../lib/ownership.js";
-import { isPreflightBlockedDeployLog } from "../lib/deploy-log.js";
+import { classifyDeployLogOutcome, isPreflightBlockedDeployLog } from "../lib/deploy-log.js";
 
 export const deploysRouter = new Hono();
 
@@ -43,7 +43,11 @@ deploysRouter.get("/", async (c) => {
   // not) so the UI can tell a preflight-blocked deploy from a real failure. The log column is already read by findMany, so the flag costs
   // one JSON.parse per row (at most 200) and no extra query.
   return c.json({
-    deploys: deploys.map(({ log, ...rest }) => ({ ...rest, blocked: isPreflightBlockedDeployLog(log) })),
+    deploys: deploys.map(({ log, ...rest }) => ({
+      ...rest,
+      blocked: isPreflightBlockedDeployLog(log),
+      outcome: classifyDeployLogOutcome(rest.status, log),
+    })),
     total,
   });
 });
@@ -89,6 +93,7 @@ deploysRouter.get("/:id", async (c) => {
     deploy: {
       ...deploy,
       steps,
+      outcome: classifyDeployLogOutcome(deploy.status, deploy.log),
       compareUrl,
       log: undefined, // Don't send raw log, send parsed steps instead
     },

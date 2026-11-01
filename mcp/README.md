@@ -103,6 +103,18 @@ full steps. `deploy_rollback` still returns the full result (its relay output
 is small by comparison and a blocked rollback nests its payload in
 `steps[0]`).
 
+### Failed deploys: `outcome`
+
+`deploy_status`, `deploy_list` and the compact `deploy` / `deploy_rollback`-poll
+result carry the backend's `outcome` for a deploy that has one: `success`,
+`rolled_back_healthy` (the deploy failed, agent-relay rolled back and its
+`rollback: health check` step succeeded, so the app is up on the previous
+version, not an outage) or `outage` (the rollback health check failed or was
+skipped, or the step is absent, e.g. an older relay). The field is left out when
+the backend sends none (running, interrupted, blocked at preflight, or an older
+backend). The MCP server does not classify anything itself. See
+[Deploy outcome](../docs/api.md#deploy-outcome).
+
 ### `deploy_list`: `app` filter is resolved client-side
 
 Unlike `server` (name or ID, resolved on the backend for every tool that

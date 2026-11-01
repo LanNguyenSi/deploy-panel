@@ -3,7 +3,7 @@ import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
 import { recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "../lib/deploy-recovery.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
-import { normalizeDeployLog } from "../lib/deploy-log.js";
+import { classifyDeployLogOutcome, normalizeDeployLog } from "../lib/deploy-log.js";
 import { setAppStatusAfterRollback, setAppStatusAfterRollbackRejection } from "../lib/rollback-app-status.js";
 import { audit, getActorUserId } from "../lib/audit.js";
 import {
@@ -179,6 +179,7 @@ v1Router.get("/deploy/:id", async (c) => {
       commitBefore: deploy.commitBefore,
       commitAfter: deploy.commitAfter,
       duration: deploy.duration,
+      outcome: classifyDeployLogOutcome(deploy.status, deploy.log),
       steps,
       triggeredBy: deploy.triggeredBy,
       createdAt: deploy.createdAt,
@@ -244,6 +245,7 @@ v1Router.get("/deploys", async (c) => {
       commitBefore: d.commitBefore,
       commitAfter: d.commitAfter,
       duration: d.duration,
+      outcome: classifyDeployLogOutcome(d.status, d.log),
       triggeredBy: d.triggeredBy,
       createdAt: d.createdAt,
     })),

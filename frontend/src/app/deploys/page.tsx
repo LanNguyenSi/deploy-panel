@@ -2,8 +2,8 @@
 
 import { Fragment, useEffect, useState } from "react";
 import { getDeploys, getDeployDetail, type DeployWithRelations, type DeployDetail } from "@/lib/api";
-import { deployStatusBadge } from "@/lib/status";
-import { DeployStepList, normalizeDeploySteps } from "@/components/DeploySteps";
+import { deployStatusBadge, type DeployOutcome } from "@/lib/status";
+import { DeployOutcomeNote, DeployStepList, normalizeDeploySteps } from "@/components/DeploySteps";
 import { EmptyStateIcon } from "@/components/EmptyStateIcon";
 
 export default function DeploysPage() {
@@ -137,7 +137,7 @@ export default function DeploysPage() {
                       style={{ cursor: "pointer" }}
                       className={expandedId === d.id ? "row-expanded" : ""}
                     >
-                      <td><StatusBadge status={d.status} blocked={d.blocked} /></td>
+                      <td><StatusBadge status={d.status} blocked={d.blocked} outcome={d.outcome} /></td>
                       <td style={{ fontWeight: 500, color: "var(--text)" }}>
                         <button type="button" className="row-toggle" aria-expanded={expandedId === d.id}>
                           {d.app.name}
@@ -329,7 +329,10 @@ function DeployDetailPanel({ detail, loading }: { detail: DeployDetail | null; l
             Deploy Steps
           </h4>
           {detailSteps.length > 0 ? (
-            <DeployStepList steps={detailSteps} />
+            <div style={{ display: "grid", gap: "var(--space-3)" }}>
+              <DeployOutcomeNote outcome={detail.outcome} steps={detailSteps} />
+              <DeployStepList steps={detailSteps} />
+            </div>
           ) : (
             <p style={{ color: "var(--muted)", fontSize: "var(--text-sm)" }}>No step data available.</p>
           )}
@@ -339,8 +342,8 @@ function DeployDetailPanel({ detail, loading }: { detail: DeployDetail | null; l
   );
 }
 
-function StatusBadge({ status, blocked }: { status: string; blocked?: boolean }) {
-  const s = deployStatusBadge(status, blocked);
+function StatusBadge({ status, blocked, outcome }: { status: string; blocked?: boolean; outcome?: DeployOutcome | null }) {
+  const s = deployStatusBadge(status, blocked, outcome);
   return <span className={`badge ${s.className}`}>{s.label}</span>;
 }
 
