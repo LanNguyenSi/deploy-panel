@@ -555,6 +555,35 @@ describe("ServerDetailPage - blocked deploys", () => {
     expect(screen.getByTestId("deploy-outcome-note")).toHaveClass("alert-warning");
   });
 
+  it.each([
+    ["rollback health check succeeded", "success", "Deploy failed, rolled back"],
+    ["rollback health check failed", "failure", "Deploy failed"],
+  ])("the desktop notification when the %s", async (_label, healthStatus, title) => {
+    const titles: string[] = [];
+    class RecordingNotification {
+      static permission: NotificationPermission = "granted";
+      static requestPermission = vi.fn();
+      onclick: (() => void) | null = null;
+      constructor(t: string) {
+        titles.push(t);
+      }
+      close() {}
+    }
+    vi.stubGlobal("Notification", RecordingNotification);
+    try {
+      const user = await renderPage();
+      mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
+      const log = [...FORWARD_FAIL, { name: "rollback: health check", status: healthStatus, durationMs: 1 }];
+      mGetDeployStatus.mockResolvedValueOnce({ deploy: { id: "deploy-1", status: "failed", log: JSON.stringify(log) } });
+
+      await clickDeployAndConfirm(user);
+
+      await waitFor(() => expect(titles).toEqual([title]), { timeout: 3000 });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("the deploy log view shows a loud danger note when the rollback health check failed", async () => {
     const user = await renderPage();
     mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
@@ -629,6 +658,35 @@ describe("ServerDetailPage - blocked deploys", () => {
     const ok = within(result).getByText("other-app").closest("li")!;
     expect(ok).toHaveTextContent("Success");
     expect(ok).not.toHaveTextContent("disk");
+  });
+
+  it("bulk deploy result lists a healthy rollback as rolled back, not as a failure", async () => {
+    const user = await renderTwoApps();
+    mBulkDeploy.mockResolvedValueOnce({
+      deploys: [
+        { app: "my-app", deployId: "d-1", status: "running" },
+        { app: "other-app", deployId: "d-2", status: "running" },
+      ],
+    });
+    const log = JSON.stringify([
+      { name: "compose up", status: "failure", durationMs: 1, output: "boom" },
+      { name: "rollback: health check", status: "success", durationMs: 1 },
+    ]);
+    mGetDeployStatus.mockImplementation(async (_srv: string, app: string) =>
+      app === "my-app"
+        ? { deploy: { id: "d-1", status: "failed", outcome: "rolled_back_healthy", log } }
+        : { deploy: { id: "d-2", status: "failed", outcome: "outage", log } },
+    );
+
+    await bulkDeployBoth(user);
+
+    const result = await screen.findByRole("region", { name: "Bulk deploy result" });
+    await waitFor(() => expect(result).toHaveTextContent("1 rolled back (app up on the previous version)"));
+    const rolledBack = within(result).getByText("my-app").closest("li")!;
+    expect(rolledBack).toHaveTextContent("Failed, rolled back (healthy)");
+    const outage = within(result).getByText("other-app").closest("li")!;
+    expect(outage).toHaveTextContent("Failed");
+    expect(outage).not.toHaveTextContent("rolled back");
   });
 
   it("bulk deploy result reports an app that could not be started with its error", async () => {
@@ -887,5 +945,34 @@ describe("ServerDetailPage - bulk result polling", () => {
     await waitFor(() => expect(pollCalls()).toBe(2));
     await waitFor(() => expect(li()).toHaveTextContent("Success"));
     expect(screen.getByRole("status")).toHaveTextContent("All 2 deploys finished.");
+  });
+});
+
+describe("ServerDetailPage - previous version hint", () => {
+  async function renderWith(app: Record<string, unknown>) {
+    mGetServer.mockResolvedValue(SERVER);
+    mGetApps.mockResolvedValue({ apps: [{ ...APPS.apps[0], ...app }] });
+    mSyncServer.mockResolvedValue({ synced: true, apps: 1, created: 0, updated: 0 });
+    render(
+      <Providers>
+        <ServerDetailPage />
+      </Providers>,
+    );
+    await screen.findByText("my-app");
+  }
+
+  it("shows the amber hint for a healthy app whose last deploy rolled back healthy", async () => {
+    await renderWith({ lastDeployOutcome: "rolled_back_healthy" });
+    expect(screen.getByText("running previous version")).toHaveClass("badge-warning");
+  });
+
+  it.each([["outage"], ["success"], [null], [undefined]])("shows no hint when the last outcome is %s", async (lastDeployOutcome) => {
+    await renderWith({ lastDeployOutcome });
+    expect(screen.queryByText("running previous version")).not.toBeInTheDocument();
+  });
+
+  it("shows no hint when the app is not healthy, whatever the last outcome was", async () => {
+    await renderWith({ status: "unhealthy", lastDeployOutcome: "rolled_back_healthy" });
+    expect(screen.queryByText("running previous version")).not.toBeInTheDocument();
   });
 });

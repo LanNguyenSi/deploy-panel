@@ -10,6 +10,7 @@ import { findOwnedServer, getActorContext } from "../lib/ownership.js";
 import { isPrivateOrLoopbackHost } from "../services/probe-guard.js";
 import { listMaskedAppSecrets, setAppSecret, deleteAppSecret } from "../lib/app-secrets.js";
 import { evaluateRequiredEnv } from "../lib/required-env-gate.js";
+import { classifyDeployLogOutcome } from "../lib/deploy-log.js";
 import { fetchUpstreamByApp, upstreamForApp, type Upstream } from "../lib/upstream.js";
 
 export const appsRouter = new Hono();
@@ -53,10 +54,22 @@ appsRouter.get("/", async (c) => {
   const apps = await prisma.app.findMany({
     where,
     orderBy: { name: "asc" },
-    include: { _count: { select: { deploys: true } } },
+    include: {
+      _count: { select: { deploys: true } },
+      // Newest deploy only, to classify how it ended; the log is not sent on.
+      deploys: { orderBy: { createdAt: "desc" }, take: 1, select: { status: true, log: true } },
+    },
   });
 
-  return c.json({ apps });
+  // `lastDeployOutcome` lets the card say "running previous version" after a
+  // failed deploy the relay rolled back from (null: no verdict, see
+  // classifyDeployOutcome in lib/deploy-log.ts).
+  return c.json({
+    apps: apps.map(({ deploys, ...app }) => ({
+      ...app,
+      lastDeployOutcome: deploys?.[0] ? classifyDeployLogOutcome(deploys[0].status, deploys[0].log) : null,
+    })),
+  });
 });
 
 // GET /api/servers/:serverId/apps/upstream — staleness per app (deployed
@@ -246,7 +259,7 @@ appsRouter.get("/:name/deploys/:deployId", async (c) => {
   const deployId = c.req.param("deployId");
   const deploy = await prisma.deploy.findFirst({ where: { id: deployId, serverId } });
   if (!deploy) return c.json({ error: "not_found" }, 404);
-  return c.json({ deploy });
+  return c.json({ deploy: { ...deploy, outcome: classifyDeployLogOutcome(deploy.status, deploy.log) } });
 });
 
 // Shape of agent-relay's rollback result (see agent-relay

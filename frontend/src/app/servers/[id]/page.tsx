@@ -15,7 +15,7 @@ import { isPinned, togglePin } from "@/lib/pinned";
 import EnvVarsPanel from "@/components/EnvVarsPanel";
 import AppSecretsPanel from "@/components/AppSecretsPanel";
 import { DeployOutcomeNote, DeployStepList, isBlockedSteps, normalizeDeploySteps, type DeployStep } from "@/components/DeploySteps";
-import { BULK_POLL_MS, UNKNOWN_BADGE, UNKNOWN_HINT, bulkSummary, describeFailures, failuresFromLog, initialBulkEntries, isBlockedEntry, isSettled, isUnknownEntry, pollingStopped, type BulkResult } from "@/lib/bulk-deploy";
+import { BULK_POLL_MS, UNKNOWN_BADGE, UNKNOWN_HINT, bulkSummary, describeFailures, failuresFromLog, initialBulkEntries, isBlockedEntry, isRolledBackEntry, isSettled, isUnknownEntry, pollingStopped, type BulkResult } from "@/lib/bulk-deploy";
 import { ServerReinstallDialog } from "@/components/ServerReinstallDialog";
 import { ServerUpdateImageDialog } from "@/components/ServerUpdateImageDialog";
 import { countOutdated, describeUpstream, failedUpstream, formatCheckedAt, githubCompareUrl, shortSha } from "@/lib/upstream";
@@ -113,7 +113,7 @@ export default function ServerDetailPage() {
           try {
             const { deploy: d } = await getDeployStatus(id, entry.app, entry.deployId);
             if (d.status === "running") return entry;
-            return { ...entry, status: d.status, failures: d.status === "success" ? [] : failuresFromLog(d.log) };
+            return { ...entry, status: d.status, outcome: d.outcome ?? null, failures: d.status === "success" ? [] : failuresFromLog(d.log) };
           } catch {
             return entry;
           }
@@ -233,7 +233,7 @@ export default function ServerDetailPage() {
           if (d.status !== "running") {
             clearInterval(pollInterval);
             setDeploying(null);
-            notifyDeployResult(name, d.status);
+            notifyDeployResult(name, d.status, classifyDeployOutcome(d.status, steps));
             await load();
           }
         } catch {
@@ -508,7 +508,7 @@ export default function ServerDetailPage() {
           <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: "var(--space-2)" }}>
             {bulkResult.entries.map((entry) => {
               const unknown = isUnknownEntry(entry, bulkResult);
-              const badge = unknown ? UNKNOWN_BADGE : deployStatusBadge(entry.status, isBlockedEntry(entry));
+              const badge = unknown ? UNKNOWN_BADGE : deployStatusBadge(entry.status, isBlockedEntry(entry), isRolledBackEntry(entry) ? entry.outcome : null);
               return (
                 <li key={entry.app} style={{ fontSize: "var(--text-sm)" }}>
                   <span style={{ fontWeight: 500 }}>{entry.app}</span>{" "}
@@ -595,8 +595,18 @@ export default function ServerDetailPage() {
                     {app._count.deploys} deploy{app._count.deploys !== 1 ? "s" : ""}
                   </span>
                 </div>
-                <span className={`badge badge-${app.status === "healthy" ? "success" : app.status === "unhealthy" ? "danger" : app.status === "deploying" ? "info" : "neutral"}`}>
-                  {app.status}
+                <span style={{ display: "inline-flex", alignItems: "center", flexWrap: "wrap", gap: "var(--space-2)" }}>
+                  <span className={`badge badge-${app.status === "healthy" ? "success" : app.status === "unhealthy" ? "danger" : app.status === "deploying" ? "info" : "neutral"}`}>
+                    {app.status}
+                  </span>
+                  {app.status === "healthy" && app.lastDeployOutcome === "rolled_back_healthy" && (
+                    <span
+                      className="badge badge-warning"
+                      title="The last deploy failed and was rolled back; the app is healthy on its previous version"
+                    >
+                      running previous version
+                    </span>
+                  )}
                 </span>
               </div>
 

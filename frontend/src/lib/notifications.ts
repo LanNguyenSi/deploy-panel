@@ -1,5 +1,7 @@
 "use client";
 
+import type { DeployOutcome } from "./status";
+
 export function canNotify(): boolean {
   return typeof window !== "undefined" && "Notification" in window;
 }
@@ -37,7 +39,16 @@ export function sendNotification(title: string, options?: { body?: string; tag?:
   }
 }
 
-export function notifyDeployResult(app: string, status: string) {
+export function notifyDeployResult(app: string, status: string, outcome?: DeployOutcome | null) {
+  // The deploy failed but the relay restored the previous version and it passed
+  // its health check: the app is up, so this is not an outage alert.
+  if (status === "failed" && outcome === "rolled_back_healthy") {
+    sendNotification("Deploy failed, rolled back", {
+      body: `${app} is up on the previous version`,
+      tag: `deploy-${app}`,
+    });
+    return;
+  }
   const isSuccess = status === "success";
   sendNotification(
     isSuccess ? `Deploy successful` : `Deploy failed`,

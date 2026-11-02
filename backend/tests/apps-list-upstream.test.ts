@@ -18,7 +18,7 @@ vi.mock("../src/lib/ownership.js", () => ({
 }));
 
 vi.mock("../src/lib/prisma.js", () => ({
-  prisma: { app: { findMany: vi.fn() } },
+  prisma: { app: { findMany: vi.fn() }, deploy: { findFirst: vi.fn() } },
 }));
 
 vi.mock("../src/lib/audit.js", () => ({
@@ -62,6 +62,53 @@ describe("GET /servers/:serverId/apps", () => {
     expect(body.apps.map((a: any) => a.name)).toEqual(["alpha", "beta"]);
     expect(body.apps[0]).not.toHaveProperty("upstream");
     expect(mRelay).not.toHaveBeenCalled();
+  });
+
+  it("classifies the newest deploy per app as lastDeployOutcome and does not send the log", async () => {
+    const steps = (health?: string) =>
+      JSON.stringify([
+        { name: "compose up", status: "failure", durationMs: 1 },
+        ...(health ? [{ name: "rollback: health check", status: health, durationMs: 1 }] : []),
+      ]);
+    mFindMany.mockResolvedValue([
+      { id: "1", name: "rolled", deploys: [{ status: "failed", log: steps("success") }] },
+      { id: "2", name: "outage", deploys: [{ status: "failed", log: steps("failure") }] },
+      { id: "3", name: "old-relay", deploys: [{ status: "failed", log: steps() }] },
+      { id: "4", name: "ok", deploys: [{ status: "success", log: "[]" }] },
+      { id: "5", name: "running", deploys: [{ status: "running", log: null }] },
+      { id: "6", name: "never", deploys: [] },
+    ]);
+    const body = await (await get("")).json();
+    const outcome = Object.fromEntries(body.apps.map((a: any) => [a.name, a.lastDeployOutcome]));
+    expect(outcome).toEqual({
+      rolled: "rolled_back_healthy",
+      outage: "outage",
+      "old-relay": "outage",
+      ok: "success",
+      running: null,
+      never: null,
+    });
+    for (const a of body.apps) expect(a).not.toHaveProperty("deploys");
+  });
+});
+
+describe("GET /servers/:serverId/apps/:name/deploys/:deployId", () => {
+  const mFindFirst = (prisma.deploy as any).findFirst as ReturnType<typeof vi.fn>;
+  const log = JSON.stringify([
+    { name: "compose up", status: "failure", durationMs: 1 },
+    { name: "rollback: health check", status: "success", durationMs: 1 },
+  ]);
+
+  it("adds the outcome to the polled deploy row", async () => {
+    mFindFirst.mockResolvedValue({ id: "d1", status: "failed", log });
+    const body = await (await get("/alpha/deploys/d1")).json();
+    expect(body.deploy).toMatchObject({ id: "d1", status: "failed", outcome: "rolled_back_healthy" });
+  });
+
+  it("gives a running deploy no outcome", async () => {
+    mFindFirst.mockResolvedValue({ id: "d1", status: "running", log: null });
+    const body = await (await get("/alpha/deploys/d1")).json();
+    expect(body.deploy.outcome).toBeNull();
   });
 });
 

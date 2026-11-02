@@ -1,3 +1,4 @@
+import type { DeployOutcome } from "@/lib/status";
 import { PREFLIGHT_CHECK_KIND, normalizeDeploySteps } from "@/components/DeploySteps";
 
 /** One failed step of a finished deploy: for a blocked deploy, one failed preflight check. */
@@ -16,6 +17,8 @@ export interface BulkEntry {
   deployId: string;
   status: string;
   failures: BulkFailure[];
+  /** How the settled deploy ended (from the status endpoint); see classifyDeployOutcome. */
+  outcome?: DeployOutcome | null;
 }
 
 export interface BulkResult {
@@ -59,6 +62,11 @@ export const UNKNOWN_HINT = "still running when polling stopped; check the deplo
 /** A finished entry whose failures are failed preflight checks. */
 export function isBlockedEntry(entry: BulkEntry): boolean {
   return isSettled(entry) && entry.failures.some((f) => f.preflight === true);
+}
+
+/** A failed deploy the relay rolled back from with a passing health check: the app runs its previous version. */
+export function isRolledBackEntry(entry: BulkEntry): boolean {
+  return entry.status === "failed" && entry.outcome === "rolled_back_healthy";
 }
 
 /** The failed steps (non-success, non-skipped) of a stored deploy log, in order. */
@@ -105,7 +113,12 @@ export function describeFailures(failures: BulkFailure[]): string {
 /** The one-line summary announced to assistive technology (the live region). */
 export function bulkSummary(result: BulkResult): string {
   const pending = result.entries.filter((e) => !isSettled(e)).length;
-  if (pending === 0) return `All ${result.entries.length} deploys finished.`;
+  if (pending === 0) {
+    const rolledBack = result.entries.filter(isRolledBackEntry).length;
+    const base = `All ${result.entries.length} deploys finished.`;
+    // Not an outage: these apps are up on their previous version.
+    return rolledBack > 0 ? `${base} ${rolledBack} rolled back (app up on the previous version).` : base;
+  }
   if (pollingStopped(result)) {
     return `Stopped waiting for ${pending} deploy(s). Check the deploy history for their outcome.`;
   }
