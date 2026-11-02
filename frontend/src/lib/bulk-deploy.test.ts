@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BULK_MAX_POLLS, BULK_POLL_MS, bulkSummary, describeFailures, failuresFromLog, initialBulkEntries, isBlockedEntry, isSettled, isUnknownEntry, pollingStopped } from "./bulk-deploy";
+import { BULK_MAX_POLLS, BULK_POLL_MS, bulkSummary, describeFailures, failuresFromLog, initialBulkEntries, isBlockedEntry, isRolledBackEntry, isSettled, isUnknownEntry, pollingStopped } from "./bulk-deploy";
 
 describe("failuresFromLog", () => {
   it("returns the failed steps of a steps array, skipping success and skipped", () => {
@@ -123,5 +123,26 @@ describe("poll budget and unknown entries", () => {
     expect(isUnknownEntry(entry("running"), polling)).toBe(false);
     expect(isUnknownEntry(entry("success"), stopped)).toBe(false);
     expect(isUnknownEntry(entry("failed"), stopped)).toBe(false);
+  });
+});
+
+describe("rolled back entries", () => {
+  const e = (status: string, outcome?: "success" | "rolled_back_healthy" | "outage" | null) => ({ app: "a", deployId: "d", status, failures: [], outcome });
+
+  it("isRolledBackEntry needs a failed status and the rolled_back_healthy outcome", () => {
+    expect(isRolledBackEntry(e("failed", "rolled_back_healthy"))).toBe(true);
+    expect(isRolledBackEntry(e("failed", "outage"))).toBe(false);
+    expect(isRolledBackEntry(e("failed", null))).toBe(false);
+    expect(isRolledBackEntry(e("failed"))).toBe(false);
+    expect(isRolledBackEntry(e("success", "rolled_back_healthy"))).toBe(false);
+  });
+
+  it("bulkSummary names the rolled back apps as a separate group once all are settled", () => {
+    const result = { entries: [e("success", "success"), e("failed", "rolled_back_healthy"), e("failed", "outage")], polls: 2 };
+    expect(bulkSummary(result)).toBe("All 3 deploys finished. 1 rolled back (app up on the previous version).");
+  });
+
+  it("bulkSummary has no rolled back group when none rolled back", () => {
+    expect(bulkSummary({ entries: [e("success", "success"), e("failed", "outage")], polls: 2 })).toBe("All 2 deploys finished.");
   });
 });

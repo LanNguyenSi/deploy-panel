@@ -6,6 +6,7 @@ import {
   CONFLICT_STEP_KIND,
   PREFLIGHT_CHECK_KIND,
   blockedDeployLogSteps,
+  classifyDeployOutcome,
   isBlockedDeployLog,
   type DeployLogStep as Step,
 } from "./deploy-log.js";
@@ -130,7 +131,9 @@ export interface FinalizeDeployOpts {
  * reported success we don't take that at face value: we run the post-deploy
  * health gate (container run-state + public-route probe) and DOWNGRADE to
  * failed/unhealthy if the app isn't actually serving. A relay-reported
- * failure is written straight through — there's nothing to second-guess.
+ * failure is written straight through, there's nothing to second-guess,
+ * except that a failure the relay rolled back from, with a passing rollback
+ * health check, leaves the app `healthy` (see below).
  *
  * Centralising this means all three relay outcome shapes (SSE `done`, the
  * JSON fallback, and a stream that ends without a `done` event) gate
@@ -184,6 +187,18 @@ export async function finalizeDeploy(opts: FinalizeDeployOpts): Promise<void> {
       log: JSON.stringify(steps),
     },
   });
+  // A failed deploy whose relay rolled back AND passed its `rollback: health
+  // check` step leaves the previous version serving: the app is up, so it must
+  // not read as an outage. No new version shipped, so lastDeployAt stays as it
+  // was (same as deploy-recovery.ts). The deploy row above stays `failed`.
+  // Healthy is never assumed without the step: classifyDeployOutcome returns
+  // `outage` for every other failed shape (no step, failed step, older relay).
+  // A relay success that the post-deploy gate downgraded is excluded: the gate
+  // just found the app not serving.
+  if (!relaySuccess && classifyDeployOutcome("failed", steps) === "rolled_back_healthy") {
+    await prisma.app.update({ where: { id: appId }, data: { status: "healthy" } });
+    return;
+  }
   await prisma.app.update({
     where: { id: appId },
     data: { status: success ? "healthy" : "unhealthy", lastDeployAt: new Date() },

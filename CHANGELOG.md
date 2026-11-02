@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A failed deploy that agent-relay rolled back from, with a passing `rollback: health check` step, no longer marks the app unhealthy: the app stays `healthy` (it serves the previous version), `lastDeployAt` is not advanced and the deploy row stays `failed`. Every other failed deploy (failed or missing rollback health step, older relay) still marks the app unhealthy. The desktop notification reads "Deploy failed, rolled back", the bulk deploy result lists such an app as rolled back instead of an outage, and the app card shows an amber "running previous version" hint. The app list now carries `lastDeployOutcome` and the single-deploy status route carries `outcome`.
+
 ### Changed
 
 - Dependency updates: `renovate.json` extends the shared `github>LanNguyenSi/renovate-config` preset (weekly grouped patch/minor pull requests, 7-day minimum release age, no automerge, majors only through the Dependency Dashboard).

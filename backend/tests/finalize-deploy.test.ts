@@ -119,4 +119,71 @@ describe("finalizeDeploy", () => {
     const data = lastCall(mDeployUpdate).data;
     expect(data).toMatchObject({ commitBefore: "aaaa111", commitAfter: "bbbb222", duration: 42_000 });
   });
+
+  describe("failed deploy x rollback health step", () => {
+    const forward = [
+      { name: "compose up", status: "failure", durationMs: 1 },
+      { name: "rollback: git reset", status: "success", durationMs: 1 },
+    ];
+    const health = (status: string) => ({ name: "rollback: health check", status, durationMs: 1 });
+
+    it("failed + rollback health check succeeded: app healthy, lastDeployAt untouched, deploy row stays failed", async () => {
+      await finalizeDeploy({ ...base, relaySuccess: false, steps: [...forward, health("success")] });
+
+      expect(mGate).not.toHaveBeenCalled();
+      expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+      const data = lastCall(mAppUpdate).data;
+      expect(data.status).toBe("healthy");
+      expect(data).not.toHaveProperty("lastDeployAt");
+    });
+
+    it("failed + rollback health check failed (outage): app unhealthy, lastDeployAt set", async () => {
+      await finalizeDeploy({ ...base, relaySuccess: false, steps: [...forward, health("failure")] });
+
+      const data = lastCall(mAppUpdate).data;
+      expect(data.status).toBe("unhealthy");
+      expect(data.lastDeployAt).toBeInstanceOf(Date);
+    });
+
+    it("failed without a rollback health step (older relay, rollback stopped early): unhealthy", async () => {
+      await finalizeDeploy({ ...base, relaySuccess: false, steps: forward });
+
+      expect(lastCall(mAppUpdate).data.status).toBe("unhealthy");
+    });
+
+    it("a failed deploy with no verdict (no steps, or a preflight-check step) is unhealthy, never healthy by default", async () => {
+      await finalizeDeploy({ ...base, relaySuccess: false, steps: [] });
+      expect(lastCall(mAppUpdate).data.status).toBe("unhealthy");
+
+      await finalizeDeploy({
+        ...base,
+        relaySuccess: false,
+        steps: [{ name: "disk", kind: "preflight-check", status: "failure", durationMs: 0 }, health("success")],
+      });
+      expect(lastCall(mAppUpdate).data.status).toBe("unhealthy");
+    });
+
+    it("only the LAST rollback health step counts", async () => {
+      await finalizeDeploy({ ...base, relaySuccess: false, steps: [...forward, health("success"), health("failure")] });
+
+      expect(lastCall(mAppUpdate).data.status).toBe("unhealthy");
+    });
+
+    it("a relay success downgraded by the gate stays unhealthy even if a stray rollback step succeeded", async () => {
+      mGate.mockResolvedValue({ healthy: false, reason: "restarting" });
+
+      await finalizeDeploy({ ...base, relaySuccess: true, steps: [...forward, health("success")] });
+
+      expect(lastCall(mAppUpdate).data.status).toBe("unhealthy");
+      expect(lastCall(mAppUpdate).data.lastDeployAt).toBeInstanceOf(Date);
+    });
+
+    it("success still sets lastDeployAt", async () => {
+      mGate.mockResolvedValue({ healthy: true });
+
+      await finalizeDeploy({ ...base, relaySuccess: true });
+
+      expect(lastCall(mAppUpdate).data.lastDeployAt).toBeInstanceOf(Date);
+    });
+  });
 });

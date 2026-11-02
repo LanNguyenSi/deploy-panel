@@ -62,6 +62,8 @@ export interface App {
   liveUrl: string | null;
   lastDeployAt: string | null;
   repoUrl?: string | null;
+  /** How the newest deploy ended (list endpoint only); null when there is no verdict. */
+  lastDeployOutcome?: import("./status").DeployOutcome | null;
 }
 
 export interface Deploy {
@@ -75,6 +77,8 @@ export interface Deploy {
   log: string | null;
   triggeredBy: string | null;
   createdAt: string;
+  /** How a finished deploy ended (single-deploy status endpoint); null when there is no verdict. */
+  outcome?: import("./status").DeployOutcome | null;
 }
 
 // ── API Functions ───────────────────────────────────────────────────────────

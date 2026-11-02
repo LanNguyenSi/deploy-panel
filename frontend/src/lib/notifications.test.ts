@@ -226,4 +226,30 @@ describe("notifyDeployResult", () => {
       tag: "deploy-my-app",
     });
   });
+
+  it("says rolled back, not outage, for a failed deploy that rolled back healthy", () => {
+    notifyDeployResult("my-app", "failed", "rolled_back_healthy");
+
+    expect(instances[0]).toMatchObject({
+      title: "Deploy failed, rolled back",
+      body: "my-app is up on the previous version",
+      tag: "deploy-my-app",
+    });
+  });
+
+  it("keeps the plain failure text for an outage or an unknown outcome", () => {
+    notifyDeployResult("my-app", "failed", "outage");
+    notifyDeployResult("my-app", "failed", null);
+    expect(instances.map((i) => i.title)).toEqual(["Deploy failed", "Deploy failed"]);
+  });
+
+  it("keeps the success text when the outcome is success", () => {
+    notifyDeployResult("my-app", "success", "success");
+    expect(instances[0].title).toBe("Deploy successful");
+  });
+
+  it("ignores a rolled_back_healthy outcome on a non-failed status", () => {
+    notifyDeployResult("my-app", "success", "rolled_back_healthy");
+    expect(instances[0].title).toBe("Deploy successful");
+  });
 });
