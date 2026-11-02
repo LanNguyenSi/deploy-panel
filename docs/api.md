@@ -46,7 +46,7 @@ All app endpoints are nested under a server: `/api/servers/:serverId/apps`.
 | PATCH  | `/api/servers/:serverId/apps/:name/tag`         | Set the app tag; body `{ tag }` where tag is `production`, `development`, `ignored` or `null` (clears) |
 | PATCH  | `/api/servers/:serverId/apps/:name/live-url`    | Set or clear the app's live URL; body `{ liveUrl }` (http/https URL, empty string or null clears) |
 | DELETE | `/api/servers/:serverId/apps/:name`             | Hide the app from the panel (sets tag `ignored`; the row is not deleted). Returns `{ hidden: true }` |
-| GET    | `/api/servers/:serverId/apps/:name/deploys/:deployId` | Get one deploy by id, scoped to this server (404 if it belongs to another server); the `:name` segment is not checked |
+| GET    | `/api/servers/:serverId/apps/:name/deploys/:deployId` | Get one deploy by id, scoped to this server (404 if it belongs to another server); the `:name` segment is not checked. Carries `outcome` (see [Deploy outcome](#deploy-outcome)) |
 | POST   | `/api/servers/:serverId/apps/bulk-deploy`       | Deploy several apps in one call; body `{ apps: string[], force?: boolean }` (deduplicated, at most 50 per call; `force` defaults to `false`, so a preflight failure blocks the app). Answers `202` before the relay has judged the deploys: poll each `deployId` for the outcome |
 | GET    | `/api/servers/:serverId/apps/:name/env`         | Read the app's env entries from the relay; each entry carries a `sensitive` flag derived from the key name |
 | PUT    | `/api/servers/:serverId/apps/:name/env`         | Replace the app's env set; body `{ entries: [{ key, value }] }` (max 500 entries). Records one env-history row per changed key (see `/env/history`) plus one `app.env.updated` audit-log entry when anything changed; the response includes `changes` (count of changed keys) and `needsRedeploy` |
@@ -118,7 +118,7 @@ The backend also exposes endpoints that the panel UI itself uses. They are not p
 
 ### Deploy outcome
 
-A deploy row ends `failed` for two very different situations, so the deploy responses (`GET /api/deploys`, `GET /api/deploys/:id`, `GET /api/v1/deploy/:id`, `GET /api/v1/deploys`) carry a derived `outcome`, computed from the stored steps (`classifyDeployOutcome` in `backend/src/lib/deploy-log.ts`):
+A deploy row ends `failed` for two very different situations, so the deploy responses (`GET /api/servers/:serverId/apps/:name/deploys/:deployId`, `GET /api/deploys`, `GET /api/deploys/:id`, `GET /api/v1/deploy/:id`, `GET /api/v1/deploys`) carry a derived `outcome`, computed from the stored steps (`classifyDeployOutcome` in `backend/src/lib/deploy-log.ts`):
 
 | `outcome` | When |
 |-----------|------|

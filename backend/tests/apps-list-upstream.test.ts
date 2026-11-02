@@ -35,6 +35,7 @@ import { relayRequest } from "../src/lib/relay.js";
 import { appsRouter } from "../src/routes/apps.js";
 
 const mFindMany = (prisma.app as any).findMany as ReturnType<typeof vi.fn>;
+const mDeployFirst = (prisma.deploy as any).findFirst as ReturnType<typeof vi.fn>;
 const mRelay = relayRequest as unknown as ReturnType<typeof vi.fn>;
 
 const A = "a".repeat(40);
@@ -48,6 +49,7 @@ function get(path: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mDeployFirst.mockResolvedValue(null);
   mFindMany.mockResolvedValue([
     { id: "1", name: "alpha", repoUrl: null },
     { id: "2", name: "beta", repoUrl: null },
@@ -55,6 +57,27 @@ beforeEach(() => {
 });
 
 describe("GET /servers/:serverId/apps", () => {
+  it("reads only the newest deploy of each app with one bounded query", async () => {
+    await get("");
+    expect(mDeployFirst).toHaveBeenCalledTimes(2);
+    expect(mDeployFirst).toHaveBeenCalledWith({
+      where: { appId: "1" },
+      orderBy: { createdAt: "desc" },
+      select: { status: true, log: true },
+    });
+    expect(mDeployFirst.mock.calls.map((c) => c[0].where.appId)).toEqual(["1", "2"]);
+    // No nested include of deploys on the list query (Prisma would load them all).
+    expect(mFindMany.mock.calls[0][0].include).not.toHaveProperty("deploys");
+  });
+
+  it("takes the outcome from the newest deploy, not an older rolled-back one", async () => {
+    mDeployFirst.mockImplementation(async (args: any) =>
+      args.orderBy.createdAt === "desc" ? { status: "success", log: "[]" } : { status: "failed", log: "[]" },
+    );
+    const body = await (await get("")).json();
+    expect(body.apps.map((a: any) => a.lastDeployOutcome)).toEqual(["success", "success"]);
+  });
+
   it("lists apps from the database without calling the relay", async () => {
     const res = await get("");
     expect(res.status).toBe(200);
@@ -70,14 +93,18 @@ describe("GET /servers/:serverId/apps", () => {
         { name: "compose up", status: "failure", durationMs: 1 },
         ...(health ? [{ name: "rollback: health check", status: health, durationMs: 1 }] : []),
       ]);
-    mFindMany.mockResolvedValue([
-      { id: "1", name: "rolled", deploys: [{ status: "failed", log: steps("success") }] },
-      { id: "2", name: "outage", deploys: [{ status: "failed", log: steps("failure") }] },
-      { id: "3", name: "old-relay", deploys: [{ status: "failed", log: steps() }] },
-      { id: "4", name: "ok", deploys: [{ status: "success", log: "[]" }] },
-      { id: "5", name: "running", deploys: [{ status: "running", log: null }] },
-      { id: "6", name: "never", deploys: [] },
-    ]);
+    const newestByApp: Record<string, any> = {
+      "1": { status: "failed", log: steps("success") },
+      "2": { status: "failed", log: steps("failure") },
+      "3": { status: "failed", log: steps() },
+      "4": { status: "success", log: "[]" },
+      "5": { status: "running", log: null },
+      "6": null,
+    };
+    mFindMany.mockResolvedValue(
+      ["rolled", "outage", "old-relay", "ok", "running", "never"].map((name, i) => ({ id: String(i + 1), name })),
+    );
+    mDeployFirst.mockImplementation(async (args: any) => newestByApp[args.where.appId]);
     const body = await (await get("")).json();
     const outcome = Object.fromEntries(body.apps.map((a: any) => [a.name, a.lastDeployOutcome]));
     expect(outcome).toEqual({

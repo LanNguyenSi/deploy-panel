@@ -131,7 +131,7 @@ export interface FinalizeDeployOpts {
  * reported success we don't take that at face value: we run the post-deploy
  * health gate (container run-state + public-route probe) and DOWNGRADE to
  * failed/unhealthy if the app isn't actually serving. A relay-reported
- * failure is written straight through — there's nothing to second-guess —
+ * failure is written straight through, there's nothing to second-guess,
  * except that a failure the relay rolled back from, with a passing rollback
  * health check, leaves the app `healthy` (see below).
  *

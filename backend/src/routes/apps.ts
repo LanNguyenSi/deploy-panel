@@ -56,18 +56,29 @@ appsRouter.get("/", async (c) => {
     orderBy: { name: "asc" },
     include: {
       _count: { select: { deploys: true } },
-      // Newest deploy only, to classify how it ended; the log is not sent on.
-      deploys: { orderBy: { createdAt: "desc" }, take: 1, select: { status: true, log: true } },
     },
   });
+
+  // Newest deploy per app, to classify how it ended; the log is not sent on.
+  // One bounded query per app (LIMIT 1): a nested `take` on findMany makes
+  // Prisma load every deploy row and log, and deploys are never pruned.
+  const newest = await Promise.all(
+    apps.map((a) =>
+      prisma.deploy.findFirst({
+        where: { appId: a.id },
+        orderBy: { createdAt: "desc" },
+        select: { status: true, log: true },
+      }),
+    ),
+  );
 
   // `lastDeployOutcome` lets the card say "running previous version" after a
   // failed deploy the relay rolled back from (null: no verdict, see
   // classifyDeployOutcome in lib/deploy-log.ts).
   return c.json({
-    apps: apps.map(({ deploys, ...app }) => ({
+    apps: apps.map((app, i) => ({
       ...app,
-      lastDeployOutcome: deploys?.[0] ? classifyDeployLogOutcome(deploys[0].status, deploys[0].log) : null,
+      lastDeployOutcome: newest[i] ? classifyDeployLogOutcome(newest[i]!.status, newest[i]!.log) : null,
     })),
   });
 });

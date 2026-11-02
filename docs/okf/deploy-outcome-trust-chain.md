@@ -55,7 +55,7 @@ The diagram leaves out a streamed `blocked` or `error` event and an unparseable 
 
 ## Relay success is a claim, not a verdict
 
-No deploy is written to the database as `status: "success"` on the relay's word alone. `finalizeDeploy` (`backend/src/lib/stream-deploy.ts:133-187`) is the choke point every relay-reported outcome that could plausibly be a success funnels through, and it re-verifies before trusting a reported success.
+No deploy is written to the database as `status: "success"` on the relay's word alone. `finalizeDeploy` (`backend/src/lib/stream-deploy.ts:129-206`) is the choke point every relay-reported outcome that could plausibly be a success funnels through, and it re-verifies before trusting a reported success.
 
 `streamDeploy` (stream-deploy.ts:212-473) hands `finalizeDeploy` exactly three shapes of relay outcome that could be a success, all converging on the same function:
 
