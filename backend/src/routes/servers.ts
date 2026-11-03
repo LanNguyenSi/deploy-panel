@@ -14,7 +14,15 @@ import { executeSshCommand, SshError, SshTimeoutError } from "../services/ssh-ex
 import { buildInstallCommand, parseInstallOutput } from "../services/install-relay.js";
 import { probeVps } from "../services/probe-vps.js";
 import { activeInstalls, isServerMutating } from "../services/active-installs.js";
-import { setServerStatus, probeStatusFromHttp, probeStatusFromError } from "../services/server-status.js";
+import {
+  setServerStatus,
+  probeStatusFromHttp,
+  classifyProbeError,
+} from "../services/server-status.js";
+import {
+  readRelaySelfUpdateOutcome,
+  type RelayRecordOutcome,
+} from "../services/relay-self-update.js";
 import { assertHostAllowedForNonAdmin, consumeProbeQuota } from "../services/probe-guard.js";
 import {
   computeRelayOutdated,
@@ -197,13 +205,20 @@ serversRouter.post("/:id/test", async (c) => {
       relayOutdated: null,
     });
   } catch (err: any) {
-    // Probe timeout is transient ("unknown"); refused/DNS stays "offline".
-    const status = probeStatusFromError(err);
+    // Shared classifier: only network failures are "offline"; a timeout or a
+    // relay answer that cannot be parsed is "unknown"; a local exception
+    // (Prisma, panel bug) is not a relay status, so it surfaces as a 500
+    // and leaves Server.status untouched.
+    const status = classifyProbeError(err);
+    if (status === null) throw err;
     await setServerStatus({ serverId: server.id, status, source: "probe" });
     const latestRevision = await getLatestRelayRevision();
     return c.json({
       status,
-      message: err.message ?? "Connection failed",
+      message:
+        err instanceof SyntaxError
+          ? "Relay answered /health but the response could not be parsed"
+          : err.message ?? "Connection failed",
       relayRevision: null,
       latestRevision,
       relayOutdated: null,
@@ -1508,6 +1523,87 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
   const actorName = getActor(c);
   const actorUserId = getActorUserId(c);
 
+  type RecordCtx = {
+    previousRevision: string | null;
+    targetRevision: string | null;
+    latestRevision: string | null;
+    /** Revision seen on /health at the end of the poll, if any. */
+    relayRevision: string | null;
+  };
+
+  // Turn the relay's own self-update record into the panel's answer.
+  // Returns null for "no usable record": the caller then keeps its result.
+  async function respondFromRecord(outcome: RelayRecordOutcome, ctx: RecordCtx) {
+    if (outcome.kind === "none") return null;
+    const effectiveLatest = ctx.targetRevision ?? ctx.latestRevision;
+    if (outcome.kind === "succeeded") {
+      const finalRevision = outcome.revision ?? ctx.relayRevision;
+      await setServerStatus({ serverId: server!.id, status: "online", source: "action" });
+      const durationSec = Math.round((Date.now() - startTime) / 1000);
+      await audit(
+        "server.relay-self-update.success",
+        targetLabel,
+        `took ${durationSec}s rev=${finalRevision?.slice(0, 7) ?? "unknown"} (relay record)`,
+        actorName,
+        actorUserId,
+      );
+      return c.json({
+        status: "online",
+        source: "relay_record",
+        previousRevision: ctx.previousRevision,
+        relayRevision: finalRevision,
+        latestRevision: effectiveLatest,
+        relayOutdated: computeRelayOutdated(finalRevision, effectiveLatest),
+      });
+    }
+    const base = {
+      relayStatus: outcome.relayStatus,
+      relayError: outcome.error,
+      previousRevision: ctx.previousRevision,
+      relayRevision: ctx.relayRevision,
+      latestRevision: effectiveLatest,
+      relayOutdated: computeRelayOutdated(ctx.relayRevision, effectiveLatest),
+    };
+    if (outcome.kind === "failed") {
+      await audit(
+        "server.relay-self-update.failed",
+        targetLabel,
+        "relay_reported_failed",
+        actorName,
+        actorUserId,
+      );
+      return c.json(
+        {
+          error: "self_update_failed",
+          kind: "relay_reported_failed",
+          message: `Relay reported that the self-update ${outcome.relayStatus}${outcome.error ? `: ${outcome.error}` : "."} Use 'Update via SSH (fallback)' to recover.`,
+          ...base,
+        },
+        502,
+      );
+    }
+    // in_progress / unverified: not a failure, the outcome is not known yet.
+    await audit(
+      "server.relay-self-update.pending",
+      targetLabel,
+      outcome.relayStatus,
+      actorName,
+      actorUserId,
+    );
+    return c.json(
+      {
+        status: "pending",
+        kind: outcome.relayStatus === "in_progress" ? "relay_in_progress" : "relay_unverified",
+        message:
+          outcome.relayStatus === "in_progress"
+            ? "The relay reports the self-update is still in progress. Check the relay status again in a minute."
+            : `The relay finished the self-update but could not verify the new revision${outcome.error ? ` (${outcome.error})` : ""}. Check the relay status.`,
+        ...base,
+      },
+      202,
+    );
+  }
+
   try {
     const previousProbe = await fetchRelayHealth(server, 5000);
     const headers: Record<string, string> = {
@@ -1529,6 +1625,20 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
       // A timeout means the relay accepted the connection but is still busy
       // (it pulls the image before answering 202), so it is not offline.
       if ((err as Error)?.name === "TimeoutError") {
+        // The relay may well have accepted the update: ask its own record
+        // before reporting a bare timeout.
+        const timeoutRecord = await readRelaySelfUpdateOutcome({
+          server,
+          previousRevision: previousProbe.revision,
+          targetRevision: null,
+        });
+        const fromRecord = await respondFromRecord(timeoutRecord, {
+          previousRevision: previousProbe.revision,
+          targetRevision: null,
+          latestRevision: await getLatestRelayRevision(),
+          relayRevision: null,
+        });
+        if (fromRecord) return fromRecord;
         await audit(
           "server.relay-self-update.failed",
           targetLabel,
@@ -1546,11 +1656,14 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
           504,
         );
       }
-      await setServerStatus({
-        serverId: server.id,
-        status: "offline",
-        source: "action",
-      });
+      const unreachableStatus = classifyProbeError(err);
+      if (unreachableStatus) {
+        await setServerStatus({
+          serverId: server.id,
+          status: unreachableStatus,
+          source: "action",
+        });
+      }
       await audit(
         "server.relay-self-update.failed",
         targetLabel,
@@ -1630,7 +1743,7 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
     if (!triggerRes.ok && !previousProbe.online) {
       await setServerStatus({
         serverId: server.id,
-        status: "offline",
+        status: previousProbe.failureStatus ?? "unknown",
         source: "action",
       });
       await audit(
@@ -1730,12 +1843,29 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
     }
 
     if (!updatedReady) {
-      const finalStatus = lastProbe.online ? "online" : "offline";
+      const finalStatus = lastProbe.online
+        ? "online"
+        : (lastProbe.failureStatus ?? "unknown");
       await setServerStatus({
         serverId: server.id,
         status: finalStatus,
         source: "action",
       });
+      // /health did not settle it. The relay's own record can: it tells a
+      // slow compose (in progress) from a real failure (helper exit code
+      // and logs). Only reached when no verified revision was seen.
+      const windowRecord = await readRelaySelfUpdateOutcome({
+        server,
+        previousRevision,
+        targetRevision,
+      });
+      const fromRecord = await respondFromRecord(windowRecord, {
+        previousRevision,
+        targetRevision,
+        latestRevision,
+        relayRevision: lastProbe.online ? lastProbe.revision : null,
+      });
+      if (fromRecord) return fromRecord;
       const kind = lastProbe.online ? "revision_unchanged" : "health_timeout";
       await audit(
         "server.relay-self-update.failed",

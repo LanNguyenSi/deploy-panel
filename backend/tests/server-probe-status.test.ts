@@ -61,6 +61,10 @@ const mServer = prisma.server as unknown as {
   findUnique: ReturnType<typeof vi.fn>;
 };
 const mSetStatus = vi.mocked(setServerStatus);
+const mApp = prisma.app as unknown as {
+  findUnique: ReturnType<typeof vi.fn>;
+  create: ReturnType<typeof vi.fn>;
+};
 
 type ActorVars = {
   Variables: { userId?: string; isAdmin?: boolean; authType?: string };
@@ -181,6 +185,28 @@ describe("POST /servers/:id/test status taxonomy", () => {
     );
   });
 
+  it("2xx with a non-JSON body writes unknown (relay answered, answer unusable), not offline", async () => {
+    const { res, body } = await testOnce(() => new Response("<html>ok</html>", { status: 200 }));
+    expect(res.status).toBe(200);
+    expect(body.status).toBe("unknown");
+    expect(body.message).toContain("could not be parsed");
+    expect(mSetStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ serverId: "srv-1", status: "unknown" }),
+    );
+    expect(mSetStatus).not.toHaveBeenCalledWith(expect.objectContaining({ status: "offline" }));
+  });
+
+  it("a local exception (Prisma on the status write) is a 500 and writes no relay status", async () => {
+    mSetStatus.mockRejectedValueOnce(
+      Object.assign(new Error("Can't reach database server"), { code: "P1001" }),
+    );
+    vi.stubGlobal("fetch", vi.fn(() => Response.json({ status: "ok" })));
+    const res = await appFor().request("/servers/srv-1/test", { method: "POST" });
+    expect(res.status).toBe(500);
+    expect(mSetStatus).toHaveBeenCalledTimes(1);
+    expect(mSetStatus).not.toHaveBeenCalledWith(expect.objectContaining({ status: "offline" }));
+  });
+
   it("connection refused stays offline", async () => {
     const { body } = await testOnce(() => Promise.reject(refusedError()));
     expect(body.status).toBe("offline");
@@ -214,6 +240,106 @@ describe("POST /servers/:serverId/sync status taxonomy", () => {
     expect(body.status).toBe("offline");
     expect(mSetStatus).toHaveBeenCalledWith(
       expect.objectContaining({ serverId: "srv-1", status: "offline" }),
+    );
+  });
+
+  it("2xx with a non-JSON body writes unknown, not offline", async () => {
+    const { res, body } = await syncOnce(() => new Response("<html>", { status: 200 }));
+    expect(res.status).toBe(500);
+    expect(body.status).toBe("unknown");
+    expect(mSetStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ serverId: "srv-1", status: "unknown" }),
+    );
+  });
+
+  it("an apps answer of the wrong shape writes unknown, not offline", async () => {
+    const { res, body } = await syncOnce(() => Response.json({ apps: "nope" }));
+    expect(res.status).toBe(500);
+    expect(body.status).toBe("unknown");
+    expect(mSetStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ serverId: "srv-1", status: "unknown" }),
+    );
+  });
+
+  it("a local exception (Prisma on app upsert) is a 500 with no status write at all", async () => {
+    mApp.findUnique.mockRejectedValueOnce(
+      Object.assign(new Error("Can't reach database server"), { code: "P1001" }),
+    );
+    const { res, body } = await syncOnce((url) =>
+      String(url).endsWith("/api/apps")
+        ? Response.json({ apps: [{ name: "a", configured: true }] })
+        : Response.json({ app: { containers: "up" } }),
+    );
+    expect(res.status).toBe(500);
+    expect(body.status).toBeUndefined();
+    expect(mSetStatus).not.toHaveBeenCalled();
+  });
+
+  it("a local exception during the per-app detail call aborts the sync as a 500 with no status write", async () => {
+    mServer.findUnique
+      .mockResolvedValueOnce(OWNED_SERVER as never) // findOwnedServer
+      .mockResolvedValueOnce(OWNED_SERVER as never) // relayRequest: /api/apps
+      .mockRejectedValueOnce(
+        Object.assign(new Error("Can't reach database server"), { code: "P1001" }),
+      ); // relayRequest: app detail
+    const { res, body } = await syncOnce(() =>
+      Response.json({ apps: [{ name: "a", configured: true }] }),
+    );
+    expect(res.status).toBe(500);
+    expect(body.status).toBeUndefined();
+    expect(mSetStatus).not.toHaveBeenCalled();
+    expect(mApp.create).not.toHaveBeenCalled();
+  });
+
+  it("a timeout writes unknown", async () => {
+    const { body } = await syncOnce(() => Promise.reject(timeoutError()));
+    expect(body.status).toBe("unknown");
+  });
+
+  it("server row vanished (panel's own 404) is a 404 with no status write", async () => {
+    // findOwnedServer found it, relayRequest's own lookup does not (race).
+    mServer.findUnique.mockResolvedValueOnce(OWNED_SERVER as never).mockResolvedValueOnce(null);
+    const { res, body } = await syncOnce(() => Response.json({ apps: [] }));
+    expect(res.status).toBe(404);
+    expect(body.error).toBe("not_found");
+    expect(mSetStatus).not.toHaveBeenCalled();
+  });
+
+  it("relay URL removed meanwhile (panel's own 400) is a configuration state: no-relay, 400, not offline", async () => {
+    mServer.findUnique
+      .mockResolvedValueOnce(OWNED_SERVER as never)
+      .mockResolvedValueOnce({ ...OWNED_SERVER, relayUrl: null } as never);
+    const { res, body } = await syncOnce(() => Response.json({ apps: [] }));
+    expect(res.status).toBe(400);
+    expect(body.error).toBe("no_relay");
+    expect(mSetStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ serverId: "srv-1", status: "no-relay" }),
+    );
+  });
+
+  it("per-app detail: relay refused -> app offline; relay answered 500 -> app unknown; local error aborts the sync", async () => {
+    const appsListing = Response.json({ apps: [{ name: "a", configured: true }] });
+    // refused on detail
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        url.endsWith("/api/apps") ? appsListing.clone() : Promise.reject(refusedError()),
+      ),
+    );
+    await appFor().request("/servers/srv-1/sync", { method: "POST" });
+    expect(mApp.create).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "offline" }) }),
+    );
+    // relay answers 500 on detail
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        url.endsWith("/api/apps") ? appsListing.clone() : new Response("x", { status: 500 }),
+      ),
+    );
+    await appFor().request("/servers/srv-1/sync", { method: "POST" });
+    expect(mApp.create).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "unknown" }) }),
     );
   });
 

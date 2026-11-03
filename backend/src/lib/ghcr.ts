@@ -8,6 +8,12 @@
  * `relayOutdated` is `null` (state `"unknown"`), never `true`.
  */
 
+import {
+  classifyProbeError,
+  probeStatusFromHttp,
+  type ProbeFailureStatus,
+} from "../services/server-status.js";
+
 export const GHCR_TOKEN_URL =
   "https://ghcr.io/token?scope=repository:lannguyensi/agent-relay:pull";
 export const GHCR_MANIFEST_URL =
@@ -201,6 +207,11 @@ export interface RelayHealthProbe {
   version: string | null;
   revision: string | null;
   data: Record<string, unknown> | null;
+  /**
+   * Why the probe is not online, in `Server.status` terms (the shared
+   * probe classifier). `null` when `online` is true.
+   */
+  failureStatus: ProbeFailureStatus | null;
 }
 
 /**
@@ -212,7 +223,7 @@ export async function fetchRelayHealth(
   timeoutMs = 5000,
 ): Promise<RelayHealthProbe> {
   if (!server.relayUrl) {
-    return { online: false, status: null, version: null, revision: null, data: null };
+    return { online: false, status: null, version: null, revision: null, data: null, failureStatus: "no-relay" };
   }
 
   try {
@@ -233,6 +244,7 @@ export async function fetchRelayHealth(
         version: null,
         revision: null,
         data: null,
+        failureStatus: probeStatusFromHttp(response.status),
       };
     }
 
@@ -248,9 +260,17 @@ export async function fetchRelayHealth(
       version,
       revision,
       data,
+      failureStatus: null,
     };
-  } catch {
-    return { online: false, status: null, version: null, revision: null, data: null };
+  } catch (err) {
+    return {
+      online: false,
+      status: null,
+      version: null,
+      revision: null,
+      data: null,
+      failureStatus: classifyProbeError(err) ?? "unknown",
+    };
   }
 }
 

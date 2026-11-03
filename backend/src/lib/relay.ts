@@ -15,8 +15,8 @@ export async function relayRequest<T>(options: RelayRequestOptions): Promise<T> 
   const { serverId, path, method = "GET", body, headers: extraHeaders, timeoutMs = 300_000 } = options;
 
   const server = await prisma.server.findUnique({ where: { id: serverId } });
-  if (!server) throw new RelayError("Server not found", 404);
-  if (!server.relayUrl) throw new RelayError("No relay URL configured for this server", 400);
+  if (!server) throw RelayError.local("Server not found", 404);
+  if (!server.relayUrl) throw RelayError.local("No relay URL configured for this server", 400);
 
   const callerHeaders = Object.fromEntries(
     Object.entries(extraHeaders ?? {}).filter(([key]) => !["content-type", "authorization"].includes(key.toLowerCase())),
@@ -45,10 +45,22 @@ export class RelayError extends Error {
   status: number;
   /** Raw response body text, when the error came from a relay HTTP response. */
   body?: string;
+  /**
+   * True when the panel raised this itself before any relay request (server
+   * row missing, no relay URL configured). `status` is then the panel's own
+   * HTTP code, not an answer from a relay.
+   */
+  local = false;
   constructor(message: string, status: number, body?: string) {
     super(message);
     this.name = "RelayError";
     this.status = status;
     this.body = body;
+  }
+
+  static local(message: string, status: number): RelayError {
+    const err = new RelayError(message, status);
+    err.local = true;
+    return err;
   }
 }

@@ -9,7 +9,8 @@ vi.mock("../src/lib/prisma.js", () => ({
 }));
 
 import { prisma } from "../src/lib/prisma.js";
-import { setServerStatus, probeStatusFromError } from "../src/services/server-status.js";
+import { RelayError } from "../src/lib/relay.js";
+import { setServerStatus, classifyProbeError } from "../src/services/server-status.js";
 import { activeInstalls, isServerMutating } from "../src/services/active-installs.js";
 
 const mUpdate = (prisma.server as unknown as { update: ReturnType<typeof vi.fn> }).update;
@@ -164,16 +165,63 @@ describe("isServerMutating", () => {
 // name is what fetch rejects with when the signal aborts with an AbortError
 // reason (manual abort, older Node timeout rejections), and it must land on
 // "unknown", not on the offline default.
-describe("probeStatusFromError", () => {
+describe("classifyProbeError", () => {
   it("maps an AbortError DOMException to unknown (aborted, not unreachable)", () => {
-    expect(probeStatusFromError(new DOMException("x", "AbortError"))).toBe("unknown");
+    expect(classifyProbeError(new DOMException("x", "AbortError"))).toBe("unknown");
   });
 
   it("maps a TimeoutError DOMException to unknown", () => {
-    expect(probeStatusFromError(new DOMException("x", "TimeoutError"))).toBe("unknown");
+    expect(classifyProbeError(new DOMException("x", "TimeoutError"))).toBe("unknown");
   });
 
   it("maps a plain Error (refused, DNS, other network failure) to offline", () => {
-    expect(probeStatusFromError(new Error("fetch failed"))).toBe("offline");
+    expect(classifyProbeError(new Error("fetch failed"))).toBe("offline");
+  });
+});
+
+describe("classifyProbeError: one classifier for /test, sync and relay-self-update", () => {
+  it("maps undici fetch failures (refused, DNS) to offline", () => {
+    expect(
+      classifyProbeError(
+        new TypeError("fetch failed", { cause: Object.assign(new Error("x"), { code: "ECONNREFUSED" }) }),
+      ),
+    ).toBe("offline");
+    expect(classifyProbeError(new TypeError("fetch failed"))).toBe("offline");
+  });
+
+  it("maps a socket error code (own or on the cause) to offline", () => {
+    expect(classifyProbeError(Object.assign(new Error("x"), { code: "ENOTFOUND" }))).toBe("offline");
+    expect(
+      classifyProbeError(new Error("x", { cause: Object.assign(new Error("y"), { code: "EAI_AGAIN" }) })),
+    ).toBe("offline");
+  });
+
+  it("maps a relay answer that cannot be parsed (SyntaxError) to unknown", () => {
+    expect(classifyProbeError(new SyntaxError("Unexpected token <"))).toBe("unknown");
+  });
+
+  it("maps a RelayError that carries a relay HTTP answer through the HTTP table", () => {
+    expect(classifyProbeError(new RelayError("Relay error (401): no", 401, "no"))).toBe("auth");
+    expect(classifyProbeError(new RelayError("Relay error (404): nf", 404, "nf"))).toBe("unknown");
+    expect(classifyProbeError(new RelayError("Relay error (500): x", 500, "x"))).toBe("unknown");
+  });
+
+  it("maps the panel's own 'no relay URL' (local 400) to no-relay, a configuration state", () => {
+    expect(classifyProbeError(RelayError.local("No relay URL configured for this server", 400))).toBe(
+      "no-relay",
+    );
+  });
+
+  it("returns null for the panel's own 404 (server not found)", () => {
+    expect(classifyProbeError(RelayError.local("Server not found", 404))).toBeNull();
+  });
+
+  it("returns null for a local exception that is no relay status (Prisma, panel bug, non-error)", () => {
+    expect(
+      classifyProbeError(Object.assign(new Error("Can't reach database"), { code: "P1001" })),
+    ).toBeNull();
+    expect(classifyProbeError(new TypeError("relayApps.filter is not a function"))).toBeNull();
+    expect(classifyProbeError(undefined)).toBeNull();
+    expect(classifyProbeError("boom")).toBeNull();
   });
 });

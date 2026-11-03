@@ -15,8 +15,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
-    const err = (await res.json().catch(() => ({ message: "Request failed" }))) as { message?: string };
-    throw new Error(err.message ?? "Request failed");
+    // Backends answer with `{ message }` (human text, sometimes next to an
+    // `error` code) or only `{ error }` (sync's 500). `message` wins when both
+    // are strings, so an error code never hides the readable text.
+    const err = (await res.json().catch(() => null)) as { message?: unknown; error?: unknown } | null;
+    const text =
+      typeof err?.message === "string" && err.message
+        ? err.message
+        : typeof err?.error === "string" && err.error
+          ? err.error
+          : "Request failed";
+    throw new Error(text);
   }
 
   return res.json() as Promise<T>;
@@ -401,7 +410,14 @@ export interface ServerRelayStatus {
 }
 
 export interface RelaySelfUpdateResponse {
+  /** "online" (updated), or "pending" (HTTP 202: the relay has not finished or could not verify). */
   status: string;
+  /** Present when the relay's own record decided the outcome. */
+  source?: "relay_record";
+  /** Pending only: why, and the relay's own state / error text. */
+  message?: string;
+  relayStatus?: "in_progress" | "unverified";
+  relayError?: string | null;
   previousRevision: string | null;
   relayRevision: string | null;
   latestRevision: string | null;

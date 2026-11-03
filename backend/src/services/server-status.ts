@@ -36,6 +36,7 @@
 
 import { prisma } from "../lib/prisma.js";
 import { isServerMutating } from "./active-installs.js";
+import { RelayError } from "../lib/relay.js";
 
 export type ServerStatusSource = "action" | "probe";
 
@@ -63,23 +64,62 @@ export function probeStatusFromHttp(httpStatus: number): "auth" | "unknown" {
   return httpStatus === 401 || httpStatus === 403 ? "auth" : "unknown";
 }
 
+const NETWORK_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ETIMEDOUT",
+  "EPIPE",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
+function isNetworkFailure(err: unknown): boolean {
+  const e = err as { message?: unknown; code?: unknown; cause?: unknown } | null;
+  if (!e || typeof e !== "object") return false;
+  // undici reports a refused connection / DNS failure as
+  // TypeError("fetch failed") with the socket error as `cause`.
+  if (e.message === "fetch failed") return true;
+  if (typeof e.code === "string" && NETWORK_ERROR_CODES.has(e.code)) return true;
+  const cause = e.cause as { code?: unknown } | null | undefined;
+  return typeof cause?.code === "string" && NETWORK_ERROR_CODES.has(cause.code);
+}
+
+export type ProbeFailureStatus = "auth" | "unknown" | "offline" | "no-relay";
+
 /**
- * Map a thrown probe failure (no HTTP answer at all) to a
- * `Server.status`.
+ * The one classifier for a failed relay probe (POST /:id/test, sync,
+ * relay self-update). Returns the `Server.status` to write, or `null` when
+ * the failure is not about the relay at all (a Prisma error, a panel bug,
+ * a missing server row): the caller must then leave the status untouched and
+ * surface a plain error.
  *
- *   - Probe timeout or aborted signal -> "unknown": `AbortSignal.timeout`
- *     rejects with a `TimeoutError` DOMException (an abort with an
- *     `AbortError` reason reads the same way); the call was cut short
- *     while the relay was reachable, not refused. Transient, not
- *     "offline".
- *   - everything else (connection refused, DNS failure, other
- *     network errors) -> "offline": the relay is genuinely
- *     unreachable.
+ *   - RelayError carrying a relay HTTP answer -> `probeStatusFromHttp`
+ *     (401/403 "auth", anything else "unknown").
+ *   - RelayError raised by the panel itself: 400 (no relay URL) ->
+ *     "no-relay", a configuration state rather than reachability; any
+ *     other local one (404 server not found) -> null.
+ *   - SyntaxError (a relay answer that cannot be parsed, or whose shape is
+ *     wrong) -> "unknown": the relay is alive, its answer is unusable.
+ *   - Timeout / aborted signal -> "unknown": `AbortSignal.timeout` rejects
+ *     with a `TimeoutError` DOMException; the relay was reachable, just slow.
+ *   - network failure (fetch TypeError, connection refused, DNS, reset)
+ *     -> "offline".
+ *   - anything else -> null.
  */
-export function probeStatusFromError(err: unknown): "unknown" | "offline" {
+export function classifyProbeError(err: unknown): ProbeFailureStatus | null {
+  if (err instanceof RelayError) {
+    if (!err.local) return probeStatusFromHttp(err.status);
+    return err.status === 400 ? "no-relay" : null;
+  }
+  if (err instanceof SyntaxError) return "unknown";
   const name = (err as { name?: unknown } | null)?.name;
   if (name === "TimeoutError" || name === "AbortError") return "unknown";
-  return "offline";
+  if (isNetworkFailure(err)) return "offline";
+  return null;
 }
 
 /**

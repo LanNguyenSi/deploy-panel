@@ -153,6 +153,13 @@ export default function ServerDetailPage() {
     setSelfUpdatingRelay(true);
     try {
       const res = await selfUpdateServerRelay(id);
+      if (res.status === "pending") {
+        // Not a failure: the relay's own record says it is still running or
+        // could not verify the new revision.
+        toast(`Relay self-update pending (${res.relayStatus === "unverified" ? "unverified" : "in progress"}): ${res.message ?? "check the relay status again shortly"}`, "info");
+        await load();
+        return;
+      }
       const prevShort = res.previousRevision ? res.previousRevision.slice(0, 7) : "previous";
       const nextShort = res.relayRevision ? res.relayRevision.slice(0, 7) : "latest";
       toast(`Relay updated (${prevShort} → ${nextShort})`, "success");
