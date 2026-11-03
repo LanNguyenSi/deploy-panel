@@ -4,7 +4,7 @@
 // relay 4xx rejection or an SSE error, per PR #128).
 
 import type { CSSProperties } from "react";
-import { ROLLBACK_HEALTH_STEP_NAME, type DeployOutcome } from "@/lib/status";
+import { BUILD_CACHE_PRUNE_STEP_NAME, ROLLBACK_HEALTH_STEP_NAME, type DeployOutcome } from "@/lib/status";
 
 export interface DeployStep {
   name: string;
@@ -108,17 +108,32 @@ function statusModifier(status: string): "success" | "skipped" | "failed" {
   return status === "success" ? "success" : status === "skipped" ? "skipped" : "failed";
 }
 
+/**
+ * The relay's best-effort `build cache prune` step (see BUILD_CACHE_PRUNE_STEP_NAME)
+ * is rendered informational when it failed or was skipped: agent-relay runs it
+ * only after the deploy already reached its terminal result, so its outcome is
+ * never a deploy failure and must not carry the red failure style. A successful
+ * prune step and every other step keep their normal styling.
+ */
+function isBestEffortStep(step: DeployStep): boolean {
+  return step.name === BUILD_CACHE_PRUNE_STEP_NAME && (step.status === "failure" || step.status === "skipped");
+}
+
 export function DeployStepRow({ step }: { step: DeployStep }) {
   const text = step.output ?? step.message;
   const hasOutput = typeof text === "string" && text.length > 0;
+  const bestEffort = isBestEffortStep(step);
+  const modifier = bestEffort ? "best-effort" : statusModifier(step.status);
+  const icon = bestEffort ? "!" : step.status === "success" ? "✓" : step.status === "skipped" ? "—" : "✗";
 
   return (
     <div>
-      <div className={`deploy-step deploy-step-${statusModifier(step.status)}`}>
-        <span className="deploy-step-icon">
-          {step.status === "success" ? "✓" : step.status === "skipped" ? "—" : "✗"}
-        </span>
+      <div className={`deploy-step deploy-step-${modifier}`}>
+        <span className="deploy-step-icon">{icon}</span>
         <span style={{ color: "var(--text)" }}>{step.name}</span>
+        {bestEffort && (
+          <span data-testid="best-effort-label" style={{ color: "var(--warning-fg)", fontSize: "var(--text-xs)" }}>(best effort)</span>
+        )}
         {step.critical === true && (
           <span style={{ color: "var(--muted)", fontSize: "var(--text-xs)" }}>(critical)</span>
         )}
