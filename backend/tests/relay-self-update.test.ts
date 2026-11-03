@@ -568,7 +568,7 @@ describe("POST /servers/:id/relay-self-update", () => {
     );
   });
 
-  it("returns 502 health_timeout and sets Server.status to offline when the relay does not recover after self-update", async () => {
+  it("returns 502 health_timeout and sets Server.status to unknown (relay answers 502, not unreachable) when the relay does not recover after self-update", async () => {
     mServer.findUnique.mockResolvedValue(OWNED_SERVER);
     let healthCalls = 0;
 
@@ -608,7 +608,7 @@ describe("POST /servers/:id/relay-self-update", () => {
     expect(mServer.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: "srv-1" },
-        data: expect.objectContaining({ status: "offline" }),
+        data: expect.objectContaining({ status: "unknown" }),
       }),
     );
     expect(activeInstalls.has("self-update:srv-1")).toBe(false);
@@ -664,7 +664,7 @@ describe("POST /servers/:id/relay-self-update", () => {
   }
 
   for (const status of [404, 502]) {
-    it(`returns 502 relay_down and sets Server.status to offline when /health and the trigger both fail with ${status} (stopped relay behind Traefik)`, async () => {
+    it(`returns 502 relay_down and sets Server.status to unknown (the proxy answered ${status}) when /health and the trigger both fail with ${status} (stopped relay behind Traefik)`, async () => {
       mServer.findUnique.mockResolvedValue(OWNED_SERVER);
       fetchMock.mockImplementation(async () =>
         new Response("404 page not found", { status, headers: { "content-type": "text/plain" } }),
@@ -679,7 +679,7 @@ describe("POST /servers/:id/relay-self-update", () => {
       expect(mServer.update).toHaveBeenCalledWith(
         expect.objectContaining({
           where: { id: "srv-1" },
-          data: expect.objectContaining({ status: "offline" }),
+          data: expect.objectContaining({ status: "unknown" }),
         }),
       );
       expect(activeInstalls.has("self-update:srv-1")).toBe(false);

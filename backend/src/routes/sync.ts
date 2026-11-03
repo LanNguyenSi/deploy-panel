@@ -4,8 +4,7 @@ import { relayRequest, RelayError } from "../lib/relay.js";
 import { findOwnedServer, getActorContext } from "../lib/ownership.js";
 import {
   setServerStatus,
-  probeStatusFromHttp,
-  probeStatusFromError,
+  classifyProbeError,
 } from "../services/server-status.js";
 
 export const syncRouter = new Hono();
@@ -34,10 +33,16 @@ syncRouter.post("/:serverId/sync", async (c) => {
 
   try {
     // Get all apps from relay
-    const { apps: relayApps } = await relayRequest<{ apps: RelayApp[] }>({
+    const listing = await relayRequest<{ apps: RelayApp[] }>({
       serverId,
       path: "/api/apps",
     });
+    const relayApps = listing?.apps;
+    // A relay answer of the wrong shape is a relay problem ("unknown"), not a
+    // panel bug; the shared classifier maps SyntaxError that way.
+    if (!Array.isArray(relayApps)) {
+      throw new SyntaxError("Relay /api/apps answered with an unexpected shape");
+    }
 
     const configuredApps = relayApps.filter((a) => a.configured);
     let created = 0;
@@ -53,8 +58,12 @@ syncRouter.post("/:serverId/sync", async (c) => {
         });
         // If relay returns app detail with containers info, app is running
         newStatus = detail.app?.containers ? "healthy" : "unhealthy";
-      } catch {
-        newStatus = "offline";
+      } catch (err) {
+        // Only an unreachable relay makes the app "offline"; a relay that
+        // answered badly leaves it "unknown"; a local error aborts the sync.
+        const probe = classifyProbeError(err);
+        if (probe === null) throw err;
+        newStatus = probe === "offline" ? "offline" : "unknown";
       }
 
       // Upsert in a single query — always update health + status
@@ -92,15 +101,23 @@ syncRouter.post("/:serverId/sync", async (c) => {
       updated,
     });
   } catch (err: any) {
-    // Classify the failure the same way POST /:id/test does.
-    // A RelayError carries the relay's HTTP status (401/403 -> "auth",
-    // other non-2xx -> "unknown"); a thrown timeout is "unknown";
-    // refused / DNS / other network errors stay "offline".
-    const status =
-      err instanceof RelayError
-        ? probeStatusFromHttp(err.status)
-        : probeStatusFromError(err);
+    // Same classifier as POST /:id/test. A RelayError carries the relay's HTTP
+    // status (401/403 -> "auth", other non-2xx -> "unknown"); a timeout or an
+    // unparseable answer is "unknown"; only network failures are "offline".
+    // No relay URL configured is a configuration state ("no-relay"), not
+    // reachability. A local exception (Prisma, panel bug) is not a relay
+    // status: 500 to the caller, Server.status unchanged.
+    const status = classifyProbeError(err);
+    if (status === null) {
+      if (err instanceof RelayError && err.local && err.status === 404) {
+        return c.json({ error: "not_found" }, 404);
+      }
+      return c.json({ error: err?.message ?? "sync_failed" }, 500);
+    }
     await setServerStatus({ serverId, status, source: "probe" });
+    if (status === "no-relay") {
+      return c.json({ error: "no_relay", message: err.message, status }, 400);
+    }
     return c.json({ error: err.message, status }, 500);
   }
 });

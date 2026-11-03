@@ -81,6 +81,22 @@ describe("request() branches (exercised through real exported functions)", () =>
     await expect(api.getHealth()).rejects.toThrow("server exploded");
   });
 
+  // request() error text: `message` wins over `error` when both are strings
+  // (self-update answers { error: "<code>", message: "<text>" }); `error`
+  // alone covers sync's 500 ({ error: "<text>", status }).
+  it.each([
+    ["only message", { message: "from message" }, "from message"],
+    ["only error", { error: "from error" }, "from error"],
+    ["both (message wins)", { error: "code", message: "readable text" }, "readable text"],
+    ["neither", { status: "unknown" }, "Request failed"],
+    ["empty message falls through to error", { message: "", error: "from error" }, "from error"],
+    ["non-string message and error", { message: 42, error: { a: 1 } }, "Request failed"],
+  ])("failure text with %s", async (_name, body, expected) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(body, 500));
+
+    await expect(api.getHealth()).rejects.toThrow(new Error(expected));
+  });
+
   it("throws 'Request failed' when the not-ok response has no parseable json body", async () => {
     fetchMock.mockResolvedValueOnce(noJsonErrorResponse(500));
 

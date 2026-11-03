@@ -179,11 +179,15 @@ describe("ServersPage: relay probe status badges (auth, unknown)", () => {
 
     const authBadge = await screen.findByText("auth failed");
     expect(authBadge).toHaveClass("badge", "badge-warning");
-    expect(authBadge.getAttribute("title")).toMatch(/relay token/);
+    expect(authBadge).toHaveAttribute(
+      "title",
+      "The relay rejected the stored token; check the relay token on this server",
+    );
     expect(screen.getByTestId("status-hint-srv-auth")).toHaveTextContent("check relay token");
 
     const unknownBadge = screen.getByText("unknown");
     expect(unknownBadge).toHaveClass("badge", "badge-neutral");
+    expect(unknownBadge).not.toHaveAttribute("title");
     expect(screen.queryByTestId("status-hint-srv-unk")).not.toBeInTheDocument();
   });
 });

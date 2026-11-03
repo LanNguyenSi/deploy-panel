@@ -448,6 +448,37 @@ describe("ServerDetailPage — relay outdated badge, one-click Update relay, and
     expect(alert.textContent?.startsWith("✓ ")).toBe(true);
   });
 
+  for (const [relayStatus, label] of [
+    ["in_progress", "in progress"],
+    ["unverified", "unverified"],
+  ] as const) {
+    it(`shows an info toast, not an error, when the relay's own record is ${relayStatus} (pending result)`, async () => {
+      mGetServerRelayStatus.mockResolvedValue({
+        relayRevision: OLD_SHA,
+        latestRevision: NEW_SHA,
+        relayOutdated: true,
+        state: "outdated",
+      });
+      mSelfUpdateServerRelay.mockResolvedValueOnce({
+        status: "pending",
+        relayStatus,
+        message: `relay says ${relayStatus}`,
+        previousRevision: OLD_SHA,
+        relayRevision: null,
+        latestRevision: NEW_SHA,
+        relayOutdated: null,
+      });
+
+      const user = await renderPage();
+      await user.click(screen.getByRole("button", { name: "Update relay" }));
+
+      const alert = await screen.findByRole("alert");
+      expect(alert).toHaveTextContent(`Relay self-update pending: relay says ${relayStatus}`);
+      expect(alert.textContent?.startsWith("✗ ")).toBe(false);
+      expect(alert).not.toHaveTextContent("Relay updated");
+    });
+  }
+
   it("shows an error toast when selfUpdateServerRelay fails and keeps 'Update via SSH (fallback)' reachable", async () => {
     mGetServerRelayStatus.mockResolvedValue({
       relayRevision: OLD_SHA,
