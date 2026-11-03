@@ -9,9 +9,9 @@ export type LoggedStep = { name: string; status: string; durationMs?: number; [k
  * its best-effort post-deploy build cache prune. The relay runs it after the
  * deploy has already reached its terminal result and never lets this step's
  * outcome (success, failure or skip) change that result, so a failure or a
- * skip here is NOT a deploy failure. Connection-lost recovery must ignore it
- * when deciding success (see recoverBrokenDeployBody): a failed prune on an
- * otherwise healthy deploy is still a success, not a red step in a green deploy.
+ * skip here is NOT a deploy failure. Connection-lost recovery and the stream
+ * no-done inference ignore it (isBuildCachePruneStep, hasRollbackOrFailedStep):
+ * a failed prune on a healthy deploy is a success, not a red step in a green deploy.
  * The frontend mirrors this name in its own single definition
  * (BUILD_CACHE_PRUNE_STEP_NAME in frontend/src/lib/status.ts; the two are kept
  * byte-equal by frontend/src/lib/deploy-steps-prune-contract.test.ts).
@@ -285,9 +285,7 @@ async function recoverBrokenDeployBody(
     });
   const existingSteps = readExistingSteps(existingDeploy?.log);
   // A best-effort `build cache prune` step never changes the relay's deploy result, so its failure/skip is not a deploy failure (see BUILD_CACHE_PRUNE_STEP_NAME); any other failed step or a rollback step still vetoes the optimistic success verdict.
-  const hasRollbackOrFailure = existingSteps.some(
-    (s) => s.name !== BUILD_CACHE_PRUNE_STEP_NAME && (s.status === "failure" || (typeof s.name === "string" && s.name.startsWith("rollback"))),
-  );
+  const hasRollbackOrFailure = hasRollbackOrFailedStep(existingSteps);
 
   const verdict = await verifyDeployHealth({
     serverId,
@@ -394,4 +392,22 @@ async function recoverBrokenDeployBody(
       data: { status: "unhealthy" },
     }).catch(() => {});
   }
+}
+
+/** True for the relay's best-effort prune step, whatever its status. */
+export function isBuildCachePruneStep(step: { name?: unknown }): boolean {
+  return step.name === BUILD_CACHE_PRUNE_STEP_NAME;
+}
+
+/**
+ * True when the accumulated steps contain a deploy failure the optimistic
+ * success verdict must not override: a failed step or a `rollback*` step. The
+ * best-effort prune step is ignored (any status). Shared by connection-lost
+ * recovery and the stream-ended-without-done inference in stream-deploy.ts so
+ * both apply the same rule.
+ */
+export function hasRollbackOrFailedStep(steps: ReadonlyArray<{ name?: unknown; status?: unknown }>): boolean {
+  return steps.some(
+    (s) => !isBuildCachePruneStep(s) && (s.status === "failure" || (typeof s.name === "string" && s.name.startsWith("rollback"))),
+  );
 }
