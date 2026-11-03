@@ -11,6 +11,20 @@ export type DeployOutcome = "success" | "rolled_back_healthy" | "outage";
 /** The step agent-relay streams after an automatic rollback has restarted the previous stack and probed it. */
 export const ROLLBACK_HEALTH_STEP_NAME = "rollback: health check";
 
+/**
+ * The best-effort post-deploy `build cache prune` step agent-relay emits only
+ * after the deploy has already reached its terminal result, so its failure or
+ * skip never changes that result. DeploySteps renders it as informational
+ * (never the red failure style) instead of a real failure.
+ *
+ * The frontend cannot import the backend, so this is the frontend's single
+ * definition; it mirrors `BUILD_CACHE_PRUNE_STEP_NAME` in
+ * `backend/src/lib/deploy-recovery.ts`, and `deploy-steps-prune-contract.test.ts`
+ * keeps the two byte-equal (a drift on either side would silently red-flag a
+ * healthy deploy's prune step in the UI while the backend still ignores it).
+ */
+export const BUILD_CACHE_PRUNE_STEP_NAME = "build cache prune";
+
 interface OutcomeStep {
   name: string;
   status: string;

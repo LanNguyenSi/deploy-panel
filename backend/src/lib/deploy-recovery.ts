@@ -5,6 +5,20 @@ import { checkDeployTarget, type DeployTargetCheck } from "./deploy-target.js";
 export type LoggedStep = { name: string; status: string; durationMs?: number; [k: string]: unknown };
 
 /**
+ * The step the deploy relay (agent-relay, see its docs/integration.md) emits as
+ * its best-effort post-deploy build cache prune. The relay runs it after the
+ * deploy has already reached its terminal result and never lets this step's
+ * outcome (success, failure or skip) change that result, so a failure or a
+ * skip here is NOT a deploy failure. Connection-lost recovery must ignore it
+ * when deciding success (see recoverBrokenDeployBody): a failed prune on an
+ * otherwise healthy deploy is still a success, not a red step in a green deploy.
+ * The frontend mirrors this name in its own single definition
+ * (BUILD_CACHE_PRUNE_STEP_NAME in frontend/src/lib/status.ts; the two are kept
+ * byte-equal by frontend/src/lib/deploy-steps-prune-contract.test.ts).
+ */
+export const BUILD_CACHE_PRUNE_STEP_NAME = "build cache prune";
+
+/**
  * Deploy ids this PROCESS is currently driving, refcounted rather than a
  * plain Set: recoverBrokenDeploy always self-registers (see below) on top
  * of whatever the caller already registered, so a route that hands a
@@ -270,8 +284,9 @@ async function recoverBrokenDeployBody(
       return null;
     });
   const existingSteps = readExistingSteps(existingDeploy?.log);
+  // A best-effort `build cache prune` step never changes the relay's deploy result, so its failure/skip is not a deploy failure (see BUILD_CACHE_PRUNE_STEP_NAME); any other failed step or a rollback step still vetoes the optimistic success verdict.
   const hasRollbackOrFailure = existingSteps.some(
-    (s) => s.status === "failure" || (typeof s.name === "string" && s.name.startsWith("rollback")),
+    (s) => s.name !== BUILD_CACHE_PRUNE_STEP_NAME && (s.status === "failure" || (typeof s.name === "string" && s.name.startsWith("rollback"))),
   );
 
   const verdict = await verifyDeployHealth({

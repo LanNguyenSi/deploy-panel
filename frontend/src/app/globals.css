@@ -985,6 +985,13 @@ a.status-row:hover .status-row-subject {
   color: var(--muted);
 }
 
+/* Best-effort step (the relay's build cache prune): amber/informational, never
+   the red failure style, so a failed prune never reads as a failed deploy. */
+.deploy-step-best-effort .deploy-step-icon {
+  background: var(--warning-muted);
+  color: var(--warning-fg);
+}
+
 .deploy-step-duration {
   color: var(--muted);
   font-size: var(--text-xs);

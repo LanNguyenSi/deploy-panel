@@ -174,6 +174,75 @@ describe("recoverBrokenDeploy", () => {
   });
 });
 
+// The deploy relay (agent-relay) runs a best-effort `build cache prune` step
+// AFTER the deploy already reached its terminal result, and its failure or skip
+// never changes that result. Connection-lost recovery must therefore ignore a
+// step with that name when deciding success: a real failed step (or a rollback
+// step) still vetoes the optimistic success verdict, but a failed or skipped
+// prune step does not. A real failure always wins over a co-present prune step.
+describe("recoverBrokenDeploy: the best-effort build cache prune step never decides the outcome", () => {
+  const PRUNE_FAILED = { name: "build cache prune", status: "failure", durationMs: 1200, output: "docker builder prune failed" };
+  const PRUNE_SKIPPED = { name: "build cache prune", status: "skipped", durationMs: 0 };
+  const OK_STEP = { name: "compose up", status: "success", durationMs: 800 };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mDeployFindFirst.mockResolvedValue(null);
+    mockTargetReached();
+  });
+
+  it("(a) a lost stream after a healthy deploy whose prune step failed recovers as success", async () => {
+    mDeployFindUnique.mockResolvedValue({
+      log: JSON.stringify([OK_STEP, PRUNE_FAILED]),
+      createdAt: DEPLOY_START,
+    });
+    mGate.mockResolvedValue({ healthy: true });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("success");
+    expect(lastCall(mAppUpdate).data.status).toBe("healthy");
+  });
+
+  it("(d) a lost stream where ONLY the prune step failed (nothing else) recovers as success", async () => {
+    mDeployFindUnique.mockResolvedValue({
+      log: JSON.stringify([PRUNE_FAILED]),
+      createdAt: DEPLOY_START,
+    });
+    mGate.mockResolvedValue({ healthy: true });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("success");
+  });
+
+  it("(c) a lost stream whose prune step was skipped is unaffected and recovers as success", async () => {
+    mDeployFindUnique.mockResolvedValue({
+      log: JSON.stringify([OK_STEP, PRUNE_SKIPPED]),
+      createdAt: DEPLOY_START,
+    });
+    mGate.mockResolvedValue({ healthy: true });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("success");
+  });
+
+  it("(b) a real failed step still wins over a co-present prune step and records the deploy failed", async () => {
+    mDeployFindUnique.mockResolvedValue({
+      log: JSON.stringify([{ name: "compose up", status: "failure", durationMs: 0, output: "exit 1" }, PRUNE_FAILED]),
+      createdAt: DEPLOY_START,
+    });
+    mGate.mockResolvedValue({ healthy: true });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps.at(-1).output).toContain("rollback");
+  });
+});
+
 // A healthy probe is also true when the relay was cut off before the git
 // pull: the old containers keep running, so the deploy never happened. The
 // connection-lost recovery therefore applies the same target check as the
