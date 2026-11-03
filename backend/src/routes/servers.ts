@@ -1576,7 +1576,7 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
         {
           error: "self_update_failed",
           kind: "relay_reported_failed",
-          message: `Relay reported that the self-update ${outcome.relayStatus}${outcome.error ? `: ${outcome.error}` : "."} Use 'Update via SSH (fallback)' to recover.`,
+          message: `${outcome.error ? outcome.error.replace(/[.\s]+$/, "") : `The relay marked the self-update as ${outcome.relayStatus}`}. Use 'Update via SSH (fallback)' to recover.`,
           ...base,
         },
         502,
@@ -1596,7 +1596,7 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
         kind: outcome.relayStatus === "in_progress" ? "relay_in_progress" : "relay_unverified",
         message:
           outcome.relayStatus === "in_progress"
-            ? "The relay reports the self-update is still in progress. Check the relay status again in a minute."
+            ? "It is still running on the relay. Check the relay status again in a minute."
             : `The relay finished the self-update but could not verify the new revision${outcome.error ? ` (${outcome.error})` : ""}. Check the relay status.`,
         ...base,
       },
@@ -1631,6 +1631,8 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
           server,
           previousRevision: previousProbe.revision,
           targetRevision: null,
+          mode: "timeout",
+          notBefore: startTime,
         });
         const fromRecord = await respondFromRecord(timeoutRecord, {
           previousRevision: previousProbe.revision,
@@ -1858,6 +1860,8 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
         server,
         previousRevision,
         targetRevision,
+        mode: "window",
+        notBefore: startTime,
       });
       const fromRecord = await respondFromRecord(windowRecord, {
         previousRevision,

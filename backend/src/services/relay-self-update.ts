@@ -38,8 +38,23 @@ export interface ReadRecordOpts {
   previousRevision: string | null;
   /** Revision the panel expects after the update, if known. */
   targetRevision: string | null;
+  /**
+   * "window": the poll window ended after a 202, so the relay wrote this
+   * attempt's record before answering. "timeout": the trigger timed out
+   * during the relay's image pull, BEFORE it writes the new record, so any
+   * record present then is most likely the previous attempt's; only an
+   * in_progress record that provably belongs to this attempt is decisive
+   * (a succeeded or failed one never is: it cannot be told apart from the
+   * earlier attempt's).
+   */
+  mode: "window" | "timeout";
+  /** Epoch ms the trigger was sent; a record requested before it (minus skew) is not ours. */
+  notBefore: number;
   timeoutMs?: number;
 }
+
+/** Tolerated clock difference between panel and relay host. */
+const CLOCK_SKEW_MS = 120_000;
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v : null;
@@ -65,25 +80,44 @@ export async function readRelaySelfUpdateOutcome(
     const state = body?.state;
     if (!state || typeof state !== "object") return { kind: "none" };
 
-    // A record from an earlier update must not decide this one: when both
-    // sides know the revision the relay ran before the trigger, or the
-    // revision the update aims at, they have to agree.
+    // The record has to provably belong to this attempt. It must have been
+    // requested after the trigger was sent (allowing for clock skew), must
+    // not contradict the revisions the panel knows, and must match at least
+    // one of them (previous revision the relay ran, or the target). With
+    // nothing to anchor on the record is not decisive.
+    const requestedAt = Date.parse(String(state.requestedAt));
+    if (!Number.isFinite(requestedAt) || requestedAt < opts.notBefore - CLOCK_SKEW_MS) {
+      return { kind: "none" };
+    }
     const recPrev = normalizeRevision(state.previousRevision);
+    const recTarget = normalizeRevision(state.targetRevision);
     if (recPrev && opts.previousRevision && recPrev !== opts.previousRevision) {
       return { kind: "none" };
     }
-    const recTarget = normalizeRevision(state.targetRevision);
     if (recTarget && opts.targetRevision && recTarget !== opts.targetRevision) {
+      return { kind: "none" };
+    }
+    const prevMatches = !!recPrev && !!opts.previousRevision;
+    const targetMatches = !!recTarget && !!opts.targetRevision;
+    if (opts.mode === "timeout") {
+      // Only the previous-revision anchor is available here (the target is
+      // not known before the relay's pull finishes), and only a running
+      // update is reported.
+      if (state.status !== "in_progress" || !prevMatches) return { kind: "none" };
+    } else if (!prevMatches && !targetMatches) {
       return { kind: "none" };
     }
 
     const error = str(state.error);
     switch (state.status) {
-      case "succeeded":
-        return {
-          kind: "succeeded",
-          revision: normalizeRevision(body?.revision) ?? recTarget,
-        };
+      case "succeeded": {
+        const live = normalizeRevision(body?.revision);
+        // The relay's current revision and the update's target must agree.
+        if (live && recTarget && live !== recTarget) return { kind: "none" };
+        const revision = live ?? recTarget;
+        if (!revision) return { kind: "none" };
+        return { kind: "succeeded", revision };
+      }
       case "failed":
       case "refused":
         return { kind: "failed", relayStatus: state.status, error };

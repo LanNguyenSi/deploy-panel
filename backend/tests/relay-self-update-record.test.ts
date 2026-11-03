@@ -108,6 +108,8 @@ describe("POST /servers/:id/relay-self-update reads the relay's own record", () 
    */
   function relay(opts: {
     healthAfter: string;
+    /** First /health answer (pre-trigger probe); default: online at OLD_SHA. */
+    firstHealth?: () => Response;
     trigger?: RecordResponder;
     record: RecordResponder;
   }) {
@@ -116,6 +118,7 @@ describe("POST /servers/:id/relay-self-update reads the relay's own record", () 
       const url = String(input);
       if (url === `${RELAY}/health`) {
         healthCalls += 1;
+        if (healthCalls === 1 && opts.firstHealth) return opts.firstHealth();
         return jsonRes({
           status: "ok",
           version: "0.6.0",
@@ -144,6 +147,7 @@ describe("POST /servers/:id/relay-self-update reads the relay's own record", () 
     tag: "latest",
     previousRevision: OLD_SHA,
     targetRevision: NEW_SHA,
+    requestedAt: new Date().toISOString(),
     ...over,
   });
 
@@ -205,8 +209,31 @@ describe("POST /servers/:id/relay-self-update reads the relay's own record", () 
         relayStatus: "failed",
         relayError: "Helper container exited with code 17: pull access denied",
       });
-      expect(body.message).toContain("exited with code 17: pull access denied");
+      expect(body.message).toBe(
+        "Helper container exited with code 17: pull access denied. Use 'Update via SSH (fallback)' to recover.",
+      );
       expect(auditedDetail("server.relay-self-update.failed")).toBe("relay_reported_failed");
+    });
+
+    it("a failed record without error text names the relay's status in the message", async () => {
+      relay({
+        healthAfter: OLD_SHA,
+        record: () => jsonRes({ revision: OLD_SHA, state: state({ status: "failed" }) }),
+      });
+      const { body } = await selfUpdate();
+      expect(body.message).toBe(
+        "The relay marked the self-update as failed. Use 'Update via SSH (fallback)' to recover.",
+      );
+    });
+
+    it("trailing dots and whitespace of the relay's error are trimmed before the recovery hint", async () => {
+      relay({
+        healthAfter: OLD_SHA,
+        record: () => jsonRes({ revision: OLD_SHA, state: state({ status: "failed", error: "pull denied.\n" }) }),
+      });
+      const { body } = await selfUpdate();
+      expect(body.message).toBe("pull denied. Use 'Update via SSH (fallback)' to recover.");
+      expect(body.relayError).toBe("pull denied.\n");
     });
 
     it("refused is reported like failed", async () => {
@@ -236,6 +263,11 @@ describe("POST /servers/:id/relay-self-update reads the relay's own record", () 
       expect(res.status).toBe(202);
       expect(body).toMatchObject({ status: "pending", kind, relayStatus });
       expect(body.error).toBeUndefined();
+      expect(String(body.message)).toContain(
+        relayStatus === "in_progress"
+          ? "It is still running on the relay. Check the relay status again in a minute."
+          : "could not verify the new revision",
+      );
       expect(auditedDetail("server.relay-self-update.pending")).toBe(relayStatus);
       expect(auditedDetail("server.relay-self-update.failed")).toBeUndefined();
     });
@@ -319,6 +351,81 @@ describe("POST /servers/:id/relay-self-update reads the relay's own record", () 
       const { body } = await selfUpdate();
       expect(body).toMatchObject({ kind: "health_timeout" });
     });
+    it("succeeded record without a top-level revision reports the record's target revision", async () => {
+      relay({
+        healthAfter: OLD_SHA,
+        record: () => jsonRes({ state: state({ status: "succeeded" }) }),
+      });
+      const { res, body } = await selfUpdate();
+      expect(res.status).toBe(200);
+      expect(body).toMatchObject({ status: "online", source: "relay_record", relayRevision: NEW_SHA });
+    });
+
+    it("succeeded record whose target disagrees with the relay's live revision is ignored", async () => {
+      relay({
+        healthAfter: OLD_SHA,
+        record: () => jsonRes({ revision: OLD_SHA, state: state({ status: "succeeded" }) }),
+      });
+      const { body } = await selfUpdate();
+      expect(body).toMatchObject({ kind: "revision_unchanged" });
+    });
+
+    it("succeeded record with no revision anywhere is ignored", async () => {
+      relay({
+        healthAfter: OLD_SHA,
+        record: () => jsonRes({ state: state({ status: "succeeded", targetRevision: null }) }),
+      });
+      const { body } = await selfUpdate();
+      expect(body).toMatchObject({ kind: "revision_unchanged" });
+    });
+
+    it("a record requested long before the trigger is ignored (clock-skew window exceeded)", async () => {
+      relay({
+        healthAfter: OLD_SHA,
+        record: () =>
+          jsonRes({
+            revision: NEW_SHA,
+            state: state({ status: "succeeded", requestedAt: new Date(Date.now() - 600_000).toISOString() }),
+          }),
+      });
+      const { body } = await selfUpdate();
+      expect(body).toMatchObject({ kind: "revision_unchanged" });
+    });
+
+    it("a record without a parseable requestedAt is ignored", async () => {
+      relay({
+        healthAfter: OLD_SHA,
+        record: () =>
+          jsonRes({ revision: NEW_SHA, state: state({ status: "succeeded", requestedAt: "garbage" }) }),
+      });
+      const { body } = await selfUpdate();
+      expect(body).toMatchObject({ kind: "revision_unchanged" });
+    });
+
+    it("pre-trigger probe failed: the record is anchored by the target revision the relay announced", async () => {
+      relay({
+        healthAfter: OLD_SHA,
+        firstHealth: () => new Response("down", { status: 502 }),
+        record: () => jsonRes({ revision: NEW_SHA, state: state({ status: "succeeded", previousRevision: OLD_SHA }) }),
+      });
+      const { res, body } = await selfUpdate();
+      expect(res.status).toBe(200);
+      expect(body).toMatchObject({ source: "relay_record" });
+    });
+
+    it("no revision anchor at all (neither previous nor target known on both sides): ignored", async () => {
+      relay({
+        healthAfter: OLD_SHA,
+        firstHealth: () => new Response("down", { status: 502 }),
+        trigger: () => jsonRes({ status: "accepted" }, 202),
+        record: () =>
+          jsonRes({ revision: NEW_SHA, state: state({ status: "failed", error: "x", previousRevision: null, targetRevision: null }) }),
+      });
+      // no GHCR latest either
+      const { body } = await selfUpdate();
+      expect(body.kind).not.toBe("relay_reported_failed");
+    });
+
   });
 
   describe("source precedence", () => {
@@ -337,34 +444,16 @@ describe("POST /servers/:id/relay-self-update reads the relay's own record", () 
     });
   });
 
-  describe("trigger timeout", () => {
+  describe("trigger timeout (the relay writes its new record only after the image pull)", () => {
     const timeout = () => {
       throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
     };
+    const noStatusWrite = () =>
+      expect(mServer.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ status: expect.anything() }) }),
+      );
 
-    it("record succeeded -> 200 online (the pull was just slow)", async () => {
-      relay({
-        healthAfter: NEW_SHA,
-        trigger: timeout,
-        record: () => jsonRes({ revision: NEW_SHA, state: state({ status: "succeeded" }) }),
-      });
-      const { res, body } = await selfUpdate();
-      expect(res.status).toBe(200);
-      expect(body).toMatchObject({ status: "online", source: "relay_record", relayRevision: NEW_SHA });
-    });
-
-    it("record failed -> 502 relay_reported_failed", async () => {
-      relay({
-        healthAfter: OLD_SHA,
-        trigger: timeout,
-        record: () => jsonRes({ revision: OLD_SHA, state: state({ status: "failed", error: "pull denied" }) }),
-      });
-      const { res, body } = await selfUpdate();
-      expect(res.status).toBe(502);
-      expect(body).toMatchObject({ kind: "relay_reported_failed", relayError: "pull denied" });
-    });
-
-    it("record in_progress -> 202 pending without touching Server.status", async () => {
+    it("an in_progress record of this attempt (previous revision matches) -> 202 pending without touching Server.status", async () => {
       relay({
         healthAfter: OLD_SHA,
         trigger: timeout,
@@ -373,20 +462,96 @@ describe("POST /servers/:id/relay-self-update reads the relay's own record", () 
       const { res, body } = await selfUpdate();
       expect(res.status).toBe(202);
       expect(body).toMatchObject({ status: "pending", kind: "relay_in_progress" });
-      expect(mServer.update).not.toHaveBeenCalledWith(
-        expect.objectContaining({ data: expect.objectContaining({ status: expect.anything() }) }),
-      );
+      noStatusWrite();
     });
 
-    it("record unverified -> 202 pending (relay_unverified)", async () => {
+    // Repro of the stale-record defect: earlier same-revision update (prev=X,
+    // target=X, succeeded), new attempt from X still pulling.
+    it("a succeeded record of an earlier same-revision update is not decisive: 504", async () => {
       relay({
         healthAfter: OLD_SHA,
         trigger: timeout,
-        record: () => jsonRes({ revision: OLD_SHA, state: state({ status: "unverified" }) }),
+        record: () =>
+          jsonRes({ revision: OLD_SHA, state: state({ status: "succeeded", previousRevision: OLD_SHA, targetRevision: OLD_SHA }) }),
       });
       const { res, body } = await selfUpdate();
-      expect(res.status).toBe(202);
-      expect(body).toMatchObject({ kind: "relay_unverified" });
+      expect(res.status).toBe(504);
+      expect(body).toMatchObject({ kind: "trigger_timeout" });
+      noStatusWrite();
+    });
+
+    it("a succeeded record is never decisive on this path, whatever it names", async () => {
+      relay({
+        healthAfter: NEW_SHA,
+        trigger: timeout,
+        record: () => jsonRes({ revision: NEW_SHA, state: state({ status: "succeeded" }) }),
+      });
+      const { res, body } = await selfUpdate();
+      expect(res.status).toBe(504);
+      expect(body).toMatchObject({ kind: "trigger_timeout" });
+    });
+
+    // Repro: retry after an earlier failed attempt from X.
+    it("a failed record of an earlier attempt is not mapped to a failure: 504", async () => {
+      relay({
+        healthAfter: OLD_SHA,
+        trigger: timeout,
+        record: () => jsonRes({ revision: OLD_SHA, state: state({ status: "failed", error: "old error" }) }),
+      });
+      const { res, body } = await selfUpdate();
+      expect(res.status).toBe(504);
+      expect(body).toMatchObject({ kind: "trigger_timeout" });
+      expect(JSON.stringify(body)).not.toContain("old error");
+    });
+
+    it.each(["unverified", "refused"])("a %s record is not decisive: 504", async (status) => {
+      relay({
+        healthAfter: OLD_SHA,
+        trigger: timeout,
+        record: () => jsonRes({ revision: OLD_SHA, state: state({ status }) }),
+      });
+      const { res } = await selfUpdate();
+      expect(res.status).toBe(504);
+    });
+
+    describe("pre-trigger /health failed (previous revision unknown): no record is decisive", () => {
+      for (const status of ["succeeded", "failed", "in_progress"]) {
+        it(`${status} -> 504`, async () => {
+          relay({
+            healthAfter: OLD_SHA,
+            firstHealth: () => new Response("down", { status: 502 }),
+            trigger: timeout,
+            record: () => jsonRes({ revision: OLD_SHA, state: state({ status, error: "e" }) }),
+          });
+          const { res, body } = await selfUpdate();
+          expect(res.status).toBe(504);
+          expect(body).toMatchObject({ kind: "trigger_timeout" });
+        });
+      }
+    });
+
+    it("an in_progress record of another previous revision is ignored: 504", async () => {
+      relay({
+        healthAfter: OLD_SHA,
+        trigger: timeout,
+        record: () => jsonRes({ revision: OLD_SHA, state: state({ status: "in_progress", previousRevision: OTHER_SHA }) }),
+      });
+      const { res } = await selfUpdate();
+      expect(res.status).toBe(504);
+    });
+
+    it("an in_progress record requested long before the trigger is ignored: 504", async () => {
+      relay({
+        healthAfter: OLD_SHA,
+        trigger: timeout,
+        record: () =>
+          jsonRes({
+            revision: OLD_SHA,
+            state: state({ status: "in_progress", requestedAt: new Date(Date.now() - 3_600_000).toISOString() }),
+          }),
+      });
+      const { res } = await selfUpdate();
+      expect(res.status).toBe(504);
     });
 
     it("endpoint missing (404) keeps 504 trigger_timeout", async () => {
@@ -403,18 +568,6 @@ describe("POST /servers/:id/relay-self-update reads the relay's own record", () 
         record: () => {
           throw new TypeError("fetch failed");
         },
-      });
-      const { res, body } = await selfUpdate();
-      expect(res.status).toBe(504);
-      expect(body).toMatchObject({ kind: "trigger_timeout" });
-    });
-
-    it("a stale record from an earlier update keeps 504 trigger_timeout", async () => {
-      relay({
-        healthAfter: OLD_SHA,
-        trigger: timeout,
-        record: () =>
-          jsonRes({ revision: OLD_SHA, state: state({ status: "succeeded", previousRevision: OTHER_SHA }) }),
       });
       const { res, body } = await selfUpdate();
       expect(res.status).toBe(504);

@@ -156,7 +156,7 @@ export default function ServerDetailPage() {
       if (res.status === "pending") {
         // Not a failure: the relay's own record says it is still running or
         // could not verify the new revision.
-        toast(`Relay self-update pending (${res.relayStatus === "unverified" ? "unverified" : "in progress"}): ${res.message ?? "check the relay status again shortly"}`, "info");
+        toast(`Relay self-update pending: ${res.message ?? "check the relay status again shortly"}`, "info");
         await load();
         return;
       }

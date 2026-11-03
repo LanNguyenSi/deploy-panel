@@ -473,7 +473,7 @@ describe("ServerDetailPage — relay outdated badge, one-click Update relay, and
       await user.click(screen.getByRole("button", { name: "Update relay" }));
 
       const alert = await screen.findByRole("alert");
-      expect(alert).toHaveTextContent(`Relay self-update pending (${label}): relay says ${relayStatus}`);
+      expect(alert).toHaveTextContent(`Relay self-update pending: relay says ${relayStatus}`);
       expect(alert.textContent?.startsWith("✗ ")).toBe(false);
       expect(alert).not.toHaveTextContent("Relay updated");
     });
