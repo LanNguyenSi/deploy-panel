@@ -1,5 +1,5 @@
 import { prisma } from "./prisma.js";
-import { recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "./deploy-recovery.js";
+import { hasRollbackOrFailedStep, isBuildCachePruneStep, recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "./deploy-recovery.js";
 import { verifyDeployHealth } from "./post-deploy-gate.js";
 import { provisionAndCheckAppSecrets } from "./provision-secrets.js";
 import {
@@ -437,7 +437,15 @@ export async function streamDeploy(opts: {
     const lastUpdate = await prisma.deploy.findUnique({ where: { id: deployId } });
     if (lastUpdate?.status === "running") {
       // Stream ended without done event — mark based on steps
-      const allSuccess = steps.length > 0 && steps.every((s) => s.status === "success" || s.status === "skipped");
+      // The best-effort prune step is ignored (any status), like in
+      // recoverBrokenDeploy. At least one other step must exist: a list holding
+      // only the prune step proves nothing about the deploy itself. A rollback
+      // step vetoes success, as in recovery.
+      const deploySteps = steps.filter((s) => !isBuildCachePruneStep(s));
+      const allSuccess =
+        deploySteps.length > 0 &&
+        !hasRollbackOrFailedStep(deploySteps) &&
+        deploySteps.every((s) => s.status === "success" || s.status === "skipped");
       await finalizeDeploy({
         deployId,
         appId,
