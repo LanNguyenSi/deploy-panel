@@ -2,6 +2,7 @@
 
 <!-- Add new entries at the top, newest first. -->
 
+- 2026-11-03T10:21:49Z, a stream that closes without a `done` event ignores the relay's best-effort `build cache prune` step and treats a `rollback*` step as a veto (`backend/src/lib/stream-deploy.ts` no-done inference, shared helpers `isBuildCachePruneStep` and `hasRollbackOrFailedStep` in `backend/src/lib/deploy-recovery.ts`). `deploy-outcome-trust-chain.md` re-verified and re-stamped: shape 3 now states the new rule (at least one non-prune step, no failed or rollback step, every other step success or skipped), its shifted `stream-deploy.ts` and `deploy-recovery.ts` citations re-pointed (`requireHealthyEvidence` call at `deploy-recovery.ts:290-296`). `realtime-update-strategy.md` re-stamped: its `stream-deploy.ts` citation moved; its `frontend/src/lib/api.ts` and `frontend/src/app/servers/[id]/page.tsx` citations (changed in #211 after its last stamp) were re-read at HEAD and still hold.
 - 2026-11-03T08:01:23Z, deploy-outcome-trust-chain re-verified and re-stamped after recovery started to ignore the
   relay's best-effort `build cache prune` step: the two carve-out claims and the re-pointed
   `deploy-recovery.ts` citations hold at HEAD; the `stream-deploy.ts` and `routes/apps.ts` claims
