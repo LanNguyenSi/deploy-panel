@@ -9,9 +9,9 @@ export type LoggedStep = { name: string; status: string; durationMs?: number; [k
  * its best-effort post-deploy build cache prune. The relay runs it after the
  * deploy has already reached its terminal result and never lets this step's
  * outcome (success, failure or skip) change that result, so a failure or a
- * skip here is NOT a deploy failure. Connection-lost recovery must ignore it
- * when deciding success (see recoverBrokenDeployBody): a failed prune on an
- * otherwise healthy deploy is still a success, not a red step in a green deploy.
+ * skip here is NOT a deploy failure. Connection-lost recovery and the stream
+ * no-done inference ignore it (isBuildCachePruneStep, hasRollbackOrFailedStep):
+ * a failed prune on a healthy deploy is a success, not a red step in a green deploy.
  * The frontend mirrors this name in its own single definition
  * (BUILD_CACHE_PRUNE_STEP_NAME in frontend/src/lib/status.ts; the two are kept
  * byte-equal by frontend/src/lib/deploy-steps-prune-contract.test.ts).
