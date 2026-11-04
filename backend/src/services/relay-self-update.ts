@@ -116,6 +116,16 @@ export async function readRelaySelfUpdateOutcome(
         if (live && recTarget && live !== recTarget) return { kind: "none" };
         const revision = live ?? recTarget;
         if (!revision) return { kind: "none" };
+        // Anchor the outcome to what the panel expects. A known target
+        // decides: the resulting revision has to equal it. Without a known
+        // target the revision has to differ from the previous one (an
+        // update that ends where it started is no success). Defence in
+        // depth: the relay itself never records such a success.
+        if (opts.targetRevision) {
+          if (revision !== opts.targetRevision) return { kind: "none" };
+        } else if (opts.previousRevision && revision === opts.previousRevision) {
+          return { kind: "none" };
+        }
         return { kind: "succeeded", revision };
       }
       case "failed":

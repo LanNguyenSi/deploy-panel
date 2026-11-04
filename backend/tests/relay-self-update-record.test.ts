@@ -112,6 +112,8 @@ describe("POST /servers/:id/relay-self-update reads the relay's own record", () 
     firstHealth?: () => Response;
     trigger?: RecordResponder;
     record: RecordResponder;
+    /** GHCR cannot tell the latest revision (so the panel has no target fallback). */
+    noLatest?: boolean;
   }) {
     let healthCalls = 0;
     fetchMock.mockImplementation(async (input: string | URL, init?: RequestInit) => {
@@ -134,6 +136,9 @@ describe("POST /servers/:id/relay-self-update reads the relay's own record", () 
       if (url === `${RELAY}/api/self-update`) {
         recordCalls.push(init);
         return opts.record();
+      }
+      if (opts.noLatest && (url === GHCR_TOKEN_URL || url === GHCR_MANIFEST_URL)) {
+        return jsonRes({}, 503);
       }
       if (url === GHCR_TOKEN_URL) return jsonRes({ token: "anon" });
       if (url === GHCR_MANIFEST_URL) {
@@ -377,6 +382,93 @@ describe("POST /servers/:id/relay-self-update reads the relay's own record", () 
       });
       const { body } = await selfUpdate();
       expect(body).toMatchObject({ kind: "revision_unchanged" });
+    });
+
+    // Anchoring of a succeeded record to the panel's expected target / previous
+    // revision. Precedence: a known target (trigger answer) wins and the
+    // resulting revision must equal it; with no known target the resulting
+    // revision must differ from the previous one.
+    describe("succeeded record anchored to the expected revisions", () => {
+      // No target in the trigger answer and none from GHCR: target unknown.
+      const noTarget = () => jsonRes({ status: "accepted" }, 202);
+
+      it("target known and equal -> success", async () => {
+        relay({
+          healthAfter: OLD_SHA,
+          record: () => jsonRes({ revision: NEW_SHA, state: state({ status: "succeeded" }) }),
+        });
+        const { res, body } = await selfUpdate();
+        expect(res.status).toBe(200);
+        expect(body).toMatchObject({ source: "relay_record", relayRevision: NEW_SHA });
+      });
+
+      it("target known and different (record names no target) -> no verdict", async () => {
+        relay({
+          healthAfter: OLD_SHA,
+          record: () =>
+            jsonRes({ revision: OTHER_SHA, state: state({ status: "succeeded", targetRevision: null }) }),
+        });
+        const { body } = await selfUpdate();
+        expect(body).toMatchObject({ kind: "revision_unchanged" });
+      });
+
+      it("target unknown and result equals previous -> no verdict", async () => {
+        relay({
+          healthAfter: OLD_SHA,
+          trigger: noTarget,
+          noLatest: true,
+          record: () =>
+            jsonRes({ revision: OLD_SHA, state: state({ status: "succeeded", targetRevision: null }) }),
+        });
+        const { body } = await selfUpdate();
+        expect(body).toMatchObject({ kind: "revision_unchanged" });
+      });
+
+      it("target unknown and result differs from previous -> success", async () => {
+        relay({
+          healthAfter: OLD_SHA,
+          trigger: noTarget,
+          noLatest: true,
+          record: () => jsonRes({ revision: NEW_SHA, state: state({ status: "succeeded" }) }),
+        });
+        const { res, body } = await selfUpdate();
+        expect(res.status).toBe(200);
+        expect(body).toMatchObject({ source: "relay_record", relayRevision: NEW_SHA });
+      });
+
+      it("record targetRevision null, target known, live revision equals it -> success", async () => {
+        relay({
+          healthAfter: OLD_SHA,
+          record: () =>
+            jsonRes({ revision: NEW_SHA, state: state({ status: "succeeded", targetRevision: null }) }),
+        });
+        const { res, body } = await selfUpdate();
+        expect(res.status).toBe(200);
+        expect(body).toMatchObject({ source: "relay_record", relayRevision: NEW_SHA });
+      });
+
+      it("previous revision unknown, target known and different -> no verdict", async () => {
+        relay({
+          healthAfter: OLD_SHA,
+          firstHealth: () => new Response("down", { status: 502 }),
+          record: () =>
+            jsonRes({ revision: OTHER_SHA, state: state({ status: "succeeded", targetRevision: null }) }),
+        });
+        const { body } = await selfUpdate();
+        expect(body.source).toBeUndefined();
+        expect(body.status).not.toBe("online");
+      });
+
+      it("previous revision unknown, target known and equal -> success", async () => {
+        relay({
+          healthAfter: OLD_SHA,
+          firstHealth: () => new Response("down", { status: 502 }),
+          record: () => jsonRes({ revision: NEW_SHA, state: state({ status: "succeeded" }) }),
+        });
+        const { res, body } = await selfUpdate();
+        expect(res.status).toBe(200);
+        expect(body).toMatchObject({ source: "relay_record" });
+      });
     });
 
     it("a record requested long before the trigger is ignored (clock-skew window exceeded)", async () => {
