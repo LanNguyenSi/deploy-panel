@@ -24,15 +24,35 @@ let sweepInFlight = false;
 
 /**
  * How long a panel self-deploy that the relay has not recorded yet is left
- * `running` before the sweep gives up waiting for the relay's entry and ends
- * it `interrupted` (unverified). A self-deploy replaces the panel's own
- * containers, so the panel that runs this sweep is by construction the
- * recreated one, while the relay is still finishing the deploy (health check,
- * prune) and records it last; the 2-minute sweep threshold can be reached
- * before that. Ten minutes covers the relay's build, up and health windows
- * with margin.
+ * `running` before the sweep ends it `interrupted` (unverified). A
+ * self-deploy replaces the panel's own containers, so the panel that runs this
+ * sweep is the recreated one, while the relay is still finishing the deploy
+ * and writes its history entry last. The window is counted from the later of
+ * the row's start and this process's start (the old panel is alive through the
+ * relay's pre-update, pull and build, which would otherwise eat it). The ten
+ * minutes are a chosen bound, not a measured duration; a row that misses it is
+ * not final: SELF_DEPLOY_UPGRADE_WINDOW_MS below.
  */
 const SELF_DEPLOY_PROOF_GRACE_MS = 10 * 60 * 1000;
+
+/**
+ * The text a panel self-deploy row carries in its `startup-recovery` step when
+ * it ended `interrupted` because the relay's proof was missing. It marks the
+ * rows upgradeSelfDeploys may revisit; no other row has it.
+ */
+const SELF_DEPLOY_UNVERIFIED_MARKER = "this self-deploy is not verified";
+
+/**
+ * How long after its start an `interrupted` self-deploy row stays eligible to
+ * be upgraded to `success` when the relay's id-matched success entry shows up
+ * late (see upgradeSelfDeploys). Beyond it the row stays as written.
+ */
+const SELF_DEPLOY_UPGRADE_WINDOW_MS = 60 * 60 * 1000;
+
+/** When this process started, derived from its uptime so a test can control it. */
+function processStartMs(): number {
+  return Date.now() - process.uptime() * 1000;
+}
 
 /**
  * Relay app name of the panel itself. A self-deploy replaces the panel's own
@@ -143,6 +163,10 @@ async function sweepOnce(): Promise<void> {
     await recoverStuckRecords(stuckDeploys);
   }
 
+  await upgradeSelfDeploys().catch((err) => {
+    console.error("[stuck-sweep] Failed to revisit unverified self-deploys:", err);
+  });
+
   // Its own failure must not fail a sweep that already finalized deploy rows.
   await reconcileDeployingApps().catch((err) => {
     console.error("[stuck-sweep] Failed to reconcile apps left on deploying:", err);
@@ -194,15 +218,20 @@ async function recoverStuckRecords(stuckDeploys: StuckDeploy[]): Promise<void> {
             } else if (
               target.noEntry &&
               isPanelSelfApp(deploy.app.name) &&
-              Date.now() - deploy.createdAt.getTime() < SELF_DEPLOY_PROOF_GRACE_MS
+              Date.now() - Math.max(deploy.createdAt.getTime(), processStartMs()) < SELF_DEPLOY_PROOF_GRACE_MS
             ) {
               // The relay may still be finishing this self-deploy: leave the
               // record running and look again on the next pass.
               console.log(`[stuck-sweep] Self-deploy ${deploy.id} (${deploy.app.name}) is not in the relay's history yet, waiting`);
               continue;
+            } else if (target.entryFailed) {
+              // The relay's own entry for this deploy says it failed: that is
+              // its verdict, not a missing proof.
+              newStatus = "failed";
+              failedCheck = `the relay recorded this deploy as failed${target.entryFailed.error ? `: ${target.entryFailed.error}` : ""}`;
             } else {
               failedCheck = isPanelSelfApp(deploy.app.name)
-                ? `the panel is up, but this self-deploy is not verified: ${target.failedCheck}`
+                ? `the panel is up, but ${SELF_DEPLOY_UNVERIFIED_MARKER}: ${target.failedCheck}`
                 : target.failedCheck;
             }
           }
@@ -304,8 +333,10 @@ async function recoverStuckRecords(stuckDeploys: StuckDeploy[]): Promise<void> {
  * at preflight says nothing about the app and is skipped, as in
  * statusAfterBlocked (stream-deploy.ts).
  *
- * Compare-and-set on `deploying`, so a dispatch that began after the query is
- * not overwritten.
+ * The write repeats the query's guards (`deploying`, older than the cutoff, no
+ * `running` deploy row) in its own where clause, so a dispatch that began after
+ * the query is not overwritten: its Deploy row is `running` by then. Matching
+ * only `deploying` would not detect it, a new dispatch writes that too.
  */
 async function reconcileDeployingApps(): Promise<void> {
   const cutoff = new Date(Date.now() - STUCK_THRESHOLD_MS);
@@ -331,10 +362,79 @@ async function reconcileDeployingApps(): Promise<void> {
       else if (last?.status === "failed") {
         status = classifyDeployLogOutcome(last.status, last.log) === "rolled_back_healthy" ? "healthy" : "unhealthy";
       }
-      const { count } = await prisma.app.updateMany({ where: { id: app.id, status: "deploying" }, data: { status } });
+      const { count } = await prisma.app.updateMany({
+        where: { id: app.id, status: "deploying", updatedAt: { lt: cutoff }, deploys: { none: { status: "running" } } },
+        data: { status },
+      });
       if (count > 0) console.log(`[stuck-sweep] App ${app.name} was left on deploying with no running deploy: now ${status}`);
     } catch (err) {
       console.error(`[stuck-sweep] Failed to reconcile app ${app.name}:`, err);
+    }
+  }
+}
+
+/**
+ * Revisits panel self-deploy rows that ended `interrupted` for want of the
+ * relay's proof, because the relay writes its history entry last and may have
+ * written it after the sweep gave up. When the relay's id-matched (or
+ * otherwise proving) entry is now there, the row becomes `success` with the
+ * entry's commits and duration.
+ *
+ * Bounds: only rows of the panel's own app (isPanelSelfApp), only within
+ * SELF_DEPLOY_UPGRADE_WINDOW_MS (1 h) of the row's start, and only rows whose
+ * log carries SELF_DEPLOY_UNVERIFIED_MARKER (an `interrupted` row from a failed
+ * preflight, a relay that could not be asked, or any other app never has it).
+ * The write is a compare-and-set on `interrupted` plus the marker. The proof is
+ * the same checkDeployTarget as the sweep's, so a later deploy row of the app
+ * blocks the upgrade. The app card moves to `healthy` only when no deploy of
+ * the app is `running`.
+ */
+async function upgradeSelfDeploys(): Promise<void> {
+  const selfName = process.env.PANEL_SELF_APP_NAME?.trim() || DEFAULT_PANEL_SELF_APP_NAME;
+  const rows = await prisma.deploy.findMany({
+    where: {
+      status: "interrupted",
+      createdAt: { gt: new Date(Date.now() - SELF_DEPLOY_UPGRADE_WINDOW_MS) },
+      app: { name: selfName },
+      log: { contains: SELF_DEPLOY_UNVERIFIED_MARKER },
+    },
+    orderBy: { createdAt: "asc" },
+    include: {
+      app: { select: { name: true } },
+      server: { select: { id: true, relayUrl: true, relayToken: true } },
+    },
+  });
+
+  for (const deploy of rows) {
+    try {
+      if (!deploy.server.relayUrl || !isPanelSelfApp(deploy.app.name)) continue;
+      const target = await checkDeployTargetDetailed(deploy, deploy.server.id, deploy.app.name);
+      if (!target.reached) continue;
+      const evidence = target.evidence;
+      const step = {
+        name: "startup-recovery",
+        status: "success",
+        durationMs: 0,
+        output: `Upgraded from interrupted to success: the relay's history now proves this deploy (it was ${SELF_DEPLOY_UNVERIFIED_MARKER} when first swept)`,
+      };
+      const { count } = await prisma.deploy.updateMany({
+        where: { id: deploy.id, status: "interrupted", log: { contains: SELF_DEPLOY_UNVERIFIED_MARKER } },
+        data: {
+          status: "success",
+          commitBefore: evidence?.commitBefore ?? undefined,
+          commitAfter: evidence?.commitAfter ?? undefined,
+          duration: evidence?.durationMs ?? undefined,
+          log: JSON.stringify([...readExistingSteps(deploy.log), step]),
+        },
+      });
+      if (count === 0) continue;
+      await prisma.app.updateMany({
+        where: { id: deploy.appId, deploys: { none: { status: "running" } } },
+        data: { status: "healthy" },
+      });
+      console.log(`[stuck-sweep] Self-deploy ${deploy.id} (${deploy.app.name}): upgraded to success`);
+    } catch (err) {
+      console.error(`[stuck-sweep] Failed to revisit self-deploy ${deploy.id}:`, err);
     }
   }
 }

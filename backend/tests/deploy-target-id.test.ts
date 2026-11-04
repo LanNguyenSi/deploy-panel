@@ -229,4 +229,15 @@ describe("the relay entry as evidence, and the noEntry flag", () => {
     expect(check).toMatchObject({ reached: false });
     expect(check).not.toHaveProperty("noEntry");
   });
+
+  it("entryFailed: only the id-matched entry that ended failed carries it, with the relay's error text when it has one", () => {
+    const failed = assessTargetReached(deploy, detail([entry({ deployId: OWN_ID, status: "failed", error: "  boom " })]));
+    expect(failed).toMatchObject({ reached: false, entryFailed: { error: "boom" } });
+    const noText = assessTargetReached(deploy, detail([entry({ deployId: OWN_ID, status: "failed" })]));
+    expect(noText).toMatchObject({ entryFailed: { error: null } });
+    // a failed entry found by timing correlation is not attributed with certainty
+    expect(assessTargetReached(deploy, detail([entry({ status: "failed" })]))).not.toHaveProperty("entryFailed");
+    // an id-matched entry that succeeded but misses HEAD is not a relay failure
+    expect(assessTargetReached(deploy, detail([entry({ deployId: OWN_ID, commitAfter: "zzzzzzz" })]))).not.toHaveProperty("entryFailed");
+  });
 });

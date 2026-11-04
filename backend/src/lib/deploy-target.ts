@@ -15,6 +15,8 @@ interface RelayDeployRecord {
   commitAfter?: string;
   /** ISO time the relay RECORDED the entry, i.e. when the deploy ended (history.ts:74). */
   createdAt?: string;
+  /** The relay's failure text for a failed entry, when it records one. */
+  error?: unknown;
   /** Duration of the deploy; rollbackApp's outcome carries none, so a rollback records 0 (history.ts:72). */
   durationMs?: number;
   /** "api" for HTTP deploys and rollbacks, "mcp" for the MCP tools (routes.ts:104,133,156; mcp/server.ts:41,86). */
@@ -103,6 +105,12 @@ export type TargetVerdict =
        * not recorded it. Not set when an entry exists but disqualifies the deploy.
        */
       noEntry?: true;
+      /**
+       * Set when the entry carrying this deploy's own id (id-capable relay)
+       * ended `failed`: the relay's verdict on this deploy, not a missing
+       * proof. `error` is the relay's text for it, when it recorded one.
+       */
+      entryFailed?: { error: string | null };
     };
 
 type EntryVerdict = { reached: true; entry: RelayEntryEvidence } | Extract<TargetVerdict, { reached: false }>;
@@ -240,7 +248,12 @@ export function assessTargetReachedWithEntry(
         noEntry: true,
       };
     }
-    return assessEntryOutcome(own, head);
+    const outcome = assessEntryOutcome(own, head);
+    if (!outcome.reached && own.status === "failed") {
+      const err = typeof own.error === "string" && own.error.trim() ? own.error.trim() : null;
+      return { ...outcome, entryFailed: { error: err } };
+    }
+    return outcome;
   }
 
   const startMs = deploy.createdAt.getTime();
@@ -430,7 +443,7 @@ export type DeployTargetCheck = { reached: true } | { reached: false; failedChec
 /** DeployTargetCheck plus what the relay's entry said (reached) or whether it had no entry yet (not reached). */
 export type DeployTargetCheckDetailed =
   | { reached: true; evidence?: RelayEntryEvidence }
-  | { reached: false; failedCheck: string; noEntry?: true };
+  | { reached: false; failedCheck: string; noEntry?: true; entryFailed?: { error: string | null } };
 
 /**
  * The full "did this deploy really reach its target" check shared by the two
@@ -498,7 +511,7 @@ export async function checkDeployTargetDetailed(
     }
     const verdict = assessTargetReachedWithEntry(deploy, detail, { relayRecordsIds });
     if (verdict.reached) return { reached: true, evidence: verdict.entry };
-    return { reached: false, failedCheck: `target not reached: ${verdict.reason}`, ...(verdict.noEntry ? { noEntry: true as const } : {}) };
+    return { reached: false, failedCheck: `target not reached: ${verdict.reason}`, ...(verdict.noEntry ? { noEntry: true as const } : {}), ...(verdict.entryFailed ? { entryFailed: verdict.entryFailed } : {}) };
   } catch {
     // Relay unreachable or app not found, or the lookup threw: not reached.
     return { reached: false, failedCheck };
