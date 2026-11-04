@@ -104,7 +104,7 @@ describe("deploy_list_servers", () => {
     const result = await cb({});
 
     expect(result.isError).toBe(true);
-    expect(textOf(result)).toEqual({ error: "plain-string-rejection" });
+    expect(textOf(result)).toEqual({ error: `could not reach the panel at ${API_URL} (plain-string-rejection)` });
   });
 });
 
@@ -242,6 +242,60 @@ describe("deploy_app", () => {
     expect(statusInit?.body).toBeUndefined();
 
     expect(textOf(result).status).toBe("success");
+  });
+
+  describe("connection dropped (the panel restarts during its own deploy)", () => {
+    const started = () =>
+      jsonResponse({ deploy: { id: "d1", status: "running", server: "s", app: "a", triggeredBy: "agent" } });
+
+    it("a drop while polling names the deploy id and points at deploy_status", async () => {
+      vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(started())
+        .mockRejectedValueOnce(new TypeError("fetch failed"));
+
+      const result = await cb({ server: "s", app: "a" });
+
+      expect(result.isError).toBe(true);
+      const message: string = textOf(result).error;
+      expect(message).toContain("deploy d1");
+      expect(message).toContain("deploy_status d1");
+      expect(message).toContain("restarted during its own deploy");
+    });
+
+    it("a proxy 502 with an empty status text while polling is reported the same way, never as an empty error", async () => {
+      vi.spyOn(globalThis, "fetch")
+        .mockResolvedValueOnce(started())
+        .mockResolvedValueOnce(new Response("", { status: 502, statusText: "" }));
+
+      const result = await cb({ server: "s", app: "a" });
+
+      expect(result.isError).toBe(true);
+      const message: string = textOf(result).error;
+      expect(message.trim()).not.toBe("");
+      expect(message).toContain("deploy_status d1");
+      expect(message).toContain("HTTP 502");
+    });
+
+    it("a drop before the deploy id is known says so and points at deploy_list", async () => {
+      vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new TypeError("fetch failed"));
+
+      const result = await cb({ server: "srv-1", app: "app-1" });
+
+      expect(result.isError).toBe(true);
+      const message: string = textOf(result).error;
+      expect(message).toContain("before it returned a deploy id");
+      expect(message).toContain("deploy_list (app app-1, server srv-1)");
+      expect(message).not.toContain("deploy_status d");
+    });
+
+    it("an ordinary API error is passed through unchanged", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ message: "App not found" }, 404));
+
+      const result = await cb({ server: "s", app: "a" });
+
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toEqual({ error: "App not found" });
+    });
   });
 
   describe("compact result", () => {
@@ -946,6 +1000,22 @@ describe("deploy_rollback", () => {
     const result = await cb({ server: "s", app: "a" });
 
     expect(result.isError).toBe(true);
-    expect(textOf(result)).toEqual({ error: "network down" });
+    expect(textOf(result)).toEqual({ error: `could not reach the panel at ${API_URL} (network down)` });
+  });
+});
+
+describe("error text is never empty", () => {
+  const { cb } = registered.deploy_list_servers;
+
+  it("falls back to the error name, then to a fixed text, for a blank message", async () => {
+    const spy = vi.spyOn(DeployPanelClient.prototype, "listServers");
+    spy.mockRejectedValueOnce(Object.assign(new Error(""), { name: "TimeoutError" }));
+    expect(textOf(await cb({})).error).toBe("TimeoutError");
+
+    spy.mockRejectedValueOnce(new Error("   "));
+    expect(textOf(await cb({})).error).toBe("unknown error (the failure carried no message)");
+
+    spy.mockRejectedValueOnce("");
+    expect(textOf(await cb({})).error).toBe("unknown error (the failure carried no message)");
   });
 });

@@ -69,6 +69,20 @@ allowed to manage.
 | `deploy_preflight`    | Run preflight checks for an app without deploying.                                   |
 | `deploy_rollback`     | Roll an app back to its previous version (`server`, `app`, optional `wait`); polls until completion unless `wait` is `false`. |
 
+### `deploy_app`: the panel restarting during its own deploy
+
+Deploying the panel's own app replaces the panel's containers, which cuts the
+connection `deploy_app` is polling. The tool then returns an error that names
+the deploy instead of an empty one: `Lost the connection to the panel while
+waiting for deploy <id> ...`, with the instruction to call `deploy_status <id>`.
+The panel settles the interrupted record a few minutes after it is back up
+(`success` with commits and duration when the relay's history proves the
+deploy, `interrupted` when it cannot be verified, never `success` without that
+proof). When the connection drops before the panel returned an id, the message
+says so and points at `deploy_list` for the app. Any tool error carries a
+non-empty message: a proxy's `502`/`503`/`504` without a body reads
+`the panel answered HTTP 502 (no detail)`.
+
 ### `deploy_app`: compact result by default
 
 A deploy's steps carry the full build output, which can run to tens of

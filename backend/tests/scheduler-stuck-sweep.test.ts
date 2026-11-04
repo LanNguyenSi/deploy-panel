@@ -14,6 +14,8 @@ vi.mock("../src/lib/prisma.js", () => ({
       upsert: vi.fn(),
       update: vi.fn().mockResolvedValue({}),
       findUnique: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
     deploy: {
       create: vi.fn(),
@@ -32,6 +34,9 @@ import { startScheduler } from "../src/lib/scheduler.js";
 import { registerActiveDeploy, clearActiveDeploys } from "../src/lib/deploy-recovery.js";
 
 const mDeployFindMany = (prisma.deploy as any).findMany as ReturnType<typeof vi.fn>;
+// Each sweep also asks for unverified self-deploy rows (status interrupted);
+// the periodic-sweep assertions count only the stuck-running query.
+const runningQueries = () => mDeployFindMany.mock.calls.filter((c) => c[0]?.where?.status === "running");
 const mDeployUpdateMany = (prisma.deploy as any).updateMany as ReturnType<typeof vi.fn>;
 
 const oldCreatedAt = new Date(Date.now() - 10 * 60 * 1000); // 10 min ago, well past the 2-min threshold
@@ -60,6 +65,7 @@ describe("startScheduler: periodic stuck-deploy sweep", () => {
 
   it("finalizes an orphaned running deploy after one sweep interval, and its query excludes a deploy id this process still has active", async () => {
     mDeployFindMany.mockImplementation(async (args: any) => {
+      if (args.where.status === "interrupted") return [];
       // Simulates what a real `id: { notIn }` filter returns: exclude ids
       // in the set the query was built with.
       const excluded: string[] = args.where.id.notIn;
@@ -70,12 +76,12 @@ describe("startScheduler: periodic stuck-deploy sweep", () => {
 
     startScheduler();
     // Nothing should have run synchronously.
-    expect(mDeployFindMany).not.toHaveBeenCalled();
+    expect(runningQueries()).toHaveLength(0);
 
     await vi.advanceTimersByTimeAsync(60_000);
 
-    expect(mDeployFindMany).toHaveBeenCalled();
-    const queryArgs = mDeployFindMany.mock.calls[0][0];
+    expect(runningQueries()).toHaveLength(1);
+    const queryArgs = runningQueries()[0][0];
     expect(queryArgs.where.id.notIn).toContain("active-1");
 
     const updatedIds = mDeployUpdateMany.mock.calls.map((c) => c[0].where.id);
@@ -89,10 +95,10 @@ describe("startScheduler: periodic stuck-deploy sweep", () => {
     startScheduler();
 
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mDeployFindMany).toHaveBeenCalledTimes(1);
+    expect(runningQueries()).toHaveLength(1);
 
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mDeployFindMany).toHaveBeenCalledTimes(2);
+    expect(runningQueries()).toHaveLength(2);
   });
 
   it("a rejection inside the periodic sweep is logged and does not escape the interval callback", async () => {
@@ -111,7 +117,7 @@ describe("startScheduler: periodic stuck-deploy sweep", () => {
     // caught and logged, not left to propagate and take the timer down.
     mDeployFindMany.mockResolvedValue([]);
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mDeployFindMany).toHaveBeenCalledTimes(2);
+    expect(runningQueries()).toHaveLength(2);
 
     consoleErrorSpy.mockRestore();
   });

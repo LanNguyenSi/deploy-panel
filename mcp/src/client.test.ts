@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DeployPanelClient } from "./client.js";
+import { DeployPanelClient, PanelConnectionError } from "./client.js";
 
 const API_URL = "https://panel.example.com";
 const API_KEY = "test-key";
@@ -40,6 +40,70 @@ describe("DeployPanelClient error handling", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({}, 502));
 
     await expect(client.listServers()).rejects.toThrow("HTTP 502");
+  });
+});
+
+describe("DeployPanelClient connection failures", () => {
+  const client = () => new DeployPanelClient({ apiUrl: API_URL, apiKey: API_KEY });
+
+  it("a proxy 502 with an empty status text (HTTP/2) is a connection error with a non-empty message", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response("<html>bad gateway</html>", { status: 502, statusText: "", headers: { "content-type": "text/html" } }),
+    );
+
+    const err = await client().listServers().catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(PanelConnectionError);
+    expect((err as Error).message.trim()).not.toBe("");
+    expect((err as Error).message).toContain("HTTP 502");
+  });
+
+  it("a blank message field in the error body falls back to HTTP <status> instead of an empty Error", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ message: "" }, 500));
+
+    const err = await client().listServers().catch((e: unknown) => e);
+
+    expect(err).not.toBeInstanceOf(PanelConnectionError);
+    expect((err as Error).message).toBe("HTTP 500");
+  });
+
+  it.each([502, 503, 504])("HTTP %i is a connection error and keeps the body's message", async (status) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ message: "upstream gone" }, status));
+
+    const err = await client().listServers().catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(PanelConnectionError);
+    expect((err as Error).message).toContain(`HTTP ${status}`);
+    expect((err as Error).message).toContain("upstream gone");
+  });
+
+  it.each([400, 404, 500])("HTTP %i stays a plain error", async (status) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ message: "nope" }, status));
+
+    const err = await client().listServers().catch((e: unknown) => e);
+
+    expect(err).not.toBeInstanceOf(PanelConnectionError);
+    expect((err as Error).message).toBe("nope");
+  });
+
+  it("a rejected fetch names the socket error from the cause, not just 'fetch failed'", async () => {
+    const cause = Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" });
+    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new TypeError("fetch failed", { cause }));
+
+    const err = await client().listServers().catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(PanelConnectionError);
+    expect((err as Error).message).toContain("fetch failed: ECONNRESET");
+    expect((err as Error).cause).toBeInstanceOf(TypeError);
+  });
+
+  it("a rejected fetch with a blank message still yields a non-empty reason", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error(""));
+
+    const err = await client().listServers().catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(PanelConnectionError);
+    expect((err as Error).message).toContain("(Error)");
   });
 });
 
