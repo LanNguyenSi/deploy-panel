@@ -1,7 +1,8 @@
 import { prisma } from "./prisma.js";
 import { relayRequest } from "./relay.js";
 import { listActiveDeployIds, readExistingSteps } from "./deploy-recovery.js";
-import { checkDeployTarget } from "./deploy-target.js";
+import { checkDeployTargetDetailed, type RelayEntryEvidence } from "./deploy-target.js";
+import { classifyDeployLogOutcome, isBlockedDeployLog } from "./deploy-log.js";
 
 // The target check itself lives in deploy-target.ts (shared with
 // recoverBrokenDeploy); these re-exports keep the names this module has
@@ -22,11 +23,25 @@ const STUCK_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes (reduced — deploy-recov
 let sweepInFlight = false;
 
 /**
+ * How long a panel self-deploy that the relay has not recorded yet is left
+ * `running` before the sweep gives up waiting for the relay's entry and ends
+ * it `interrupted` (unverified). A self-deploy replaces the panel's own
+ * containers, so the panel that runs this sweep is by construction the
+ * recreated one, while the relay is still finishing the deploy (health check,
+ * prune) and records it last; the 2-minute sweep threshold can be reached
+ * before that. Ten minutes covers the relay's build, up and health windows
+ * with margin.
+ */
+const SELF_DEPLOY_PROOF_GRACE_MS = 10 * 60 * 1000;
+
+/**
  * Relay app name of the panel itself. A self-deploy replaces the panel's own
  * containers, so the panel that runs this sweep is by construction the
  * recreated one, and the relay may still be finishing the deploy (and has not
- * recorded it yet) when the sweep first looks. Those records keep the
- * preflight-only verdict; every other app needs proof the target was reached.
+ * recorded it yet) when the sweep first looks. Such a record is left `running`
+ * for SELF_DEPLOY_PROOF_GRACE_MS while the relay has no entry for it; the
+ * panel does not exempt its own app from the proof (a healthy preflight is
+ * also true when the deploy never ran), it only waits for it.
  * Override with PANEL_SELF_APP_NAME when the panel is registered under a
  * different relay app name.
  */
@@ -60,14 +75,19 @@ function isPanelSelfApp(appName: string): boolean {
  *
  * For each stuck deploy:
  * 1. Try to check if the app is healthy via relay (preflight)
- * 2. If healthy, a non-panel app is only "success" when no other panel
- *    deploy row for the app was created after this one and the relay also
- *    proves the deploy reached its target (see assessTargetReached): a
- *    healthy preflight alone is true for any deploy cut off BEFORE the
- *    git pull, because the old containers are still up. The panel's own
- *    app keeps the preflight-only verdict (see isPanelSelfApp).
+ * 2. If healthy, an app is only "success" when no other panel deploy row
+ *    for the app was created after this one and the relay also proves the
+ *    deploy reached its target (see assessTargetReached): a healthy
+ *    preflight alone is true for any deploy cut off BEFORE the git pull,
+ *    because the old containers are still up. The proof's relay entry also
+ *    supplies the record's commitBefore, commitAfter and duration. The
+ *    panel's own app gets the same proof, and while the relay has no entry
+ *    for it yet the record stays `running` (see isPanelSelfApp).
  * 3. Otherwise (unhealthy, relay unreachable, target not reached) → mark
  *    as "interrupted", with the failed check named in the recovery step
+ *
+ * After the deploy records, apps left on `deploying` with no running deploy
+ * row are reconciled to a settled status (reconcileDeployingApps).
  *
  * Each candidate is finalized with a compare-and-set (`updateMany` scoped
  * to `status: "running"`) instead of a plain `update`: a rollback route or
@@ -118,15 +138,35 @@ async function sweepOnce(): Promise<void> {
     },
   });
 
-  if (stuckDeploys.length === 0) return;
+  if (stuckDeploys.length > 0) {
+    console.log(`[stuck-sweep] Found ${stuckDeploys.length} stuck deploy(s), recovering...`);
+    await recoverStuckRecords(stuckDeploys);
+  }
 
-  console.log(`[stuck-sweep] Found ${stuckDeploys.length} stuck deploy(s), recovering...`);
+  // Its own failure must not fail a sweep that already finalized deploy rows.
+  await reconcileDeployingApps().catch((err) => {
+    console.error("[stuck-sweep] Failed to reconcile apps left on deploying:", err);
+  });
+}
+
+interface StuckDeploy {
+  id: string;
+  appId: string;
+  createdAt: Date;
+  log: string | null;
+  app: { name: string };
+  server: { id: string; relayUrl: string | null; relayToken: string | null };
+}
+
+async function recoverStuckRecords(stuckDeploys: StuckDeploy[]): Promise<void> {
 
   for (const deploy of stuckDeploys) {
     try {
       let newStatus = "interrupted";
       // Which check kept this record from "success"; named in the recovery step.
       let failedCheck: string | undefined = "no relay configured for this server";
+      // The relay entry's commits and duration, when it proved the deploy.
+      let evidence: RelayEntryEvidence | undefined;
 
       // Try to check the app's actual health via relay
       if (deploy.server.relayUrl && deploy.app.name) {
@@ -138,23 +178,32 @@ async function sweepOnce(): Promise<void> {
           });
           if (!result.passed) {
             failedCheck = "relay preflight did not pass";
-          } else if (isPanelSelfApp(deploy.app.name)) {
-            // Self-deploy: preflight passing is the whole verdict (see isPanelSelfApp).
-            newStatus = "success";
-            failedCheck = undefined;
           } else {
             // Preflight passing only says containers are running, which is also
             // true when the deploy was cut off before it changed anything.
             // checkDeployTarget rules out a later panel deploy row for the app
             // (a rollback, a scheduled or manual redeploy: the relay's history
             // is then ambiguous) and asks the relay's history whether this
-            // deploy reached its target.
-            const target = await checkDeployTarget(deploy, deploy.server.id, deploy.app.name);
+            // deploy reached its target. The panel's own app is held to the
+            // same proof; it only gets time (see isPanelSelfApp).
+            const target = await checkDeployTargetDetailed(deploy, deploy.server.id, deploy.app.name);
             if (target.reached) {
               newStatus = "success";
               failedCheck = undefined;
+              evidence = target.evidence;
+            } else if (
+              target.noEntry &&
+              isPanelSelfApp(deploy.app.name) &&
+              Date.now() - deploy.createdAt.getTime() < SELF_DEPLOY_PROOF_GRACE_MS
+            ) {
+              // The relay may still be finishing this self-deploy: leave the
+              // record running and look again on the next pass.
+              console.log(`[stuck-sweep] Self-deploy ${deploy.id} (${deploy.app.name}) is not in the relay's history yet, waiting`);
+              continue;
             } else {
-              failedCheck = target.failedCheck;
+              failedCheck = isPanelSelfApp(deploy.app.name)
+                ? `the panel is up, but this self-deploy is not verified: ${target.failedCheck}`
+                : target.failedCheck;
             }
           }
         } catch {
@@ -190,6 +239,11 @@ async function sweepOnce(): Promise<void> {
         where: { id: deploy.id, status: "running" },
         data: {
           status: newStatus,
+          // The same fields every other deploy record carries, from the
+          // relay's own entry for this deploy. Prisma skips `undefined`.
+          commitBefore: evidence?.commitBefore ?? undefined,
+          commitAfter: evidence?.commitAfter ?? undefined,
+          duration: evidence?.durationMs ?? undefined,
           log: JSON.stringify([...existingSteps, recoveryStep]),
         },
       });
@@ -223,6 +277,64 @@ async function sweepOnce(): Promise<void> {
       // an unexpected shape on a single row used to be able to take down
       // every deploy after it in this batch.
       console.error(`[stuck-sweep] Failed to recover deploy ${deploy.id} (${deploy.app?.name}):`, err);
+    }
+  }
+}
+
+/**
+ * Settles apps left on `deploying` with no deploy to own the status.
+ *
+ * Why: the sweep above finalizes the deploy row first and the app row after
+ * it, as separate writes, and only ever looks at `running` deploy rows. A
+ * failure between the two writes (or an app status written by a process that
+ * died before it could settle it) leaves a finished deploy and an app that
+ * reads `deploying` forever. Nothing else resets it.
+ *
+ * Which apps: `deploying` for longer than STUCK_THRESHOLD_MS (the dispatch
+ * writes the Deploy row before the app status, so a live deploy always has a
+ * `running` row) and with no `running` Deploy row at all, in this process or
+ * another.
+ *
+ * To what: the verdict of the app's latest finished deploy, which carries its
+ * own evidence (health gate, relay proof, sweep proof): `success` is
+ * `healthy`, `failed` is `unhealthy` unless the relay rolled back and the
+ * rollback health check passed (`healthy`, as finalizeDeploy writes it), and
+ * everything else (`interrupted`, a rollback row) or no finished deploy at all
+ * is `unknown`: nothing shows how the app is doing. A deploy the relay refused
+ * at preflight says nothing about the app and is skipped, as in
+ * statusAfterBlocked (stream-deploy.ts).
+ *
+ * Compare-and-set on `deploying`, so a dispatch that began after the query is
+ * not overwritten.
+ */
+async function reconcileDeployingApps(): Promise<void> {
+  const cutoff = new Date(Date.now() - STUCK_THRESHOLD_MS);
+  const apps = await prisma.app.findMany({
+    where: { status: "deploying", updatedAt: { lt: cutoff }, deploys: { none: { status: "running" } } },
+    select: {
+      id: true,
+      name: true,
+      deploys: {
+        where: { status: { not: "running" } },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+        select: { status: true, log: true },
+      },
+    },
+  });
+
+  for (const app of apps) {
+    try {
+      const last = app.deploys.find((d) => !isBlockedDeployLog(d.log));
+      let status = "unknown";
+      if (last?.status === "success") status = "healthy";
+      else if (last?.status === "failed") {
+        status = classifyDeployLogOutcome(last.status, last.log) === "rolled_back_healthy" ? "healthy" : "unhealthy";
+      }
+      const { count } = await prisma.app.updateMany({ where: { id: app.id, status: "deploying" }, data: { status } });
+      if (count > 0) console.log(`[stuck-sweep] App ${app.name} was left on deploying with no running deploy: now ${status}`);
+    } catch (err) {
+      console.error(`[stuck-sweep] Failed to reconcile app ${app.name}:`, err);
     }
   }
 }

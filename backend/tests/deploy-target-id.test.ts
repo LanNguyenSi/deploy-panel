@@ -13,7 +13,9 @@ vi.mock("../src/lib/relay.js", () => ({
 import { relayRequest } from "../src/lib/relay.js";
 import {
   assessTargetReached,
+  assessTargetReachedWithEntry,
   checkDeployTarget,
+  checkDeployTargetDetailed,
   relayVersionSupportsDeployIds,
   RELAY_DEPLOY_ID_MIN_VERSION,
 } from "../src/lib/deploy-target.js";
@@ -174,5 +176,57 @@ describe("relay deploy-id capability", () => {
     });
     const verdict = await checkDeployTarget({ id: OWN_ID, appId: "a1", createdAt: START }, "srv", "thd");
     expect(verdict.reached).toBe(true);
+  });
+});
+
+describe("the relay entry as evidence, and the noEntry flag", () => {
+  it("assessTargetReachedWithEntry returns the entry's commits and duration on a pass; assessTargetReached stays a bare verdict", () => {
+    const d = detail([entry({ deployId: OWN_ID, commitBefore: "old1111", commitAfter: "abc1234ff", durationMs: 12_345.6 })]);
+    expect(assessTargetReachedWithEntry(deploy, d)).toEqual({
+      reached: true,
+      entry: { commitBefore: "old1111", commitAfter: "abc1234ff", durationMs: 12_346 },
+    });
+    expect(assessTargetReached(deploy, d)).toEqual({ reached: true });
+  });
+
+  it("a missing commitBefore or a non-positive duration is null, never invented", () => {
+    const verdict = assessTargetReachedWithEntry(deploy, detail([entry({ deployId: OWN_ID, durationMs: 0 })]));
+    expect(verdict).toEqual({ reached: true, entry: { commitBefore: null, commitAfter: HEAD, durationMs: null } });
+  });
+
+  it("noEntry: an id-capable relay whose history lacks this id; a relay with nothing since the start; both flag it", () => {
+    const byId = assessTargetReached(deploy, detail([entry({ deployId: OTHER_ID })]));
+    expect(byId).toMatchObject({ reached: false, noEntry: true });
+    const bySince = assessTargetReached(deploy, detail([entry({ createdAt: new Date(START.getTime() - 60_000).toISOString() })]));
+    expect(bySince).toMatchObject({ reached: false, noEntry: true });
+  });
+
+  it("noEntry is not set when an entry exists and disqualifies the deploy (failed, wrong HEAD, ambiguous)", () => {
+    expect(assessTargetReached(deploy, detail([entry({ deployId: OWN_ID, status: "failed" })]))).not.toHaveProperty("noEntry");
+    expect(assessTargetReached(deploy, detail([entry({ deployId: OWN_ID, commitAfter: "zzzzzzz" })]))).not.toHaveProperty("noEntry");
+    expect(assessTargetReached(deploy, detail([entry(), entry()]))).not.toHaveProperty("noEntry");
+  });
+
+  it("checkDeployTargetDetailed passes the evidence and the noEntry flag through; checkDeployTarget strips both", async () => {
+    const full = { id: OWN_ID, appId: "a1", createdAt: START };
+    mRelay.mockImplementation(async ({ path }: { path: string }) =>
+      path === "/health" ? {} : detail([entry({ deployId: OWN_ID, commitBefore: "old1111" })]),
+    );
+    expect(await checkDeployTargetDetailed(full, "srv", "thd")).toEqual({
+      reached: true,
+      evidence: { commitBefore: "old1111", commitAfter: HEAD, durationMs: 140_000 },
+    });
+    expect(await checkDeployTarget(full, "srv", "thd")).toEqual({ reached: true });
+
+    mRelay.mockImplementation(async ({ path }: { path: string }) => (path === "/health" ? {} : detail([entry({ deployId: OTHER_ID })])));
+    expect(await checkDeployTargetDetailed(full, "srv", "thd")).toMatchObject({ reached: false, noEntry: true });
+    expect(await checkDeployTarget(full, "srv", "thd")).not.toHaveProperty("noEntry");
+  });
+
+  it("a relay lookup failure is not noEntry: the relay was not asked successfully", async () => {
+    mRelay.mockRejectedValue(new Error("down"));
+    const check = await checkDeployTargetDetailed({ id: OWN_ID, appId: "a1", createdAt: START }, "srv", "thd");
+    expect(check).toMatchObject({ reached: false });
+    expect(check).not.toHaveProperty("noEntry");
   });
 });

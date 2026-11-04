@@ -1,14 +1,41 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { DeployInfo, DeployPanelClient } from "./client.js";
+import { PanelConnectionError, type DeployInfo, type DeployPanelClient } from "./client.js";
 
 function text(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
 }
 
+// An error text is never empty: a blank message falls back to the error's
+// name, then to a fixed text, so a caller never sees `{"error":""}`.
+function describeError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  if (raw.trim() !== "") return raw;
+  const name = e instanceof Error ? e.name : "";
+  return name && name !== "Error" ? name : "unknown error (the failure carried no message)";
+}
+
 function error(e: unknown) {
-  const message = e instanceof Error ? e.message : String(e);
+  const message = describeError(e);
   return { content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }], isError: true as const };
+}
+
+// The panel restarts when it deploys itself (it replaces its own containers
+// through the relay), which cuts the connection mid-deploy. Name the deploy
+// so the caller can read its result instead of guessing.
+function connectionDroppedMessage(e: PanelConnectionError, deployId: string | undefined, server: string, app: string): string {
+  if (deployId) {
+    return (
+      `Lost the connection to the panel while waiting for deploy ${deployId}: ${e.message}. ` +
+      `If this deploy replaces the panel itself, the panel restarted during its own deploy. ` +
+      `Check deploy_status ${deployId}: the panel settles an interrupted self-deploy to success, failed or interrupted a few minutes after it is back up.`
+    );
+  }
+  return (
+    `Lost the connection to the panel before it returned a deploy id: ${e.message}. ` +
+    `The deploy may or may not have started. If the panel restarted during its own deploy, ` +
+    `look for it with deploy_list (app ${app}, server ${server}) and check deploy_status for its id.`
+  );
 }
 
 const TAIL_MAX_LINES = 20;
@@ -233,8 +260,10 @@ export function registerTools(server: McpServer, client: DeployPanelClient) {
       verbose: z.boolean().optional().describe("Return the full deploy result including every step's complete output (default: false, compact result)"),
     },
     async ({ server, app, force, ref, wait, verbose }) => {
+      let deployId: string | undefined;
       try {
         const { deploy } = await client.deploy(server, app, { force, ref });
+        deployId = deploy.id;
 
         if (wait === false) {
           return text({ message: "Deploy started", deployId: deploy.id, status: deploy.status });
@@ -243,6 +272,7 @@ export function registerTools(server: McpServer, client: DeployPanelClient) {
         const result = await client.pollDeploy(deploy.id);
         return text(verbose === true ? result.deploy : compactDeploy(result.deploy));
       } catch (e) {
+        if (e instanceof PanelConnectionError) return error(new Error(connectionDroppedMessage(e, deployId, server, app)));
         return error(e);
       }
     },

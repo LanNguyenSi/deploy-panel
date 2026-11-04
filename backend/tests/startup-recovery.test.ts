@@ -27,7 +27,11 @@ vi.mock("../src/lib/prisma.js", () => ({
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       findFirst: vi.fn().mockResolvedValue(null),
     },
-    app: { update: vi.fn().mockResolvedValue({}) },
+    app: {
+      update: vi.fn().mockResolvedValue({}),
+      findMany: vi.fn().mockResolvedValue([]),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+    },
   },
 }));
 
@@ -44,6 +48,8 @@ const mFindMany = (prisma.deploy as any).findMany as ReturnType<typeof vi.fn>;
 const mUpdateMany = (prisma.deploy as any).updateMany as ReturnType<typeof vi.fn>;
 const mDeployFindFirst = (prisma.deploy as any).findFirst as ReturnType<typeof vi.fn>;
 const mAppUpdate = (prisma.app as any).update as ReturnType<typeof vi.fn>;
+const mAppFindMany = (prisma.app as any).findMany as ReturnType<typeof vi.fn>;
+const mAppUpdateMany = (prisma.app as any).updateMany as ReturnType<typeof vi.fn>;
 const mRelay = relayRequest as unknown as ReturnType<typeof vi.fn>;
 
 const lastCall = (m: ReturnType<typeof vi.fn>) => m.mock.calls[m.mock.calls.length - 1][0];
@@ -95,6 +101,8 @@ describe("recoverStuckDeploys", () => {
     clearActiveDeploys();
     mUpdateMany.mockResolvedValue({ count: 1 });
     mDeployFindFirst.mockResolvedValue(null);
+    mAppFindMany.mockResolvedValue([]);
+    mAppUpdateMany.mockResolvedValue({ count: 1 });
   });
 
   it("writes the recovery note as a JSON step, appended to whatever real steps were already in the log, instead of bare text", async () => {
@@ -515,7 +523,7 @@ describe("recoverStuckDeploys", () => {
       });
     });
 
-    it("keeps the panel's own self-deploy a success even when a later deploy row exists for it", async () => {
+    it("holds the panel's own self-deploy to the later-deploy-row check too: no preflight-only exemption", async () => {
       mFindMany.mockResolvedValue([relayDeploy({ app: { name: "deploy-panel" } })]);
       mDeployFindFirst.mockImplementation(async (args: any) =>
         args.where.createdAt?.gt ? { id: "later" } : null,
@@ -524,7 +532,8 @@ describe("recoverStuckDeploys", () => {
 
       await recoverStuckDeploys();
 
-      expect(finalizedStatus()).toBe("success");
+      expect(finalizedStatus()).toBe("interrupted");
+      expect(recoveryOutput()).toContain("another deploy or rollback of this app (later)");
     });
 
     it("accepts a short HEAD against a full target sha (prefix match)", async () => {
@@ -562,20 +571,6 @@ describe("recoverStuckDeploys", () => {
       expect(finalizedStatus()).toBe("interrupted");
     });
 
-    it("keeps the panel's own self-deploy on the preflight-only verdict: success even with no relay history since the start", async () => {
-      mFindMany.mockResolvedValue([relayDeploy({ app: { name: "deploy-panel" } })]);
-      // No relay record since the start and a HEAD that would fail the target
-      // check for any other app: the self-deploy path must not consult it.
-      mockRelay({ passed: true, detail: { commit: "oldsha1", recentDeploys: [] } });
-
-      await recoverStuckDeploys();
-
-      expect(finalizedStatus()).toBe("success");
-      expect(lastCall(mAppUpdate).data.status).toBe("healthy");
-      expect(mRelay).toHaveBeenCalledTimes(1);
-      expect(mRelay.mock.calls[0][0].path).toBe("/api/apps/deploy-panel/preflight");
-    });
-
     it("a self-deploy whose preflight does not pass is still interrupted", async () => {
       mFindMany.mockResolvedValue([relayDeploy({ app: { name: "deploy-panel" } })]);
       mockRelay({ passed: false });
@@ -586,18 +581,165 @@ describe("recoverStuckDeploys", () => {
       expect(recoveryOutput()).toContain("preflight did not pass");
     });
 
-    it("honours PANEL_SELF_APP_NAME for a panel registered under another relay app name", async () => {
-      vi.stubEnv("PANEL_SELF_APP_NAME", "my-panel");
-      try {
-        mFindMany.mockResolvedValue([relayDeploy({ app: { name: "my-panel" } })]);
+    describe("panel self-deploy (the relay records it last)", () => {
+      const MIN = 60_000;
+      const ago = (ms: number) => new Date(Date.now() - ms);
+      // A self-deploy that started `startedMsAgo` ago; the relay entry (when
+      // present) ended 30 s after the start and ran 20 s, carrying the id.
+      const selfDeploy = (startedMsAgo: number, name = "deploy-panel") =>
+        relayDeploy({ id: "self1", createdAt: ago(startedMsAgo), app: { name } });
+      const selfEntry = (startedMsAgo: number, over: Record<string, unknown> = {}) =>
+        relayDeployAfterStart({
+          deployId: "self1",
+          createdAt: new Date(Date.now() - startedMsAgo + 30_000).toISOString(),
+          durationMs: 20_000,
+          ...over,
+        });
+      const noWrites = () => {
+        expect(mUpdateMany).not.toHaveBeenCalled();
+        expect(mAppUpdate).not.toHaveBeenCalled();
+      };
+
+      it("is success only on the relay's proof, and takes commits and duration from the relay entry", async () => {
+        mFindMany.mockResolvedValue([selfDeploy(3 * MIN)]);
+        mockRelay({ passed: true, detail: { commit: "newsha2", recentDeploys: [selfEntry(3 * MIN)] } });
+
+        await recoverStuckDeploys();
+
+        const data = lastCall(mUpdateMany).data;
+        expect(data.status).toBe("success");
+        expect(data.commitBefore).toBe("oldsha1111111");
+        expect(data.commitAfter).toBe("newsha2222222");
+        expect(data.duration).toBe(20_000);
+        expect(lastCall(mAppUpdate).data.status).toBe("healthy");
+        expect(mRelay.mock.calls.map((c) => c[0].path)).toContain("/api/apps/deploy-panel");
+      });
+
+      it("stays running, with no write at all, while the relay has no entry for it and it is inside the grace window", async () => {
+        mFindMany.mockResolvedValue([selfDeploy(3 * MIN)]);
         mockRelay({ passed: true, detail: { commit: "oldsha1", recentDeploys: [] } });
 
         await recoverStuckDeploys();
 
-        expect(finalizedStatus()).toBe("success");
-      } finally {
-        vi.unstubAllEnvs();
-      }
+        noWrites();
+      });
+
+      it("stays running inside the grace window on an id-capable relay whose history lacks its id", async () => {
+        mFindMany.mockResolvedValue([selfDeploy(3 * MIN)]);
+        mockRelay({
+          passed: true,
+          health: { status: "ok", version: "0.6.0" },
+          detail: { commit: "oldsha1", recentDeploys: [relayDeployAfterStart({ deployId: "someone-else" })] },
+        });
+
+        await recoverStuckDeploys();
+
+        noWrites();
+      });
+
+      it("ends interrupted (unverified, distinct message) once the grace window is over and the relay still has no entry", async () => {
+        mFindMany.mockResolvedValue([selfDeploy(11 * MIN)]);
+        mockRelay({ passed: true, detail: { commit: "oldsha1", recentDeploys: [] } });
+
+        await recoverStuckDeploys();
+
+        expect(finalizedStatus()).toBe("interrupted");
+        expect(lastCall(mAppUpdate).data.status).toBe("unknown");
+        expect(recoveryOutput()).toContain("the panel is up, but this self-deploy is not verified");
+        expect(recoveryOutput()).toContain("recorded no deploy since");
+        const data = lastCall(mUpdateMany).data;
+        expect(data.commitAfter).toBeUndefined();
+        expect(data.duration).toBeUndefined();
+      });
+
+      it("does not wait when the relay has an entry that disqualifies the deploy (failed entry): interrupted at once", async () => {
+        mFindMany.mockResolvedValue([selfDeploy(3 * MIN)]);
+        mockRelay({
+          passed: true,
+          detail: { commit: "newsha2", recentDeploys: [selfEntry(3 * MIN, { status: "failed" })] },
+        });
+
+        await recoverStuckDeploys();
+
+        expect(finalizedStatus()).toBe("interrupted");
+        expect(recoveryOutput()).toContain("ended failed");
+        expect(lastCall(mUpdateMany).data.commitAfter).toBeUndefined();
+      });
+
+      it("does not wait when the relay cannot be asked for the app detail: interrupted at once", async () => {
+        mFindMany.mockResolvedValue([selfDeploy(3 * MIN)]);
+        mRelay.mockImplementation(async ({ path }: { path: string }) => {
+          if (path.endsWith("/preflight")) return { app: "x", passed: true };
+          throw new Error("relay down");
+        });
+
+        await recoverStuckDeploys();
+
+        expect(finalizedStatus()).toBe("interrupted");
+      });
+
+      it("never waits for any other app: no entry yet is interrupted inside the same window", async () => {
+        mFindMany.mockResolvedValue([relayDeploy({ id: "other1", createdAt: ago(3 * MIN) })]);
+        mockRelay({ passed: true, detail: { commit: "oldsha1", recentDeploys: [] } });
+
+        await recoverStuckDeploys();
+
+        expect(finalizedStatus()).toBe("interrupted");
+        expect(recoveryOutput()).not.toContain("self-deploy");
+      });
+
+      it("honours PANEL_SELF_APP_NAME: the configured name waits, the default name no longer does", async () => {
+        vi.stubEnv("PANEL_SELF_APP_NAME", "my-panel");
+        try {
+          mockRelay({ passed: true, detail: { commit: "oldsha1", recentDeploys: [] } });
+
+          mFindMany.mockResolvedValue([selfDeploy(3 * MIN, "my-panel")]);
+          await recoverStuckDeploys();
+          noWrites();
+
+          mFindMany.mockResolvedValue([selfDeploy(3 * MIN, "deploy-panel")]);
+          await recoverStuckDeploys();
+          expect(finalizedStatus()).toBe("interrupted");
+        } finally {
+          vi.unstubAllEnvs();
+        }
+      });
+
+      it("a self-deploy entry without a positive duration still proves the deploy; the record just gets no duration", async () => {
+        mFindMany.mockResolvedValue([selfDeploy(3 * MIN)]);
+        mockRelay({ passed: true, detail: { commit: "newsha2", recentDeploys: [selfEntry(3 * MIN, { durationMs: 0 })] } });
+        // Id-capable via the history entry's deployId, so the timing rules are not applied.
+
+        await recoverStuckDeploys();
+
+        const data = lastCall(mUpdateMany).data;
+        expect(data.status).toBe("success");
+        expect(data.commitAfter).toBe("newsha2222222");
+        expect(data.duration).toBeUndefined();
+      });
+    });
+
+    it("a non-panel app's success also carries the relay entry's commits and duration", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      mockRelay({ detail: { commit: "newsha2", recentDeploys: [relayDeployAfterStart()] } });
+
+      await recoverStuckDeploys();
+
+      const data = lastCall(mUpdateMany).data;
+      expect(data).toMatchObject({ status: "success", commitBefore: "oldsha1111111", commitAfter: "newsha2222222", duration: 60_000 });
+    });
+
+    it("an interrupted record carries no commit or duration fields", async () => {
+      mFindMany.mockResolvedValue([relayDeploy()]);
+      mockRelay({ detail: { commit: "oldsha1", recentDeploys: [] } });
+
+      await recoverStuckDeploys();
+
+      const data = lastCall(mUpdateMany).data;
+      expect(data.status).toBe("interrupted");
+      expect(data.commitBefore).toBeUndefined();
+      expect(data.commitAfter).toBeUndefined();
+      expect(data.duration).toBeUndefined();
     });
   });
 
@@ -697,5 +839,119 @@ describe("recoverStuckDeploys", () => {
 
     releaseFindMany([]);
     await firstPass;
+  });
+
+  describe("apps left on deploying with no running deploy (reconcileDeployingApps)", () => {
+    const appRow = (deploys: Array<{ status: string; log?: string | null }>, over: Record<string, unknown> = {}) => ({
+      id: "app1",
+      name: "thd",
+      deploys: deploys.map((d) => ({ log: null, ...d })),
+      ...over,
+    });
+    const settled = () => lastCall(mAppUpdateMany);
+
+    it("looks only at apps on deploying for longer than the stuck threshold that have no running deploy row, and runs when no deploy is stuck", async () => {
+      mFindMany.mockResolvedValue([]);
+
+      await recoverStuckDeploys();
+
+      const query = mAppFindMany.mock.calls[0][0];
+      expect(query.where.status).toBe("deploying");
+      expect(query.where.deploys).toEqual({ none: { status: "running" } });
+      const age = Date.now() - query.where.updatedAt.lt.getTime();
+      expect(age).toBeGreaterThanOrEqual(2 * 60_000 - 1000);
+      expect(age).toBeLessThan(2 * 60_000 + 5000);
+      expect(query.select.deploys.where).toEqual({ status: { not: "running" } });
+      expect(query.select.deploys.orderBy).toEqual({ createdAt: "desc" });
+    });
+
+    it("settles the app from its latest finished deploy: success is healthy", async () => {
+      mFindMany.mockResolvedValue([]);
+      mAppFindMany.mockResolvedValue([appRow([{ status: "success" }, { status: "failed" }])]);
+
+      await recoverStuckDeploys();
+
+      expect(settled()).toEqual({ where: { id: "app1", status: "deploying" }, data: { status: "healthy" } });
+    });
+
+    it("failed is unhealthy", async () => {
+      mFindMany.mockResolvedValue([]);
+      mAppFindMany.mockResolvedValue([appRow([{ status: "failed", log: JSON.stringify([{ name: "up", status: "failure" }]) }])]);
+
+      await recoverStuckDeploys();
+
+      expect(settled().data.status).toBe("unhealthy");
+    });
+
+    it("failed after a healthy automatic rollback is healthy (the previous version serves)", async () => {
+      mFindMany.mockResolvedValue([]);
+      const log = JSON.stringify([
+        { name: "up", status: "failure" },
+        { name: "rollback: health check", status: "success" },
+      ]);
+      mAppFindMany.mockResolvedValue([appRow([{ status: "failed", log }])]);
+
+      await recoverStuckDeploys();
+
+      expect(settled().data.status).toBe("healthy");
+    });
+
+    it("interrupted and rolled_back are unknown: nothing shows how the app is doing", async () => {
+      mFindMany.mockResolvedValue([]);
+      mAppFindMany.mockResolvedValue([appRow([{ status: "interrupted" }, { status: "success" }])]);
+      await recoverStuckDeploys();
+      expect(settled().data.status).toBe("unknown");
+
+      mAppFindMany.mockResolvedValue([appRow([{ status: "rolled_back" }])]);
+      await recoverStuckDeploys();
+      expect(settled().data.status).toBe("unknown");
+    });
+
+    it("an app with no finished deploy at all is unknown", async () => {
+      mFindMany.mockResolvedValue([]);
+      mAppFindMany.mockResolvedValue([appRow([])]);
+
+      await recoverStuckDeploys();
+
+      expect(settled().data.status).toBe("unknown");
+    });
+
+    it("skips a deploy the relay refused at preflight: it says nothing about the app", async () => {
+      mFindMany.mockResolvedValue([]);
+      const blocked = JSON.stringify([{ name: "env-preflight", kind: "preflight-check", status: "failure" }]);
+      mAppFindMany.mockResolvedValue([appRow([{ status: "failed", log: blocked }, { status: "success" }])]);
+
+      await recoverStuckDeploys();
+
+      expect(settled().data.status).toBe("healthy");
+    });
+
+    it("compare-and-set on deploying: a count of 0 is quiet, and one app failing does not stop the next", async () => {
+      mFindMany.mockResolvedValue([]);
+      mAppFindMany.mockResolvedValue([
+        appRow([{ status: "success" }], { id: "bad", name: "bad-app" }),
+        appRow([{ status: "success" }], { id: "good", name: "good-app" }),
+      ]);
+      mAppUpdateMany.mockImplementation((args: any) => {
+        if (args.where.id === "bad") throw new Error("db blip");
+        return Promise.resolve({ count: 0 });
+      });
+
+      await expect(recoverStuckDeploys()).resolves.toBeUndefined();
+
+      expect(mAppUpdateMany.mock.calls.map((c) => c[0].where)).toEqual([
+        { id: "bad", status: "deploying" },
+        { id: "good", status: "deploying" },
+      ]);
+    });
+
+    it("a failing reconcile query does not fail the sweep that already finalized deploy rows", async () => {
+      mFindMany.mockResolvedValue([makeStuckDeploy()]);
+      mAppFindMany.mockRejectedValue(new Error("db down"));
+
+      await expect(recoverStuckDeploys()).resolves.toBeUndefined();
+
+      expect(mUpdateMany).toHaveBeenCalledOnce();
+    });
   });
 });

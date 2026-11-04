@@ -78,7 +78,44 @@ async function relayReportsIdCapability(serverId: string): Promise<boolean> {
   }
 }
 
-export type TargetVerdict = { reached: true } | { reached: false; reason: string };
+/**
+ * What the relay's own history entry says about a deploy it ran: the values the
+ * panel's deploy record carries for every other deploy (the SSE `done` event's
+ * commitBefore / commitAfter / durationMs). Read from the entry the target
+ * check singled out, so the commits and the duration are the relay's, not
+ * inferred.
+ */
+export interface RelayEntryEvidence {
+  commitBefore: string | null;
+  commitAfter: string | null;
+  /** Milliseconds, as agent-relay records them; null when the entry carries no positive number. */
+  durationMs: number | null;
+}
+
+export type TargetVerdict =
+  | { reached: true }
+  | {
+      reached: false;
+      reason: string;
+      /**
+       * Set when the relay was asked and its history holds no entry for this
+       * deploy (yet): the deploy may still be running on the relay, which has
+       * not recorded it. Not set when an entry exists but disqualifies the deploy.
+       */
+      noEntry?: true;
+    };
+
+type EntryVerdict = { reached: true; entry: RelayEntryEvidence } | Extract<TargetVerdict, { reached: false }>;
+
+function evidenceOf(entry: RelayDeployRecord): RelayEntryEvidence {
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  const ms = entry.durationMs;
+  return {
+    commitBefore: str(entry.commitBefore),
+    commitAfter: str(entry.commitAfter),
+    durationMs: typeof ms === "number" && Number.isFinite(ms) && ms > 0 ? Math.round(ms) : null,
+  };
+}
 
 /**
  * Slack allowed between the panel's start of a deploy and the relay's own
@@ -173,6 +210,16 @@ export function assessTargetReached(
   detail: RelayAppDetail,
   options: { relayRecordsIds?: boolean } = {},
 ): TargetVerdict {
+  const verdict = assessTargetReachedWithEntry(deploy, detail, options);
+  return verdict.reached ? { reached: true } : verdict;
+}
+
+/** assessTargetReached, plus the relay entry that proved it (see RelayEntryEvidence). */
+export function assessTargetReachedWithEntry(
+  deploy: { id?: string; createdAt: Date },
+  detail: RelayAppDetail,
+  options: { relayRecordsIds?: boolean } = {},
+): EntryVerdict {
   const head = typeof detail?.app?.commit === "string" ? detail.app.commit.trim() : "";
   if (!head) return { reached: false, reason: "the relay reported no repo HEAD for the app" };
 
@@ -190,6 +237,7 @@ export function assessTargetReached(
       return {
         reached: false,
         reason: `the relay reports deploy ids but none of its recent entries carries this deploy's id (${deploy.id}), so this deploy left no entry`,
+        noEntry: true,
       };
     }
     return assessEntryOutcome(own, head);
@@ -201,6 +249,7 @@ export function assessTargetReached(
     return {
       reached: false,
       reason: `the relay recorded no deploy since ${deploy.createdAt.toISOString()}, so the containers were not recreated by this deploy (repo HEAD is ${head})`,
+      noEntry: true,
     };
   }
   if (sinceStart.length > 1) {
@@ -353,7 +402,7 @@ export function assessRollbackReached(
 }
 
 /** The success and HEAD checks shared by the id-matched and the correlated entry. */
-function assessEntryOutcome(entry: RelayDeployRecord, head: string): TargetVerdict {
+function assessEntryOutcome(entry: RelayDeployRecord, head: string): EntryVerdict {
   if (entry.status !== "success") {
     return {
       reached: false,
@@ -369,7 +418,7 @@ function assessEntryOutcome(entry: RelayDeployRecord, head: string): TargetVerdi
       reason: `the repo HEAD ${head} does not match the target commit ${target}`,
     };
   }
-  return { reached: true };
+  return { reached: true, entry: evidenceOf(entry) };
 }
 
 function fetchAppDetail(serverId: string, appName: string): Promise<RelayAppDetail> {
@@ -377,6 +426,11 @@ function fetchAppDetail(serverId: string, appName: string): Promise<RelayAppDeta
 }
 
 export type DeployTargetCheck = { reached: true } | { reached: false; failedCheck: string };
+
+/** DeployTargetCheck plus what the relay's entry said (reached) or whether it had no entry yet (not reached). */
+export type DeployTargetCheckDetailed =
+  | { reached: true; evidence?: RelayEntryEvidence }
+  | { reached: false; failedCheck: string; noEntry?: true };
 
 /**
  * The full "did this deploy really reach its target" check shared by the two
@@ -406,6 +460,22 @@ export async function checkDeployTarget(
   appName: string,
   options: { rollback?: { requestedCommit?: string | null } } = {},
 ): Promise<DeployTargetCheck> {
+  const check = await checkDeployTargetDetailed(deploy, serverId, appName, options);
+  return check.reached ? { reached: true } : { reached: false, failedCheck: check.failedCheck };
+}
+
+/**
+ * checkDeployTarget with the relay entry's commits and duration on a pass
+ * (deploys only: a rollback entry is judged by assessRollbackReached and
+ * carries no evidence) and the `noEntry` flag on a miss, for the callers that
+ * write the deploy record or decide whether to wait.
+ */
+export async function checkDeployTargetDetailed(
+  deploy: { id: string; appId: string; createdAt: Date },
+  serverId: string,
+  appName: string,
+  options: { rollback?: { requestedCommit?: string | null } } = {},
+): Promise<DeployTargetCheckDetailed> {
   let failedCheck = "deploy history lookup failed";
   try {
     const laterDeploy = await prisma.deploy.findFirst({
@@ -421,11 +491,14 @@ export async function checkDeployTarget(
     failedCheck = "relay unreachable or app lookup failed";
     const detail = await fetchAppDetail(serverId, appName);
     const relayRecordsIds = await relayReportsIdCapability(serverId);
-    const verdict = options.rollback
-      ? assessRollbackReached(deploy, detail, { relayRecordsIds, requestedCommit: options.rollback.requestedCommit })
-      : assessTargetReached(deploy, detail, { relayRecordsIds });
-    if (verdict.reached) return { reached: true };
-    return { reached: false, failedCheck: `target not reached: ${verdict.reason}` };
+    if (options.rollback) {
+      const verdict = assessRollbackReached(deploy, detail, { relayRecordsIds, requestedCommit: options.rollback.requestedCommit });
+      if (verdict.reached) return { reached: true };
+      return { reached: false, failedCheck: `target not reached: ${verdict.reason}` };
+    }
+    const verdict = assessTargetReachedWithEntry(deploy, detail, { relayRecordsIds });
+    if (verdict.reached) return { reached: true, evidence: verdict.entry };
+    return { reached: false, failedCheck: `target not reached: ${verdict.reason}`, ...(verdict.noEntry ? { noEntry: true as const } : {}) };
   } catch {
     // Relay unreachable or app not found, or the lookup threw: not reached.
     return { reached: false, failedCheck };

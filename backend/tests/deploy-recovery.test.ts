@@ -81,6 +81,46 @@ describe("recoverBrokenDeploy", () => {
     expect(lastCall(mAppUpdate).data.status).toBe("healthy");
   });
 
+  it("a recovered success carries the relay entry's commits and duration, like a streamed done event", async () => {
+    mGate.mockResolvedValue({ healthy: true });
+    mockRelayDetail({
+      commit: HEAD,
+      recentDeploys: [relayEntry({ commitBefore: "old9999", commitAfter: "abc1234ffff", durationMs: 140_000 })],
+    });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(lastCall(mDeployUpdate).data).toMatchObject({
+      status: "success",
+      commitBefore: "old9999",
+      commitAfter: "abc1234ffff",
+      duration: 140_000,
+    });
+  });
+
+  it("a recovered success whose relay entry has no commitBefore leaves that column alone", async () => {
+    mGate.mockResolvedValue({ healthy: true });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    const data = lastCall(mDeployUpdate).data;
+    expect(data.commitAfter).toBe(HEAD);
+    expect(data.commitBefore).toBeUndefined();
+  });
+
+  it("an interrupted or failed recovery writes no commit or duration fields", async () => {
+    mGate.mockResolvedValue({ healthy: false, reason: "container crashlooping" });
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+    expect(lastCall(mDeployUpdate).data.commitAfter).toBeUndefined();
+    expect(lastCall(mDeployUpdate).data.duration).toBeUndefined();
+
+    mGate.mockResolvedValue({ healthy: true });
+    mockRelayDetail({ commit: HEAD, recentDeploys: [] });
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+    expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
+    expect(lastCall(mDeployUpdate).data.commitAfter).toBeUndefined();
+  });
+
   it("appends to the deploy's existing log instead of replacing it", async () => {
     mDeployFindUnique.mockResolvedValue({
       log: JSON.stringify([{ name: "provision-secrets", status: "success", durationMs: 0 }]),
@@ -395,6 +435,9 @@ describe("recoverBrokenDeploy: a healthy probe needs proof the target was reache
     expect(lastCall(mDeployUpdate).data.status).toBe("success");
     expect(lastCall(mAppUpdate).data.status).toBe("healthy");
     expect(lastCall(mAppUpdate).data.lastDeployAt).toBeInstanceOf(Date);
+    // A rollback entry is not a deploy's evidence: no commits or duration are copied.
+    expect(lastCall(mDeployUpdate).data.commitAfter).toBeUndefined();
+    expect(lastCall(mDeployUpdate).data.duration).toBeUndefined();
   });
 
   it("real rollback success on an id-capable relay: the rollback's own id-matched entry on HEAD == requested commit -> success", async () => {
