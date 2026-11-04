@@ -820,6 +820,60 @@ describe("recoverStuckDeploys", () => {
     expect(steps.at(-1).status).toBe("failure");
   });
 
+  // The reference rule is finalizeDeploy (stream-deploy.ts): an app write for a
+  // deploy settled as success also writes lastDeployAt; every other verdict
+  // leaves it alone.
+  describe("lastDeployAt on the sweep's app write", () => {
+    const targetDeploy = () =>
+      makeStuckDeploy({
+        id: "t1",
+        appId: "at1",
+        createdAt: DEPLOY_START,
+        app: { name: "event-booking-system" },
+        server: { id: "srv-a", relayUrl: "http://relay.example", relayToken: null },
+      });
+
+    it("a settled success writes lastDeployAt (a Date) together with the healthy status", async () => {
+      setStuck([targetDeploy()]);
+      mockRelay({ detail: { commit: "newsha2", recentDeploys: [relayDeployAfterStart()] } });
+
+      await recoverStuckDeploys();
+
+      const data = lastCall(mAppUpdate).data;
+      expect(data.status).toBe("healthy");
+      expect(data.lastDeployAt).toBeInstanceOf(Date);
+    });
+
+    it("an interrupted settle does not carry the lastDeployAt key", async () => {
+      setStuck([targetDeploy()]);
+      mockRelay({ detail: { commit: "oldsha1", recentDeploys: [] } });
+
+      await recoverStuckDeploys();
+
+      const data = lastCall(mAppUpdate).data;
+      expect(data.status).toBe("unknown");
+      expect(data).not.toHaveProperty("lastDeployAt");
+    });
+
+    it("a settle failed by the relay's id-matched entry does not carry the lastDeployAt key", async () => {
+      setStuck([targetDeploy()]);
+      mockRelay({
+        passed: true,
+        detail: {
+          commit: "newsha2",
+          recentDeploys: [relayDeployAfterStart({ deployId: "t1", status: "failed" })],
+        },
+      });
+
+      await recoverStuckDeploys();
+
+      expect(lastCall(mUpdateMany).data.status).toBe("failed");
+      const data = lastCall(mAppUpdate).data;
+      expect(data.status).toBe("unknown");
+      expect(data).not.toHaveProperty("lastDeployAt");
+    });
+  });
+
   it("compare-and-set: does not touch app.status when updateMany reports the record was already moved off \"running\" by another path", async () => {
     setStuck([makeStuckDeploy()]);
     mUpdateMany.mockResolvedValue({ count: 0 });
@@ -1077,8 +1131,10 @@ describe("recoverStuckDeploys", () => {
       const steps = JSON.parse(call.data.log);
       expect(steps).toHaveLength(3);
       expect(steps.at(-1)).toMatchObject({ name: "startup-recovery", status: "success" });
+      // The row just became a proven success, so the app write also records
+      // the deploy (lastDeployAt), the finalizeDeploy rule.
       const appCall = lastCall(mAppUpdateMany);
-      expect(appCall).toEqual({ where: { id: "ap1", deploys: { none: { status: "running" } } }, data: { status: "healthy" } });
+      expect(appCall).toEqual({ where: { id: "ap1", deploys: { none: { status: "running" } } }, data: { status: "healthy", lastDeployAt: expect.any(Date) } });
     });
 
     it("leaves the row alone while the relay still has no proving entry (no entry, failed entry, later deploy row)", async () => {

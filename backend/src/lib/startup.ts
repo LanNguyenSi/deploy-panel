@@ -294,9 +294,15 @@ async function recoverStuckRecords(stuckDeploys: StuckDeploy[]): Promise<void> {
       });
 
       if (!liveSibling) {
+        // Same reference rule as finalizeDeploy (stream-deploy.ts): a deploy
+        // settled as success is a deploy that happened, so the app records it;
+        // every other verdict leaves lastDeployAt alone.
         await prisma.app.update({
           where: { id: deploy.appId },
-          data: { status: newStatus === "success" ? "healthy" : "unknown" },
+          data:
+            newStatus === "success"
+              ? { status: "healthy", lastDeployAt: new Date() }
+              : { status: "unknown" },
         });
       }
 
@@ -438,9 +444,11 @@ async function upgradeSelfDeploys(): Promise<void> {
         },
       });
       if (count === 0) continue;
+      // The row just became a proven success, so the app records the deploy
+      // (same rule as finalizeDeploy in stream-deploy.ts).
       await prisma.app.updateMany({
         where: { id: deploy.appId, deploys: { none: { status: "running" } } },
-        data: { status: "healthy" },
+        data: { status: "healthy", lastDeployAt: new Date() },
       });
       console.log(`[stuck-sweep] Self-deploy ${deploy.id} (${deploy.app.name}): upgraded to success`);
     } catch (err) {

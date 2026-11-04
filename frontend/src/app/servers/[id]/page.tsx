@@ -23,6 +23,15 @@ import { EmptyStateIcon } from "@/components/EmptyStateIcon";
 
 type Panel = { type: "logs" | "deploy" | "preflight" | "env" | "secrets"; app: string };
 
+// Single-app deploy polling: 2 s while polls succeed; after a failed poll the
+// delay doubles (2 s, 4 s, 8 s, ...) capped at 15 s, and resets to 2 s after
+// the next successful poll: a self-deploy takes the panel's own backend down,
+// so poll errors are transient, not the deploy's outcome. The bound is the
+// backstop: past it the status is simply unknown until a reload.
+const DEPLOY_POLL_MS = 2000;
+const DEPLOY_POLL_MAX_MS = 15000;
+const DEPLOY_POLL_DEADLINE_MS = 15 * 60 * 1000;
+
 export default function ServerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [serverName, setServerName] = useState("");
@@ -39,6 +48,11 @@ export default function ServerDetailPage() {
   // Upstream staleness arrives after the list: null = not arrived yet, "failed" = request failed.
   const [upstream, setUpstream] = useState<Record<string, AppUpstream> | "failed" | null>(null);
   const upstreamSeq = useRef(0);
+  // Single-app deploy poll chain (a self-rescheduling setTimeout): the pending
+  // timer and an unmount flag, so no poll is scheduled and no state is updated
+  // after the page unmounts.
+  const deployPollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deployPollCancelled = useRef(false);
   // Upstream requests still in flight (a stale one may outlive a newer one), so an app the current map does not cover yet shows "Checking".
   const [upstreamInFlight, setUpstreamInFlight] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -211,6 +225,21 @@ export default function ServerDetailPage() {
     load().then(() => autoSync());
   }, [id]);
 
+  // Unmount: cancel the deploy poll chain. The flag also stops a poll already
+  // in flight from touching state after the page is gone.
+  function cancelDeployPoll() {
+    deployPollCancelled.current = true;
+    if (deployPollTimer.current) clearTimeout(deployPollTimer.current);
+  }
+
+  // Arm the flag in the effect, not in handleDeploy: a page unmounted while
+  // the deploy POST is still pending must stay cancelled; the remount re-arms
+  // it (React StrictMode's double mount included).
+  useEffect(() => {
+    deployPollCancelled.current = false;
+    return cancelDeployPoll;
+  }, []);
+
   async function handleDeploy(name: string) {
     requestPermission(); // Ask once, browser remembers the answer
     const ok = await confirm({ title: "Deploy", message: `Deploy "${name}"?`, confirmLabel: "Deploy" });
@@ -226,9 +255,25 @@ export default function ServerDetailPage() {
     try {
       const { deploy } = await deployApp(id, name, { force: true });
 
-      const pollInterval = setInterval(async () => {
+      // A self-deploy restarts the panel's own backend, so every poll inside
+      // the restart window fails: a poll error is transient, never the deploy's
+      // outcome. Chain one setTimeout per poll (no interval to leak), doubling
+      // the delay after each failed poll (2 s, 4 s, 8 s, ... capped at 15 s),
+      // back to 2 s after a successful one, until the row leaves "running" or
+      // the 15-minute bound passes; past the bound the status is unknown.
+      const deadline = Date.now() + DEPLOY_POLL_DEADLINE_MS;
+      let failedPolls = 0;
+      const nextPollDelay = () =>
+        failedPolls === 0
+          ? DEPLOY_POLL_MS
+          : Math.min(DEPLOY_POLL_MS * 2 ** (failedPolls - 1), DEPLOY_POLL_MAX_MS);
+
+      const poll = async () => {
+        if (deployPollCancelled.current) return;
+        let terminal: { status: string; steps: DeployStep[] } | null = null;
         try {
           const { deploy: d } = await getDeployStatus(id, name, deploy.id);
+          if (deployPollCancelled.current) return;
           let steps: DeployStep[] = [];
           if (d.log) {
             try {
@@ -236,20 +281,32 @@ export default function ServerDetailPage() {
             } catch {}
           }
           setDeployLog({ status: d.status, steps });
-
-          if (d.status !== "running") {
-            clearInterval(pollInterval);
-            setDeploying(null);
-            notifyDeployResult(name, d.status, classifyDeployOutcome(d.status, steps));
-            await load();
-          }
+          if (d.status !== "running") terminal = { status: d.status, steps };
+          failedPolls = 0;
         } catch {
-          clearInterval(pollInterval);
+          failedPolls += 1;
+        }
+        if (deployPollCancelled.current) return;
+
+        if (terminal) {
+          setDeploying(null);
+          notifyDeployResult(name, terminal.status, classifyDeployOutcome(terminal.status, terminal.steps));
+          await load();
+          return;
+        }
+        if (Date.now() >= deadline) {
           setDeploying(null);
           setDeployLog(null);
+          // The optimistic app status goes too: the load() below can still
+          // fail (panel still down), and the badge must not stay deploying.
+          setApps((prev) => prev.map((a) => (a.name === name ? { ...a, status: "unknown" } : a)));
+          toast("Deploy status unknown: the panel stopped answering before the deploy finished. Reload the page to see the latest status.", "error");
           await load();
+          return;
         }
-      }, 2000); // Fast polling — backend streams steps in real-time
+        deployPollTimer.current = setTimeout(poll, nextPollDelay());
+      };
+      deployPollTimer.current = setTimeout(poll, nextPollDelay());
     } catch (err: any) {
       setDeploying(null);
       setDeployLog(null);

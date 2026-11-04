@@ -98,6 +98,11 @@ async function clickRollbackAndConfirm(user: ReturnType<typeof userEvent.setup>)
 
 afterEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks keeps a queued mockResolvedValueOnce behind. A deploy test
+  // whose poll never ran (its own once still queued) would otherwise hand that
+  // value to the NEXT test's first poll; reset the queue so every test starts
+  // from a clean poll mock.
+  mGetDeployStatus.mockReset();
 });
 
 describe("ServerDetailPage — Rollback result surfacing", () => {
@@ -1005,5 +1010,205 @@ describe("ServerDetailPage - previous version hint", () => {
   it("shows no hint when the app is not healthy, whatever the last outcome was", async () => {
     await renderWith({ status: "unhealthy", lastDeployOutcome: "rolled_back_healthy" });
     expect(screen.queryByText("running previous version")).not.toBeInTheDocument();
+  });
+});
+
+// The single-app deploy poll (handleDeploy) is a self-rescheduling setTimeout
+// chain: a poll error is transient (a self-deploy takes the panel's own backend
+// down, so every poll in the restart window fails), the delay doubles after
+// each failed poll (2 s, 4 s, 8 s, ... capped at 15 s) and resets to 2 s after
+// a successful one; 15 minutes after the POST the status is unknown, the
+// optimistic state is cleared and a notice says a reload will show it; and the
+// chain must die with the page.
+describe("ServerDetailPage - single deploy poll backoff", () => {
+  // deployAppImpl replaces the deploy POST mock (a test whose POST must stay
+  // pending hands in its own deferred); the default resolves once.
+  async function startDeploy(deployAppImpl?: () => Promise<unknown>) {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mGetServer.mockResolvedValue(SERVER);
+    mGetApps.mockResolvedValue(APPS);
+    mSyncServer.mockResolvedValue({ synced: true, apps: 1, created: 0, updated: 0 });
+    if (deployAppImpl) mDeployApp.mockImplementation(deployAppImpl);
+    else mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const view = render(
+      <Providers>
+        <ServerDetailPage />
+      </Providers>,
+    );
+    await screen.findByText("my-app");
+    await user.click(screen.getByRole("button", { name: "Deploy" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
+    return view;
+  }
+
+  async function tick(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  const pollCalls = () => mGetDeployStatus.mock.calls.filter((c) => c[2] === "deploy-1").length;
+  const deployButton = (name: "Deploy" | "Deploying...") => screen.queryByRole("button", { name });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    mGetDeployStatus.mockReset();
+    // The POST-deferred test sets a persistent deployApp implementation and
+    // the failed-reload test a persistent getApps rejection: mockClear keeps
+    // implementations, so drop them here instead of leaking them downstream.
+    mDeployApp.mockReset();
+    mGetApps.mockReset();
+  });
+
+  it("poll errors back off (2 s, 4 s), a running answer resets to 2 s, and success settles", async () => {
+    mGetDeployStatus
+      .mockRejectedValueOnce(new Error("502 Bad Gateway"))
+      .mockRejectedValueOnce(new Error("502 Bad Gateway"))
+      .mockResolvedValueOnce({ deploy: { id: "deploy-1", status: "running", log: null } })
+      .mockResolvedValueOnce({ deploy: { id: "deploy-1", status: "success", log: null } });
+    await startDeploy();
+
+    // First poll at 2 s; the next is 2 s after a failed poll -> not yet at 2.5 s.
+    await tick(2500);
+    expect(pollCalls()).toBe(1);
+    // Failed once: second poll at ~4 s; a doubled 4 s wait means not before ~8 s.
+    await tick(2000);
+    expect(pollCalls()).toBe(2);
+    // Failed twice: third poll at ~8 s; a running answer must NOT settle the card.
+    await tick(4000);
+    expect(pollCalls()).toBe(3);
+    expect(deployButton("Deploying...")).toBeInTheDocument();
+    expect(deployButton("Deploy")).not.toBeInTheDocument();
+    // Running reset the backoff: the next poll is 2 s later, and it succeeds.
+    await tick(2000);
+    expect(pollCalls()).toBe(4);
+
+    await waitFor(() => expect(deployButton("Deploy")).toBeInTheDocument());
+    expect(deployButton("Deploying...")).not.toBeInTheDocument();
+    // load() ran only now, after the terminal status (2 initial getApps: load + autoSync).
+    await waitFor(() => expect(mGetApps).toHaveBeenCalledTimes(3));
+    // A settled deploy schedules no further poll.
+    await tick(30000);
+    expect(pollCalls()).toBe(4);
+  });
+
+  it("a poll error then a terminal failure settles the card with the failure, like today", async () => {
+    mGetDeployStatus
+      .mockRejectedValueOnce(new Error("502 Bad Gateway"))
+      .mockResolvedValueOnce({ deploy: { id: "deploy-1", status: "failed", log: null } });
+    await startDeploy();
+
+    await tick(2500);
+    expect(pollCalls()).toBe(1);
+    // The error was transient: the card is still deploying, and the retry (2 s
+    // after a failed poll) reports the terminal failure.
+    expect(deployButton("Deploying...")).toBeInTheDocument();
+    await tick(2000);
+    expect(pollCalls()).toBe(2);
+
+    await waitFor(() => expect(deployButton("Deploy")).toBeInTheDocument());
+    await waitFor(() => expect(mGetApps).toHaveBeenCalledTimes(3));
+    expect(screen.getByText("Deploy Progress")).toBeInTheDocument();
+    await tick(30000);
+    expect(pollCalls()).toBe(2);
+  });
+
+  it("always-failing polls back off to the 15 s cap, stop at the 15 minute bound with a notice, and never poll after it", async () => {
+    mGetDeployStatus.mockRejectedValue(new Error("502 Bad Gateway"));
+    await startDeploy();
+
+    // Delays: 2 s, 2 s, 4 s, 8 s, then 15 s (the cap) every time. Cumulative
+    // poll times: 2000, 4000, 8000, 16000, 31000, 46000, ... so the first poll
+    // at or past the 900 s bound is the 63rd, at 901 s. Steps stay below the
+    // notice's 4 s auto-dismiss so the advance that surfaces a poll cannot
+    // also fire that poll's dismissal.
+    for (let i = 0; i < 260 && pollCalls() < 62; i++) await tick(4000);
+    expect(pollCalls()).toBe(62);
+    for (let i = 0; i < 40 && pollCalls() < 63; i++) await tick(500);
+    expect(pollCalls()).toBe(63);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Deploy status unknown");
+    expect(alert).toHaveTextContent("Reload");
+    // Optimistic state cleared: the button is live again and the running
+    // deploy log body is gone (the open panel header stays, as today).
+    expect(deployButton("Deploy")).toBeInTheDocument();
+    expect(deployButton("Deploying...")).not.toBeInTheDocument();
+    expect(screen.queryByText("Waiting for steps...")).not.toBeInTheDocument();
+    await waitFor(() => expect(mGetApps).toHaveBeenCalledTimes(3));
+
+    await tick(30000);
+    expect(pollCalls()).toBe(63);
+  });
+
+  it("makes no getDeployStatus call after the page unmounts (unmount during backoff)", async () => {
+    mGetDeployStatus.mockRejectedValue(new Error("502 Bad Gateway"));
+    const view = await startDeploy();
+
+    // Unmount between the rejected first poll (2 s) and the retry (at 4 s).
+    await tick(2500);
+    expect(pollCalls()).toBe(1);
+
+    view.unmount();
+    for (let i = 0; i < 10; i++) await tick(2000);
+    expect(pollCalls()).toBe(1);
+  });
+
+  it("a poll still in flight at unmount that resolves after it starts no next poll and toasts nothing", async () => {
+    let resolvePoll!: (v: unknown) => void;
+    mGetDeployStatus.mockImplementation(() => new Promise((r) => (resolvePoll = r)));
+    const view = await startDeploy();
+
+    // Unmount while the first poll (at 2 s) is in flight.
+    await tick(2500);
+    expect(pollCalls()).toBe(1);
+
+    view.unmount();
+    await act(async () => {
+      resolvePoll({ deploy: { id: "deploy-1", status: "running", log: null } });
+    });
+    for (let i = 0; i < 10; i++) await tick(2000);
+
+    // The answered poll must not reschedule itself, nor run the bound branch:
+    // the flag is what stops it, so a mutant clearing it on unmount polls on.
+    expect(pollCalls()).toBe(1);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("unmount while the deploy POST is in flight: resolving the POST starts no poll at all", async () => {
+    let resolvePost!: (v: unknown) => void;
+    const view = await startDeploy(() => new Promise((r) => (resolvePost = r)));
+    await waitFor(() => expect(mDeployApp).toHaveBeenCalledTimes(1));
+
+    view.unmount();
+    await act(async () => {
+      resolvePost({ deploy: { id: "deploy-1" } });
+    });
+    for (let i = 0; i < 10; i++) await tick(2000);
+
+    // The flag is armed on mount, not by the POST continuation: an unmounted
+    // page stays cancelled, so the resolved POST must not start the chain.
+    expect(mGetDeployStatus).not.toHaveBeenCalled();
+  });
+
+  it("at the 15 minute bound the app badge stops claiming deploying even when the reload fails", async () => {
+    mGetDeployStatus.mockRejectedValue(new Error("502 Bad Gateway"));
+    await startDeploy();
+    // The panel stays down: the load() at the bound rejects, so only the
+    // bound's own setApps can take the optimistic "deploying" off the badge.
+    mGetApps.mockRejectedValue(new Error("backend down"));
+
+    // Same walk to the bound as the always-failing-polls test: cumulative
+    // poll times 2000, 4000, 8000, 16000, 31000, 46000, ... 63rd poll at 901 s.
+    for (let i = 0; i < 260 && pollCalls() < 62; i++) await tick(4000);
+    for (let i = 0; i < 40 && pollCalls() < 63; i++) await tick(500);
+    expect(pollCalls()).toBe(63);
+
+    await screen.findByRole("alert");
+    const badge = await screen.findByText("unknown", { selector: ".badge" });
+    expect(badge).toHaveClass("badge-neutral");
+    expect(screen.queryByText("deploying", { selector: ".badge" })).not.toBeInTheDocument();
   });
 });
