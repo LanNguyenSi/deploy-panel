@@ -228,7 +228,7 @@ async function recoverStuckRecords(stuckDeploys: StuckDeploy[]): Promise<void> {
               // The relay's own entry for this deploy says it failed: that is
               // its verdict, not a missing proof.
               newStatus = "failed";
-              failedCheck = `the relay recorded this deploy as failed${target.entryFailed.error ? `: ${target.entryFailed.error}` : ""}`;
+              failedCheck = "the relay recorded this deploy as failed";
             } else {
               failedCheck = isPanelSelfApp(deploy.app.name)
                 ? `the panel is up, but ${SELF_DEPLOY_UNVERIFIED_MARKER}: ${target.failedCheck}`
@@ -381,9 +381,15 @@ async function reconcileDeployingApps(): Promise<void> {
  * entry's commits and duration.
  *
  * Bounds: only rows of the panel's own app (isPanelSelfApp), only within
- * SELF_DEPLOY_UPGRADE_WINDOW_MS (1 h) of the row's start, and only rows whose
- * log carries SELF_DEPLOY_UNVERIFIED_MARKER (an `interrupted` row from a failed
- * preflight, a relay that could not be asked, or any other app never has it).
+ * SELF_DEPLOY_UPGRADE_WINDOW_MS (1 h) of the row's start, only rows whose LAST
+ * `startup-recovery` step carries SELF_DEPLOY_UNVERIFIED_MARKER (the sweep's own
+ * note; the relay's streamed step output elsewhere in the log can contain any
+ * text, so the whole log is not searched, the SQL `contains` is only a coarse
+ * prefilter), and only on a proof by the relay entry's deploy id. A proof by
+ * timing correlation (the only entry since the start) is not enough here: on a
+ * relay that records no ids, a single later deploy of the app made over the
+ * relay's own API cannot be told apart from this one, and it would hand its
+ * commits to this row.
  * The write is a compare-and-set on `interrupted` plus the marker. The proof is
  * the same checkDeployTarget as the sweep's, so a later deploy row of the app
  * blocks the upgrade. The app card moves to `healthy` only when no deploy of
@@ -408,8 +414,12 @@ async function upgradeSelfDeploys(): Promise<void> {
   for (const deploy of rows) {
     try {
       if (!deploy.server.relayUrl || !isPanelSelfApp(deploy.app.name)) continue;
+      const lastNote = readExistingSteps(deploy.log)
+        .filter((st) => st.name === "startup-recovery")
+        .at(-1);
+      if (typeof lastNote?.output !== "string" || !lastNote.output.includes(SELF_DEPLOY_UNVERIFIED_MARKER)) continue;
       const target = await checkDeployTargetDetailed(deploy, deploy.server.id, deploy.app.name);
-      if (!target.reached) continue;
+      if (!target.reached || !target.idMatched) continue;
       const evidence = target.evidence;
       const step = {
         name: "startup-recovery",

@@ -184,6 +184,7 @@ describe("the relay entry as evidence, and the noEntry flag", () => {
     const d = detail([entry({ deployId: OWN_ID, commitBefore: "old1111", commitAfter: "abc1234ff", durationMs: 12_345.6 })]);
     expect(assessTargetReachedWithEntry(deploy, d)).toEqual({
       reached: true,
+      idMatched: true,
       entry: { commitBefore: "old1111", commitAfter: "abc1234ff", durationMs: 12_346 },
     });
     expect(assessTargetReached(deploy, d)).toEqual({ reached: true });
@@ -191,7 +192,7 @@ describe("the relay entry as evidence, and the noEntry flag", () => {
 
   it("a missing commitBefore or a non-positive duration is null, never invented", () => {
     const verdict = assessTargetReachedWithEntry(deploy, detail([entry({ deployId: OWN_ID, durationMs: 0 })]));
-    expect(verdict).toEqual({ reached: true, entry: { commitBefore: null, commitAfter: HEAD, durationMs: null } });
+    expect(verdict).toEqual({ reached: true, idMatched: true, entry: { commitBefore: null, commitAfter: HEAD, durationMs: null } });
   });
 
   it("noEntry: an id-capable relay whose history lacks this id; a relay with nothing since the start; both flag it", () => {
@@ -214,6 +215,7 @@ describe("the relay entry as evidence, and the noEntry flag", () => {
     );
     expect(await checkDeployTargetDetailed(full, "srv", "thd")).toEqual({
       reached: true,
+      idMatched: true,
       evidence: { commitBefore: "old1111", commitAfter: HEAD, durationMs: 140_000 },
     });
     expect(await checkDeployTarget(full, "srv", "thd")).toEqual({ reached: true });
@@ -230,14 +232,25 @@ describe("the relay entry as evidence, and the noEntry flag", () => {
     expect(check).not.toHaveProperty("noEntry");
   });
 
-  it("entryFailed: only the id-matched entry that ended failed carries it, with the relay's error text when it has one", () => {
-    const failed = assessTargetReached(deploy, detail([entry({ deployId: OWN_ID, status: "failed", error: "  boom " })]));
-    expect(failed).toMatchObject({ reached: false, entryFailed: { error: "boom" } });
-    const noText = assessTargetReached(deploy, detail([entry({ deployId: OWN_ID, status: "failed" })]));
-    expect(noText).toMatchObject({ entryFailed: { error: null } });
+  it("entryFailed: only the id-matched entry that ended failed carries it", () => {
+    const failed = assessTargetReached(deploy, detail([entry({ deployId: OWN_ID, status: "failed" })]));
+    expect(failed).toMatchObject({ reached: false, entryFailed: true });
     // a failed entry found by timing correlation is not attributed with certainty
     expect(assessTargetReached(deploy, detail([entry({ status: "failed" })]))).not.toHaveProperty("entryFailed");
     // an id-matched entry that succeeded but misses HEAD is not a relay failure
     expect(assessTargetReached(deploy, detail([entry({ deployId: OWN_ID, commitAfter: "zzzzzzz" })]))).not.toHaveProperty("entryFailed");
+  });
+
+  it("idMatched: set only when the entry was chosen by the deploy id, not by timing correlation", async () => {
+    const full = { id: OWN_ID, appId: "a1", createdAt: START };
+    mRelay.mockImplementation(async ({ path }: { path: string }) =>
+      path === "/health" ? {} : detail([entry({ deployId: OWN_ID })]),
+    );
+    expect(await checkDeployTargetDetailed(full, "srv", "thd")).toMatchObject({ reached: true, idMatched: true });
+
+    mRelay.mockImplementation(async ({ path }: { path: string }) => (path === "/health" ? {} : detail([entry()])));
+    const byTiming = await checkDeployTargetDetailed(full, "srv", "thd");
+    expect(byTiming).toMatchObject({ reached: true });
+    expect(byTiming).not.toHaveProperty("idMatched");
   });
 });

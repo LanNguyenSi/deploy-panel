@@ -668,17 +668,17 @@ describe("recoverStuckDeploys", () => {
         expect(data.duration).toBeUndefined();
       });
 
-      it("does not wait when the relay's id-matched entry says failed: the row ends failed, with the relay's error", async () => {
+      it("does not wait when the relay's id-matched entry says failed: the row ends failed", async () => {
         mFindMany.mockResolvedValue([selfDeploy(3 * MIN)]);
         mockRelay({
           passed: true,
-          detail: { commit: "newsha2", recentDeploys: [selfEntry(3 * MIN, { status: "failed", error: "compose up exited 1" })] },
+          detail: { commit: "newsha2", recentDeploys: [selfEntry(3 * MIN, { status: "failed" })] },
         });
 
         await recoverStuckDeploys();
 
         expect(finalizedStatus()).toBe("failed");
-        expect(recoveryOutput()).toContain("the relay recorded this deploy as failed: compose up exited 1");
+        expect(recoveryOutput()).toContain("the relay recorded this deploy as failed");
         expect(lastCall(mUpdateMany).data.commitAfter).toBeUndefined();
         expect(lastCall(mAppUpdate).data.status).toBe("unknown");
       });
@@ -1103,6 +1103,34 @@ describe("recoverStuckDeploys", () => {
       await recoverStuckDeploys();
 
       expect(mAppUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("an id-less relay with one correlated success entry does not upgrade the row (a later non-panel deploy would be indistinguishable)", async () => {
+      upgradeRows = [unverified()];
+      const entry = entryFor();
+      delete (entry as Record<string, unknown>).deployId;
+      mockRelay({ detail: { commit: "newsha2", recentDeploys: [entry] } });
+
+      await recoverStuckDeploys();
+
+      expect(mUpdateMany).not.toHaveBeenCalled();
+      expect(mAppUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("the marker is read from the last startup-recovery step only: relay step output holding the same text, or a note without it, does not qualify", async () => {
+      const note = (output: string) => ({ name: "startup-recovery", status: "failure", durationMs: 0, output });
+      upgradeRows = [
+        unverified({ id: "a", log: JSON.stringify([{ name: "up", status: "failure", durationMs: 1, output: MARK }, note("Marked as interrupted; check failed: relay preflight did not pass")]) }),
+        unverified({ id: "b", log: JSON.stringify([{ name: "up", status: "failure", output: MARK }]) }),
+        unverified({ id: "c", log: "not json " + MARK }),
+        unverified({ id: "d", log: JSON.stringify([note(MARK), note("Marked as interrupted; check failed: relay preflight did not pass")]) }),
+      ];
+      mockRelay({ detail: { commit: "newsha2", recentDeploys: [entryFor()] } });
+
+      await recoverStuckDeploys();
+
+      expect(mRelay).not.toHaveBeenCalled();
+      expect(mUpdateMany).not.toHaveBeenCalled();
     });
 
     it("never asks the relay for a row of another app, or a server without a relay", async () => {
