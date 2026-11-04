@@ -25,7 +25,7 @@ type Panel = { type: "logs" | "deploy" | "preflight" | "env" | "secrets"; app: s
 
 // Single-app deploy polling: 2 s while polls succeed; after a failed poll the
 // delay doubles (2 s, 4 s, 8 s, ...) capped at 15 s, and resets to 2 s after
-// the next successful poll — a self-deploy takes the panel's own backend down,
+// the next successful poll: a self-deploy takes the panel's own backend down,
 // so poll errors are transient, not the deploy's outcome. The bound is the
 // backstop: past it the status is simply unknown until a reload.
 const DEPLOY_POLL_MS = 2000;
@@ -232,7 +232,13 @@ export default function ServerDetailPage() {
     if (deployPollTimer.current) clearTimeout(deployPollTimer.current);
   }
 
-  useEffect(() => () => cancelDeployPoll(), []);
+  // Arm the flag in the effect, not in handleDeploy: a page unmounted while
+  // the deploy POST is still pending must stay cancelled; the remount re-arms
+  // it (React StrictMode's double mount included).
+  useEffect(() => {
+    deployPollCancelled.current = false;
+    return cancelDeployPoll;
+  }, []);
 
   async function handleDeploy(name: string) {
     requestPermission(); // Ask once, browser remembers the answer
@@ -255,7 +261,6 @@ export default function ServerDetailPage() {
       // the delay after each failed poll (2 s, 4 s, 8 s, ... capped at 15 s),
       // back to 2 s after a successful one, until the row leaves "running" or
       // the 15-minute bound passes; past the bound the status is unknown.
-      deployPollCancelled.current = false;
       const deadline = Date.now() + DEPLOY_POLL_DEADLINE_MS;
       let failedPolls = 0;
       const nextPollDelay = () =>
@@ -292,6 +297,9 @@ export default function ServerDetailPage() {
         if (Date.now() >= deadline) {
           setDeploying(null);
           setDeployLog(null);
+          // The optimistic app status goes too: the load() below can still
+          // fail (panel still down), and the badge must not stay deploying.
+          setApps((prev) => prev.map((a) => (a.name === name ? { ...a, status: "unknown" } : a)));
           toast("Deploy status unknown: the panel stopped answering before the deploy finished. Reload the page to see the latest status.", "error");
           await load();
           return;

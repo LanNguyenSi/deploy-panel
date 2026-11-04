@@ -1021,12 +1021,15 @@ describe("ServerDetailPage - previous version hint", () => {
 // optimistic state is cleared and a notice says a reload will show it; and the
 // chain must die with the page.
 describe("ServerDetailPage - single deploy poll backoff", () => {
-  async function startDeploy() {
+  // deployAppImpl replaces the deploy POST mock (a test whose POST must stay
+  // pending hands in its own deferred); the default resolves once.
+  async function startDeploy(deployAppImpl?: () => Promise<unknown>) {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     mGetServer.mockResolvedValue(SERVER);
     mGetApps.mockResolvedValue(APPS);
     mSyncServer.mockResolvedValue({ synced: true, apps: 1, created: 0, updated: 0 });
-    mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
+    if (deployAppImpl) mDeployApp.mockImplementation(deployAppImpl);
+    else mDeployApp.mockResolvedValueOnce({ deploy: { id: "deploy-1" } });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const view = render(
       <Providers>
@@ -1052,6 +1055,11 @@ describe("ServerDetailPage - single deploy poll backoff", () => {
   afterEach(() => {
     vi.useRealTimers();
     mGetDeployStatus.mockReset();
+    // The POST-deferred test sets a persistent deployApp implementation and
+    // the failed-reload test a persistent getApps rejection: mockClear keeps
+    // implementations, so drop them here instead of leaking them downstream.
+    mDeployApp.mockReset();
+    mGetApps.mockReset();
   });
 
   it("poll errors back off (2 s, 4 s), a running answer resets to 2 s, and success settles", async () => {
@@ -1146,5 +1154,61 @@ describe("ServerDetailPage - single deploy poll backoff", () => {
     view.unmount();
     for (let i = 0; i < 10; i++) await tick(2000);
     expect(pollCalls()).toBe(1);
+  });
+
+  it("a poll still in flight at unmount that resolves after it starts no next poll and toasts nothing", async () => {
+    let resolvePoll!: (v: unknown) => void;
+    mGetDeployStatus.mockImplementation(() => new Promise((r) => (resolvePoll = r)));
+    const view = await startDeploy();
+
+    // Unmount while the first poll (at 2 s) is in flight.
+    await tick(2500);
+    expect(pollCalls()).toBe(1);
+
+    view.unmount();
+    await act(async () => {
+      resolvePoll({ deploy: { id: "deploy-1", status: "running", log: null } });
+    });
+    for (let i = 0; i < 10; i++) await tick(2000);
+
+    // The answered poll must not reschedule itself, nor run the bound branch:
+    // the flag is what stops it, so a mutant clearing it on unmount polls on.
+    expect(pollCalls()).toBe(1);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("unmount while the deploy POST is in flight: resolving the POST starts no poll at all", async () => {
+    let resolvePost!: (v: unknown) => void;
+    const view = await startDeploy(() => new Promise((r) => (resolvePost = r)));
+    await waitFor(() => expect(mDeployApp).toHaveBeenCalledTimes(1));
+
+    view.unmount();
+    await act(async () => {
+      resolvePost({ deploy: { id: "deploy-1" } });
+    });
+    for (let i = 0; i < 10; i++) await tick(2000);
+
+    // The flag is armed on mount, not by the POST continuation: an unmounted
+    // page stays cancelled, so the resolved POST must not start the chain.
+    expect(mGetDeployStatus).not.toHaveBeenCalled();
+  });
+
+  it("at the 15 minute bound the app badge stops claiming deploying even when the reload fails", async () => {
+    mGetDeployStatus.mockRejectedValue(new Error("502 Bad Gateway"));
+    await startDeploy();
+    // The panel stays down: the load() at the bound rejects, so only the
+    // bound's own setApps can take the optimistic "deploying" off the badge.
+    mGetApps.mockRejectedValue(new Error("backend down"));
+
+    // Same walk to the bound as the always-failing-polls test: cumulative
+    // poll times 2000, 4000, 8000, 16000, 31000, 46000, ... 63rd poll at 901 s.
+    for (let i = 0; i < 260 && pollCalls() < 62; i++) await tick(4000);
+    for (let i = 0; i < 40 && pollCalls() < 63; i++) await tick(500);
+    expect(pollCalls()).toBe(63);
+
+    await screen.findByRole("alert");
+    const badge = await screen.findByText("unknown", { selector: ".badge" });
+    expect(badge).toHaveClass("badge-neutral");
+    expect(screen.queryByText("deploying", { selector: ".badge" })).not.toBeInTheDocument();
   });
 });
