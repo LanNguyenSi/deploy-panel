@@ -1,6 +1,6 @@
 import { prisma } from "./prisma.js";
 import { verifyDeployHealth } from "./post-deploy-gate.js";
-import { checkDeployTarget, type DeployTargetCheck } from "./deploy-target.js";
+import { checkDeployTargetDetailed, type DeployTargetCheckDetailed } from "./deploy-target.js";
 
 export type LoggedStep = { name: string; status: string; durationMs?: number; [k: string]: unknown };
 
@@ -302,12 +302,12 @@ async function recoverBrokenDeployBody(
   // only a deploy that is otherwise about to be recorded success is checked.
   // A start time that could not be read means the check cannot run, which is
   // a failed check, never a pass.
-  let target: DeployTargetCheck | null = null;
+  let target: DeployTargetCheckDetailed | null = null;
   if (verdict.healthy && !hasRollbackOrFailure) {
     const startedAt = existingDeploy?.createdAt;
     target =
       startedAt instanceof Date
-        ? await checkDeployTarget({ id: deployId, appId, createdAt: startedAt }, serverId, appName, {
+        ? await checkDeployTargetDetailed({ id: deployId, appId, createdAt: startedAt }, serverId, appName, {
             rollback: kind === "rollback" ? { requestedCommit } : undefined,
           })
         : { reached: false, failedCheck: "the deploy start time could not be read, so the relay history cannot be tied to this deploy" };
@@ -365,6 +365,12 @@ async function recoverBrokenDeployBody(
       where: { id: deployId },
       data: {
         status: "success",
+        // The relay's own entry for this deploy proved the target; its commits
+        // and duration fill the record the way a streamed `done` event does.
+        // A rollback carries no evidence, and Prisma skips `undefined`.
+        commitBefore: target?.reached ? target.evidence?.commitBefore ?? undefined : undefined,
+        commitAfter: target?.reached ? target.evidence?.commitAfter ?? undefined : undefined,
+        duration: target?.reached ? target.evidence?.durationMs ?? undefined : undefined,
         log: JSON.stringify([
           ...existingSteps,
           { name: "recovery", status: "success", durationMs: 0, output: `Connection lost during deploy; verified healthy via post-deploy gate${noteSuffix}` },

@@ -23,6 +23,34 @@ export interface DeployInfo {
 /** See backend/src/lib/deploy-log.ts: `rolled_back_healthy` is a failed deploy whose automatic rollback passed its health check. */
 export type DeployOutcome = "success" | "rolled_back_healthy" | "outage";
 
+/**
+ * The panel could not be reached, or a reverse proxy answered 502/503/504
+ * because the panel behind it is gone. The panel replaces its own containers
+ * when it deploys itself, so this is what a self-deploy looks like from here;
+ * the tools turn it into a message that names the deploy.
+ */
+export class PanelConnectionError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "PanelConnectionError";
+  }
+}
+
+/** Statuses a proxy in front of the panel answers while the panel itself is down or restarting. */
+const PROXY_DOWN_STATUSES = new Set([502, 503, 504]);
+
+function nonBlank(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+/** A readable reason for a rejected fetch: fetch's TypeError says only "fetch failed", the cause names the socket error. */
+function describeFetchFailure(e: unknown): string {
+  const base = e instanceof Error ? nonBlank(e.message) ?? e.name : String(e);
+  const cause = e instanceof Error ? (e.cause as { code?: unknown; message?: unknown } | undefined) : undefined;
+  const detail = nonBlank(cause?.code) ?? nonBlank(cause?.message);
+  return detail && !base.includes(detail) ? `${base}: ${detail}` : base;
+}
+
 export class DeployPanelClient {
   private readonly apiUrl: string;
   private readonly apiKey: string;
@@ -33,19 +61,31 @@ export class DeployPanelClient {
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const res = await fetch(`${this.apiUrl}${path}`, {
-      method,
-      headers: {
-        "Authorization": `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: body ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(30_000),
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${this.apiUrl}${path}`, {
+        method,
+        headers: {
+          "Authorization": `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (e) {
+      throw new PanelConnectionError(`could not reach the panel at ${this.apiUrl} (${describeFetchFailure(e)})`, { cause: e });
+    }
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ message: res.statusText }));
-      throw new Error((err as Record<string, string>).message ?? `HTTP ${res.status}`);
+      // A blank message must not win over the status line: over HTTP/2 the
+      // status text is empty, so a proxy's 502 used to surface as an Error
+      // with an empty message.
+      const message = nonBlank((err as Record<string, unknown> | null)?.message) ?? `HTTP ${res.status}`;
+      if (PROXY_DOWN_STATUSES.has(res.status)) {
+        throw new PanelConnectionError(`the panel answered HTTP ${res.status} (${message === `HTTP ${res.status}` ? "no detail" : message})`);
+      }
+      throw new Error(message);
     }
 
     return res.json() as Promise<T>;
