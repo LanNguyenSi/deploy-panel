@@ -3,7 +3,7 @@ type: invariant
 title: Deploy-outcome trust chain — the relay's "success" is never taken at face value
 description: finalizeDeploy is the choke point for the three relay outcome shapes that could report success (SSE done, JSON fallback, stream-ended-without-done); a relay 4xx rejection is written failed directly and bypasses it, since it can never be a success claim. Every relay-reported success runs verifyDeployHealth and can be downgraded to failed, while connection-lost recovery uses the gate's stricter fail-closed mode and additionally needs the relay's proof that the deploy or rollback reached its target, and startup recovery applies the same fail-closed posture via a relay preflight plus, for every app including the panel itself, the same proof (the panel's own self-deploy is only given time, never an exemption), and records the relay entry's commits and duration; this is the mechanism behind the self-deploy-502-but-succeeds quirk.
 tags: [deploy, health-gate, recovery, invariant]
-timestamp: 2026-11-03T15:14:54Z
+timestamp: 2026-11-04T05:13:11Z
 sources:
   - backend/src/lib/stream-deploy.ts
   - backend/src/lib/deploy-log.ts
@@ -16,6 +16,8 @@ sources:
   - backend/src/lib/scheduler.ts
   - backend/src/routes/apps.ts
   - backend/src/routes/v1.ts
+  - mcp/src/client.ts
+  - mcp/src/tools.ts
 ---
 
 ## Deploy path at a glance
