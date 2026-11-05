@@ -2,17 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { getAuditLog, type AuditEntry } from "@/lib/api";
+import { AUDIT_ACTIONS } from "@/lib/audit-actions";
 import { EmptyStateIcon } from "@/components/EmptyStateIcon";
 
-const ACTION_OPTIONS = [
-  { value: "", label: "All actions" },
-  { value: "deploy", label: "Deploy" },
-  { value: "rollback", label: "Rollback" },
-  { value: "server.create", label: "Server created" },
-  { value: "server.delete", label: "Server deleted" },
-  { value: "api_key.create", label: "API key created" },
-  { value: "api_key.revoke", label: "API key revoked" },
-];
+const FILTER_OPTIONS = [{ value: "", label: "All actions" }, ...AUDIT_ACTIONS];
 
 export default function AuditPage() {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
@@ -47,7 +40,7 @@ export default function AuditPage() {
           <p className="page-subtitle">{total} event{total !== 1 ? "s" : ""}</p>
         </div>
         <div className="filter-group" role="group" aria-label="Filter by action">
-          {ACTION_OPTIONS.map((opt) => (
+          {FILTER_OPTIONS.map((opt) => (
             <button
               key={opt.value}
               onClick={() => { setActionFilter(opt.value); setPage(0); setLoading(true); }}
@@ -131,17 +124,8 @@ export default function AuditPage() {
 }
 
 function ActionBadge({ action }: { action: string }) {
-  const map: Record<string, string> = {
-    deploy: "badge-success",
-    rollback: "badge-warning",
-    "server.create": "badge-info",
-    "server.delete": "badge-danger",
-    "api_key.create": "badge-info",
-    "api_key.revoke": "badge-warning",
-    login: "badge-neutral",
-    logout: "badge-neutral",
-  };
-  return <span className={`badge ${map[action] ?? "badge-neutral"}`}>{action}</span>;
+  const known = AUDIT_ACTIONS.find((a) => a.value === action);
+  return <span className={`badge ${known?.badgeClass ?? "badge-neutral"}`}>{known?.label ?? action}</span>;
 }
 
 function ActorBadge({ actor }: { actor: string | null }) {
