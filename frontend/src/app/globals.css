@@ -1,6 +1,8 @@
 /* ── Deploy Panel — Mission Control Design System ────────────────── */
 
 :root {
+  color-scheme: dark;
+
   /* ── Surfaces ─────────────────────────────────────────────────── */
   --bg-void:           #0A0E14; /* deepest app bg */
   --bg-iron:           #11161F; /* cards / panels */
@@ -125,6 +127,10 @@
   padding: 0;
 }
 
+button {
+  color: inherit;
+}
+
 body {
   background: var(--bg-void);
   color: var(--text);
@@ -224,6 +230,7 @@ a:hover { color: var(--primary-hover); }
   background: var(--bg-iron);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
+  color: var(--text);
   transition: border-color var(--transition);
 }
 

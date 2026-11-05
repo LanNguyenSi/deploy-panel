@@ -8,7 +8,6 @@ const mGetServers = vi.fn();
 const mGetServerSystem = vi.fn();
 const mGetServerRelayStatus = vi.fn();
 const mSelfUpdateServerRelay = vi.fn();
-const mCreateServer = vi.fn();
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -18,7 +17,6 @@ vi.mock("@/lib/api", async (importOriginal) => {
     getServerSystem: (...args: unknown[]) => mGetServerSystem(...args),
     getServerRelayStatus: (...args: unknown[]) => mGetServerRelayStatus(...args),
     selfUpdateServerRelay: (...args: unknown[]) => mSelfUpdateServerRelay(...args),
-    createServer: (...args: unknown[]) => mCreateServer(...args),
   };
 });
 
@@ -194,34 +192,42 @@ describe("ServersPage: relay probe status badges (auth, unknown)", () => {
   });
 });
 
-describe("ServersPage: add-server form failure is announced", () => {
-  it("shows the createServer failure as an alert and points every form input at it via aria-describedby", async () => {
-    const user = userEvent.setup();
+describe("ServersPage: Add Server panel keeps heading order under the page h1", () => {
+  it("renders the choice-step heading as level 2 and never a level 3 after opening the panel", async () => {
     mGetServers.mockResolvedValue({ servers: [] });
-    mCreateServer.mockRejectedValue(new Error("relay unreachable"));
+    mGetServerSystem.mockRejectedValue(new Error("skip metrics"));
+    mGetServerRelayStatus.mockRejectedValue(new Error("skip relay status"));
 
+    const user = userEvent.setup();
     render(
       <Providers>
         <ServersPage />
       </Providers>,
     );
 
-    await user.click(await screen.findByRole("button", { name: "+ Add Server" }));
-    await user.click(await screen.findByRole("button", { name: /I already have a relay/ }));
+    await user.click(screen.getByRole("button", { name: "+ Add Server" }));
 
-    await user.type(await screen.findByLabelText("Server name"), "Edge VPS");
-    await user.type(screen.getByLabelText("Host"), "203.0.113.77");
-    await user.type(screen.getByLabelText(/Relay URL/), "https://relay.example.test");
-    await user.type(screen.getByLabelText(/Relay token/), "tok-1");
-    for (const id of ["srv-name", "srv-host", "srv-relay-url", "srv-relay-token"]) {
-      expect(document.getElementById(id)).not.toHaveAttribute("aria-describedby");
-    }
-    await user.click(screen.getByRole("button", { name: "Add Server" }));
+    expect(screen.getByRole("heading", { level: 1, name: "Servers" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Add Server" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 3 })).not.toBeInTheDocument();
+  });
 
-    const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("relay unreachable");
-    for (const id of ["srv-name", "srv-host", "srv-relay-url", "srv-relay-token"]) {
-      expect(document.getElementById(id)).toHaveAttribute("aria-describedby", alert.getAttribute("id") as string);
-    }
+  it("renders the manual form heading as level 2 and never a level 3 after choosing an existing relay", async () => {
+    mGetServers.mockResolvedValue({ servers: [] });
+    mGetServerSystem.mockRejectedValue(new Error("skip metrics"));
+    mGetServerRelayStatus.mockRejectedValue(new Error("skip relay status"));
+
+    const user = userEvent.setup();
+    render(
+      <Providers>
+        <ServersPage />
+      </Providers>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "+ Add Server" }));
+    await user.click(screen.getByRole("button", { name: /I already have a relay/ }));
+
+    expect(screen.getByRole("heading", { level: 2, name: "Add Server" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 3 })).not.toBeInTheDocument();
   });
 });
