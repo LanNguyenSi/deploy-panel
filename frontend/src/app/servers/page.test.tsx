@@ -191,3 +191,43 @@ describe("ServersPage: relay probe status badges (auth, unknown)", () => {
     expect(screen.queryByTestId("status-hint-srv-unk")).not.toBeInTheDocument();
   });
 });
+
+describe("ServersPage: Add Server panel keeps heading order under the page h1", () => {
+  it("renders the choice-step heading as level 2 and never a level 3 after opening the panel", async () => {
+    mGetServers.mockResolvedValue({ servers: [] });
+    mGetServerSystem.mockRejectedValue(new Error("skip metrics"));
+    mGetServerRelayStatus.mockRejectedValue(new Error("skip relay status"));
+
+    const user = userEvent.setup();
+    render(
+      <Providers>
+        <ServersPage />
+      </Providers>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "+ Add Server" }));
+
+    expect(screen.getByRole("heading", { level: 1, name: "Servers" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Add Server" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 3 })).not.toBeInTheDocument();
+  });
+
+  it("renders the manual form heading as level 2 and never a level 3 after choosing an existing relay", async () => {
+    mGetServers.mockResolvedValue({ servers: [] });
+    mGetServerSystem.mockRejectedValue(new Error("skip metrics"));
+    mGetServerRelayStatus.mockRejectedValue(new Error("skip relay status"));
+
+    const user = userEvent.setup();
+    render(
+      <Providers>
+        <ServersPage />
+      </Providers>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "+ Add Server" }));
+    await user.click(screen.getByRole("button", { name: /I already have a relay/ }));
+
+    expect(screen.getByRole("heading", { level: 2, name: "Add Server" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 3 })).not.toBeInTheDocument();
+  });
+});
