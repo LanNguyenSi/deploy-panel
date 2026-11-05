@@ -161,9 +161,15 @@ function LoginForm() {
             required
             autoFocus
             className="input"
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? "login-error" : undefined}
             style={{ padding: "0.7rem 0.875rem", fontSize: "var(--text-base)" }}
           />
-          {error && <p className="form-error">{error}</p>}
+          {error && (
+            <p role="alert" id="login-error" className="form-error">
+              {error}
+            </p>
+          )}
           <button
             type="submit"
             disabled={loading}
