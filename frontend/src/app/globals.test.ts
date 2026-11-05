@@ -46,4 +46,16 @@ describe("globals.css", () => {
   it("marks the active sidebar link without an inset side bar", () => {
     expect(css).not.toMatch(/inset\s+\d+px\s+0\s+0/);
   });
+
+  it("paints card text in the readable theme colour instead of the button default", () => {
+    expect(rule(".card")).toContain("color: var(--text)");
+  });
+
+  it("resets native button text colour to inherit so card buttons stay readable", () => {
+    expect(rule("button")).toContain("color: inherit");
+  });
+
+  it("declares a dark color scheme so native controls render in dark chrome", () => {
+    expect(rule(":root")).toContain("color-scheme: dark");
+  });
 });
