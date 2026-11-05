@@ -291,9 +291,9 @@ function ServerAddPanel({ onDone, onCancel }: { onDone: () => void; onCancel: ()
   }
   return (
     <div className="card" style={{ padding: "var(--space-5)", marginBottom: "var(--space-6)" }}>
-      <h3 style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: "var(--space-2)" }}>
+      <h2 style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: "var(--space-2)" }}>
         Add Server
-      </h3>
+      </h2>
       <p style={{ fontSize: "var(--text-sm)", color: "var(--muted)", marginBottom: "var(--space-4)" }}>
         How do you want to connect this server?
       </p>
@@ -376,7 +376,7 @@ function AddServerForm({
 
   return (
     <form onSubmit={handleSubmit} className="card" style={{ padding: "var(--space-5)", marginBottom: "var(--space-6)" }}>
-      <h3 style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: "var(--space-4)" }}>Add Server</h3>
+      <h2 style={{ fontSize: "var(--text-md)", fontWeight: 600, marginBottom: "var(--space-4)" }}>Add Server</h2>
       <div className="grid-form">
         <div>
           <label htmlFor="srv-name" style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
