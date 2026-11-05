@@ -382,28 +382,32 @@ function AddServerForm({
           <label htmlFor="srv-name" style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
             Server name
           </label>
-          <input id="srv-name" type="text" placeholder="e.g. Production VPS" value={name} onChange={(e) => setName(e.target.value)} required className="input" />
+          <input id="srv-name" type="text" placeholder="e.g. Production VPS" value={name} onChange={(e) => setName(e.target.value)} required className="input" aria-describedby={error ? "srv-form-error" : undefined} />
         </div>
         <div>
           <label htmlFor="srv-host" style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
             Host
           </label>
-          <input id="srv-host" type="text" placeholder="e.g. 192.168.1.100" value={host} onChange={(e) => setHost(e.target.value)} required className="input" />
+          <input id="srv-host" type="text" placeholder="e.g. 192.168.1.100" value={host} onChange={(e) => setHost(e.target.value)} required className="input" aria-describedby={error ? "srv-form-error" : undefined} />
         </div>
         <div>
           <label htmlFor="srv-relay-url" style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
             Relay URL <span style={{ color: "var(--muted)" }}>(optional)</span>
           </label>
-          <input id="srv-relay-url" type="url" placeholder="https://relay.example.com" value={relayUrl} onChange={(e) => setRelayUrl(e.target.value)} className="input" />
+          <input id="srv-relay-url" type="url" placeholder="https://relay.example.com" value={relayUrl} onChange={(e) => setRelayUrl(e.target.value)} className="input" aria-describedby={error ? "srv-form-error" : undefined} />
         </div>
         <div>
           <label htmlFor="srv-relay-token" style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)", fontWeight: 500 }}>
             Relay token <span style={{ color: "var(--muted)" }}>(optional)</span>
           </label>
-          <input id="srv-relay-token" type="text" placeholder="Token" value={relayToken} onChange={(e) => setRelayToken(e.target.value)} className="input" />
+          <input id="srv-relay-token" type="text" placeholder="Token" value={relayToken} onChange={(e) => setRelayToken(e.target.value)} className="input" aria-describedby={error ? "srv-form-error" : undefined} />
         </div>
       </div>
-      {error && <p className="form-error" style={{ marginTop: "var(--space-3)" }}>{error}</p>}
+      {error && (
+        <p role="alert" id="srv-form-error" className="form-error" style={{ marginTop: "var(--space-3)" }}>
+          {error}
+        </p>
+      )}
       <div style={{ marginTop: "var(--space-4)", display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
         <button type="submit" disabled={submitting} className="btn btn-primary">
           {submitting ? "Adding..." : "Add Server"}
