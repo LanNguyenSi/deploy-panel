@@ -124,6 +124,26 @@ describe("config ALLOWED_GITHUB_LOGINS: production starts with a non-empty list"
     expect(logins).toEqual(["alice", "bob"]);
     expect(config?.NODE_ENV).toBe("production");
   });
+
+  it("starts with \"Alice, BOB\" and parses [alice, bob] (lowercased, order kept)", async () => {
+    const { config, logins, exitCalled } = await loadConfig({
+      NODE_ENV: "production",
+      ALLOWED_GITHUB_LOGINS: "Alice, BOB",
+    });
+    expect(exitCalled).toBe(false);
+    expect(logins).toEqual(["alice", "bob"]);
+    expect(config?.NODE_ENV).toBe("production");
+  });
+
+  it("starts with \"alice,Alice\" and parses [alice] (de-duplicated after normalisation)", async () => {
+    const { config, logins, exitCalled } = await loadConfig({
+      NODE_ENV: "production",
+      ALLOWED_GITHUB_LOGINS: "alice,Alice",
+    });
+    expect(exitCalled).toBe(false);
+    expect(logins).toEqual(["alice"]);
+    expect(config?.NODE_ENV).toBe("production");
+  });
 });
 
 describe("config ALLOWED_GITHUB_LOGINS: development and test are unchanged", () => {
