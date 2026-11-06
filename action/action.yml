@@ -100,37 +100,85 @@ runs:
         DEPLOY_ID: ${{ steps.deploy.outputs.deploy_id }}
         TIMEOUT: ${{ inputs.timeout }}
       run: |
-        echo "Waiting for deploy $DEPLOY_ID..."
-        ELAPSED=0
-        INTERVAL=10
-        while [ $ELAPSED -lt $TIMEOUT ]; do
-          RESULT=$(curl -sf "$PANEL_URL/api/v1/deploy/$DEPLOY_ID" \
-            -H "Authorization: Bearer $API_KEY")
+        set -euo pipefail
 
-          STATUS=$(echo "$RESULT" | jq -r '.deploy.status')
+        BASE="${POLL_BASE_INTERVAL:-10}"
 
-          if [ "$STATUS" != "running" ]; then
-            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+        if ! [[ "${TIMEOUT:-}" =~ ^[0-9]+$ ]]; then
+          echo "::error::timeout must be a number of seconds"
+          echo "status=error" >> "$GITHUB_OUTPUT"
+          exit 1
+        fi
 
-            echo "::group::Deploy result"
-            echo "$RESULT" | jq -r '.deploy.steps[]? | "\(if .status == "success" then "✅" else "❌" end) \(.name) (\(.durationMs / 1000)s)"' 2>/dev/null || true
-            echo "::endgroup::"
+        echo "Waiting for deploy $DEPLOY_ID (timeout ${TIMEOUT}s)..."
 
-            if [ "$STATUS" = "success" ]; then
-              echo "✅ Deploy successful"
-              exit 0
-            else
-              echo "::error::Deploy failed with status: $STATUS"
-              exit 1
-            fi
+        SECONDS=0
+        FAILED=0
+        LAST_OUTCOME="no poll yet"
+        MAX=$((3 * BASE))
+
+        while [ "$SECONDS" -lt "$TIMEOUT" ]; do
+          if ! BODY=$(curl -s --max-time 20 -w '\n%{http_code}' "$PANEL_URL/api/v1/deploy/$DEPLOY_ID" -H "Authorization: Bearer $API_KEY"); then
+            BODY=""
+            CODE=000
+          else
+            CODE="${BODY##*$'\n'}"
+            BODY="${BODY%$'\n'*}"
           fi
 
-          sleep $INTERVAL
-          ELAPSED=$((ELAPSED + INTERVAL))
+          if [ "$CODE" = "401" ] || [ "$CODE" = "403" ]; then
+            echo "status=error" >> "$GITHUB_OUTPUT"
+            echo "::error::Deploy polling failed with HTTP $CODE"
+            exit 1
+          fi
+
+          STATUS=""
+          case "$CODE" in
+            2??)
+              if ! STATUS=$(printf '%s' "$BODY" | jq -r '.deploy.status // empty' 2>/dev/null); then
+                STATUS=""
+              fi
+              ;;
+          esac
+
+          RETRY=0
+          case "$CODE" in
+            000|404|5??) RETRY=1 ;;
+            2??) if [ -z "$STATUS" ]; then RETRY=1; fi ;;
+          esac
+
+          if [ "$RETRY" = "1" ]; then
+            FAILED=$((FAILED + 1))
+            DELAY=$((FAILED * BASE))
+            if [ "$DELAY" -gt "$MAX" ]; then DELAY="$MAX"; fi
+            LAST_OUTCOME="http $CODE"
+            echo "poll failed (http $CODE), retrying in ${DELAY}s"
+            sleep "$DELAY"
+            continue
+          fi
+
+          FAILED=0
+          if [ "$STATUS" = "running" ]; then
+            sleep "$BASE"
+            continue
+          fi
+
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+
+          echo "::group::Deploy result"
+          printf '%s' "$BODY" | jq -r '.deploy.steps[]? | "\(if .status == "success" then "✅" else "❌" end) \(.name) (\(.durationMs / 1000)s)"' 2>/dev/null || true
+          echo "::endgroup::"
+
+          if [ "$STATUS" = "success" ]; then
+            echo "✅ Deploy successful"
+            exit 0
+          fi
+          echo "::error::Deploy failed with status: $STATUS"
+          exit 1
         done
 
         echo "status=timeout" >> "$GITHUB_OUTPUT"
-        echo "::error::Deploy timed out after ${TIMEOUT}s"
+        echo "::error::Deploy timed out after ${TIMEOUT}s (last poll: $LAST_OUTCOME)"
         exit 1
 
     - name: Set status (no-wait)
