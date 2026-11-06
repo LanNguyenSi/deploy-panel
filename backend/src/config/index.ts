@@ -78,5 +78,31 @@ if (config.NODE_ENV === "production" && allowedGitHubLogins.length === 0) {
   process.exit(1);
 }
 
+// Fail closed in production with OAuth configured: the OAuth callback sends
+// `${BACKEND_URL}/api/auth/github/callback` to GitHub as the redirect_uri
+// (routes/auth.ts), so a localhost BACKEND_URL on a production panel makes
+// every login end on GitHub's redirect_uri_mismatch page while health checks
+// stay green. Only checked when BOTH OAuth vars are non-empty (empty =
+// OAuth disabled, the routes answer 503 and no redirect is ever produced);
+// development and test keep the localhost default, and production without
+// OAuth is unaffected.
+if (
+  config.NODE_ENV === "production" &&
+  config.GITHUB_CLIENT_ID.length > 0 &&
+  config.GITHUB_CLIENT_SECRET.length > 0
+) {
+  const backendHost = new URL(config.BACKEND_URL).hostname;
+  if (backendHost === "localhost" || backendHost === "127.0.0.1" || backendHost === "[::1]") {
+    console.error(
+      "Invalid config: BACKEND_URL must be the public backend origin when NODE_ENV=production " +
+        `with GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET set; it is "${config.BACKEND_URL}", ` +
+        `so GitHub would be sent redirect_uri "${config.BACKEND_URL.replace(/\/+$/, "")}/api/auth/github/callback" ` +
+        "and every login would fail with redirect_uri_mismatch; set BACKEND_URL to the public origin " +
+        "registered on the GitHub OAuth App",
+    );
+    process.exit(1);
+  }
+}
+
 export const hasGitHubOAuthConfigured =
   config.GITHUB_CLIENT_ID.length > 0 && config.GITHUB_CLIENT_SECRET.length > 0;

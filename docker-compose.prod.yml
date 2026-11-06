@@ -49,6 +49,16 @@ services:
         condition: service_healthy
     logging: *default-logging
     mem_limit: 512m
+    # The panel's public origin: BACKEND_URL, CORS_ORIGINS and FRONTEND_URL
+    # below plus the NEXT_PUBLIC_API_URL build arg of the frontend. A copy of
+    # this file for another domain sets all four in the server .env; the
+    # defaults are this panel's own domain, so an unset variable still boots
+    # the current deployment (no `:?` here: the live server .env is not known
+    # to set them and a required variable would fail the next self-deploy).
+    # BACKEND_URL is the origin GitHub redirects back to after OAuth, so with
+    # OAuth enabled a wrong or missing value lands every login on GitHub's
+    # redirect_uri_mismatch page. NEXT_PUBLIC_API_URL is baked into the
+    # frontend image at build time: change it, then rebuild the frontend.
     environment:
       DATABASE_URL: postgresql://deploy_panel:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@deploy-panel-db:5432/deploy_panel
       PORT: 3001
@@ -60,8 +70,8 @@ services:
       # Required before any AppSecret is stored/read in production — the
       # backend throws rather than silently falling back to a weak dev key.
       APP_SECRETS_KEY: ${APP_SECRETS_KEY}
-      CORS_ORIGINS: https://deploy-panel.opentriologue.ai
-      FRONTEND_URL: https://deploy-panel.opentriologue.ai
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://deploy-panel.opentriologue.ai}
+      FRONTEND_URL: ${FRONTEND_URL:-https://deploy-panel.opentriologue.ai}
       NODE_ENV: production
       # Optional: relay app name the panel is registered under (default
       # deploy-panel); the stuck-deploy sweep matches it by app name only.
@@ -73,10 +83,26 @@ services:
       ALLOWED_GITHUB_LOGINS: ${ALLOWED_GITHUB_LOGINS:?ALLOWED_GITHUB_LOGINS must be set}
       # Native GitHub OAuth (pairs with #60 — standalone login). Empty =
       # disabled (routes 503, frontend hides button). Set all three in
-      # prod .env to enable.
+      # prod .env to enable. With OAuth enabled, BACKEND_URL must be the
+      # public backend origin: the backend sends
+      # `${BACKEND_URL}/api/auth/github/callback` as the redirect_uri to
+      # GitHub, so a localhost value there fails every login with
+      # redirect_uri_mismatch while health stays green (a production backend
+      # with OAuth configured and a localhost BACKEND_URL refuses to start;
+      # see backend/tests/config-backend-url-guard.test.ts).
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
-      BACKEND_URL: ${BACKEND_URL:-http://localhost:3001}
+      BACKEND_URL: ${BACKEND_URL:-https://deploy-panel.opentriologue.ai}
+    healthcheck:
+      # Same timing as the HEALTHCHECK in backend/Dockerfile (guarded by
+      # backend/tests/dockerfile-healthcheck.test.ts); keep them in sync.
+      # docker-compose.yml (dev) has the identical block; the frontend's
+      # service_healthy gate below waits on it.
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/health"]
+      interval: 5s
+      timeout: 3s
+      start_period: 15s
+      retries: 4
     networks:
       - traefik
       - internal
@@ -93,13 +119,14 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: https://deploy-panel.opentriologue.ai
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://deploy-panel.opentriologue.ai}
     container_name: deploy-panel-frontend
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 512m
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     environment:
       HOSTNAME: 0.0.0.0
       PORT: 3000
