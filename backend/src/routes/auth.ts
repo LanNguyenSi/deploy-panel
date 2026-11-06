@@ -4,7 +4,6 @@ import { validatedJson } from "../lib/validator.js";
 import { timingSafeEqual, randomBytes } from "node:crypto";
 import {
   config,
-  allowedGitHubLogins,
   hasGitHubOAuthConfigured,
 } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
@@ -18,6 +17,7 @@ import {
   GitHubUnreachableError,
   type OAuthConfig,
 } from "../lib/github.js";
+import { isAllowedGitHubLogin, normalizeGitHubLogin } from "../lib/github-login.js";
 import {
   buildUserSessionCookie,
   createSession,
@@ -151,11 +151,11 @@ authRouter.get("/github/callback", async (c) => {
   // Apply the same allowlist guard as the broker path. Without this, any
   // GitHub user could reach deploy-panel's OAuth flow and provision an
   // account; per-user isolation contains them to an empty view but the
-  // allowlist still applies as product policy.
-  if (
-    allowedGitHubLogins.length > 0 &&
-    !allowedGitHubLogins.includes(githubUser.login)
-  ) {
+  // allowlist still applies as product policy. GitHub logins are
+  // case-insensitive, so the guard compares the login and the entries
+  // normalised (isAllowedGitHubLogin, lib/github-login.ts): an entry
+  // "alice" admits the GitHub login "Alice".
+  if (!isAllowedGitHubLogin(githubUser.login)) {
     return c.redirect(`${config.FRONTEND_URL}/login?error=forbidden_github_login`);
   }
 
@@ -246,7 +246,10 @@ authRouter.post(
       return c.json({ error: "internal" }, 500);
     }
 
-    if (body.githubLogin && body.githubLogin !== githubUser.login) {
+    if (
+      body.githubLogin &&
+      normalizeGitHubLogin(body.githubLogin) !== normalizeGitHubLogin(githubUser.login)
+    ) {
       return c.json(
         {
           error: "unauthorized",
@@ -260,10 +263,7 @@ authRouter.post(
     // registration by a configured set of GitHub logins so opening the
     // broker flow to a fresh GitHub account doesn't grant full panel
     // access. Empty list = back-compat accept-all.
-    if (
-      allowedGitHubLogins.length > 0 &&
-      !allowedGitHubLogins.includes(githubUser.login)
-    ) {
+    if (!isAllowedGitHubLogin(githubUser.login)) {
       return c.json(
         {
           error: "forbidden_github_login",

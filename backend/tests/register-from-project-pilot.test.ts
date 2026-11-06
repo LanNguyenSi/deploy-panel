@@ -191,6 +191,78 @@ describe("POST /auth/register-from-project-pilot", () => {
     allowedLoginsMock.length = 0;
   });
 
+  it("accepts when GitHub's login differs from the allowlist entry only in case", async () => {
+    // GitHub logins are case-insensitive: the helper must see the mocked
+    // list (same reference as the config mock) and compare normalised.
+    allowedLoginsMock.length = 0;
+    allowedLoginsMock.push("Authorized-User");
+
+    mockedFetch.mockResolvedValue({
+      id: 42,
+      login: "authorized-user",
+      name: null,
+      avatar_url: "",
+      email: null,
+    });
+    mUser.upsert.mockResolvedValue({ id: "user-ok", githubLogin: "authorized-user" });
+    mApiKey.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await call({ githubAccessToken: "valid" });
+
+    expect(res.status).toBe(200);
+    expect(mUser.upsert).toHaveBeenCalled();
+
+    allowedLoginsMock.length = 0;
+  });
+
+  it("accepts the reverse casing: lowercase entry, GitHub login in mixed case", async () => {
+    allowedLoginsMock.length = 0;
+    allowedLoginsMock.push("authorized-user");
+
+    mockedFetch.mockResolvedValue({
+      id: 42,
+      login: "Authorized-User",
+      name: null,
+      avatar_url: "",
+      email: null,
+    });
+    mUser.upsert.mockResolvedValue({ id: "user-ok", githubLogin: "Authorized-User" });
+    mApiKey.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await call({ githubAccessToken: "valid" });
+
+    expect(res.status).toBe(200);
+    expect(mUser.upsert).toHaveBeenCalled();
+    // Stored login keeps GitHub's casing.
+    expect(mUser.upsert.mock.calls[0][0].create.githubLogin).toBe("Authorized-User");
+
+    allowedLoginsMock.length = 0;
+  });
+
+  it("accepts a claimed githubLogin that differs from the verified login only in case", async () => {
+    // GitHub logins are case-insensitive: claiming "Alice" while GitHub
+    // verifies "alice" is the same account, not a mismatch (was 401).
+    allowedLoginsMock.length = 0;
+
+    mockedFetch.mockResolvedValue({
+      id: 7,
+      login: "alice",
+      name: null,
+      avatar_url: "",
+      email: null,
+    });
+    mUser.upsert.mockResolvedValue({ id: "user-1", githubLogin: "alice" });
+    mApiKey.updateMany.mockResolvedValue({ count: 0 });
+
+    const res = await call({ githubAccessToken: "valid", githubLogin: "Alice" });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { githubLogin: string };
+    // The response keeps GitHub's casing, not the claimed casing.
+    expect(body.githubLogin).toBe("alice");
+    expect(mUser.upsert).toHaveBeenCalled();
+  });
+
   it("never leaks the GitHub access-token in any response body", async () => {
     mockedFetch.mockRejectedValue(new GitHubAuthError("401"));
     const res = await call({ githubAccessToken: "super-secret-xyz" });
