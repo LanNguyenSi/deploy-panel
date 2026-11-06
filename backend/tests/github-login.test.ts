@@ -27,6 +27,12 @@ describe("normalizeGitHubLogin", () => {
     expect(normalizeGitHubLogin("MIXED-Case")).toBe("mixed-case");
   });
 
+  it("folds ASCII letters only: the Kelvin sign is not a k", () => {
+    expect(normalizeGitHubLogin("\u212Aate")).toBe("\u212Aate");
+    expect(normalizeGitHubLogin("KATE")).toBe("kate");
+    expect(isAllowedGitHubLogin("\u212Aate", ["kate"])).toBe(false);
+  });
+
   it("maps empty and whitespace-only input to the empty string", () => {
     expect(normalizeGitHubLogin("")).toBe("");
     expect(normalizeGitHubLogin("   ")).toBe("");

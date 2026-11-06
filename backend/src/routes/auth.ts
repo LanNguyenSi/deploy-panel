@@ -211,7 +211,12 @@ authRouter.get("/github/callback", async (c) => {
 
 const registerFromProjectPilotSchema = z.object({
   githubAccessToken: z.string().min(1),
-  githubLogin: z.string().min(1).optional(),
+  // GitHub login charset: ASCII letters, digits and hyphens, at most 39
+  // characters; anything else is a malformed claim, not a casing variant.
+  githubLogin: z
+    .string()
+    .regex(/^[A-Za-z0-9-]{1,39}$/)
+    .optional(),
 });
 
 function generateApiKey(): string {

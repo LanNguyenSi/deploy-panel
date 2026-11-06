@@ -11,12 +11,14 @@
 import { allowedGitHubLogins } from "../config/index.js";
 
 /**
- * Canonical form of a GitHub login for comparison: trimmed and lowercased.
- * Never use it for storage; persisted `githubLogin` values keep GitHub's
- * casing.
+ * Canonical form of a GitHub login for comparison: trimmed, with ASCII
+ * letters lowercased. Only ASCII folds: a GitHub login is ASCII letters,
+ * digits and hyphens, and a full-Unicode lowercase would let the Kelvin sign
+ * (U+212A) stand in for `k` on the broker's claimed login. Never use it for
+ * storage; persisted `githubLogin` values keep GitHub's casing.
  */
 export function normalizeGitHubLogin(login: string): string {
-  return login.trim().toLowerCase();
+  return login.trim().replace(/[A-Z]/g, (c) => c.toLowerCase());
 }
 
 /**

@@ -111,6 +111,21 @@ describe("POST /auth/register-from-project-pilot", () => {
     expect(mUser.upsert).not.toHaveBeenCalled();
   });
 
+  it("400 when the claimed githubLogin folds to the verified one only through a non-ASCII character or padding", async () => {
+    mockedFetch.mockResolvedValue({
+      id: 7,
+      login: "kate",
+      name: null,
+      avatar_url: "",
+      email: null,
+    });
+    for (const claimed of ["\u212Aate", " kate", "kate\u00a0"]) {
+      const res = await call({ githubAccessToken: "valid", githubLogin: claimed });
+      expect(res.status).toBe(400);
+    }
+    expect(mUser.upsert).not.toHaveBeenCalled();
+  });
+
   it("provisions user + rotates a fresh dp_ API key on success", async () => {
     mockedFetch.mockResolvedValue({
       id: 42,
