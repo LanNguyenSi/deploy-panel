@@ -23,13 +23,7 @@ jobs:
 
 ## Pinning and updates
 
-The examples pin the action to a release tag. Pin to a release tag, not to a branch ref: the `main` ref tracks unreleased changes and can break a working workflow. For a stricter pin, use the commit SHA the tag points at. Renovate's `github-actions` manager (or Dependabot's `github-actions` ecosystem) opens pull requests that bump the tag automatically:
-
-```json
-{
-  "enabledManagers": ["github-actions"]
-}
-```
+Pin the action to a release tag, not to a branch ref: the `main` ref tracks unreleased changes and can break a working workflow. For a stricter pin, use the commit SHA the tag points at. Renovate bumps `uses:` tags through its `github-actions` manager, which is enabled by default, so a repository that already runs Renovate needs no extra configuration; Dependabot does the same with a `package-ecosystem: github-actions` entry in `.github/dependabot.yml`.
 
 ## Inputs
 
