@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Dependency updates: `renovate.json` extends the shared `github>LanNguyenSi/renovate-config` preset (weekly grouped patch/minor pull requests, 7-day minimum release age, no automerge, majors only through the Dependency Dashboard).
 
+### Docs
+
+- The examples in `action/README.md` now pin the composite action to a release tag instead of the moving `main` ref, and a new "Pinning and updates" section explains tag pins (or the tag's commit SHA for a stricter pin) and automatic bumps via Renovate's `github-actions` manager or Dependabot's `github-actions` ecosystem. The dashboard example in `README.md` now mirrors what the dashboard actually renders (the status panel line, the totals line, "Recent Deploys" rows with a time-ago stamp) and points to `/deploys` for commit ranges.
+
 ## [0.8.0] - 2026-11-01
 
 ### Security
