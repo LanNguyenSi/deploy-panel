@@ -49,12 +49,17 @@ services:
         condition: service_healthy
     logging: *default-logging
     mem_limit: 512m
-    # The panel's public origin: BACKEND_URL, CORS_ORIGINS and FRONTEND_URL
-    # below plus the NEXT_PUBLIC_API_URL build arg of the frontend. A copy of
-    # this file for another domain sets all four in the server .env; the
-    # defaults are this panel's own domain, so an unset variable still boots
-    # the current deployment (no `:?` here: the live server .env is not known
-    # to set them and a required variable would fail the next self-deploy).
+    # PANEL_PUBLIC_ORIGIN is the panel's single public origin: it fills
+    # BACKEND_URL, CORS_ORIGINS and FRONTEND_URL below plus the
+    # NEXT_PUBLIC_API_URL build arg of the frontend. One variable on purpose:
+    # the four names must always carry the same origin, and keeping them out
+    # of .env.example means an .env made from the template cannot override
+    # the prod origins. Set PANEL_PUBLIC_ORIGIN in the server .env when the
+    # panel runs under another domain; the default is this panel's own
+    # domain, so an unset variable still boots the current deployment (no
+    # `:?` here: an existing deployment whose .env predates these variables
+    # keeps booting; a required variable would fail its next deploy at
+    # compose).
     # BACKEND_URL is the origin GitHub redirects back to after OAuth, so with
     # OAuth enabled a wrong or missing value lands every login on GitHub's
     # redirect_uri_mismatch page. NEXT_PUBLIC_API_URL is baked into the
@@ -70,8 +75,8 @@ services:
       # Required before any AppSecret is stored/read in production — the
       # backend throws rather than silently falling back to a weak dev key.
       APP_SECRETS_KEY: ${APP_SECRETS_KEY}
-      CORS_ORIGINS: ${CORS_ORIGINS:-https://deploy-panel.opentriologue.ai}
-      FRONTEND_URL: ${FRONTEND_URL:-https://deploy-panel.opentriologue.ai}
+      CORS_ORIGINS: ${PANEL_PUBLIC_ORIGIN:-https://deploy-panel.opentriologue.ai}
+      FRONTEND_URL: ${PANEL_PUBLIC_ORIGIN:-https://deploy-panel.opentriologue.ai}
       NODE_ENV: production
       # Optional: relay app name the panel is registered under (default
       # deploy-panel); the stuck-deploy sweep matches it by app name only.
@@ -92,7 +97,7 @@ services:
       # see backend/tests/config-backend-url-guard.test.ts).
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
-      BACKEND_URL: ${BACKEND_URL:-https://deploy-panel.opentriologue.ai}
+      BACKEND_URL: ${PANEL_PUBLIC_ORIGIN:-https://deploy-panel.opentriologue.ai}
     healthcheck:
       # Same timing as the HEALTHCHECK in backend/Dockerfile (guarded by
       # backend/tests/dockerfile-healthcheck.test.ts); keep them in sync.
@@ -119,7 +124,7 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://deploy-panel.opentriologue.ai}
+        NEXT_PUBLIC_API_URL: ${PANEL_PUBLIC_ORIGIN:-https://deploy-panel.opentriologue.ai}
     container_name: deploy-panel-frontend
     restart: unless-stopped
     logging: *default-logging

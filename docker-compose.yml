@@ -76,6 +76,7 @@ services:
       # then be the public backend origin so the callback URL resolves.
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      # This file runs in production mode by default (NODE_ENV above): OAuth with this localhost default needs NODE_ENV=development or a non-localhost BACKEND_URL in the .env.
       BACKEND_URL: ${BACKEND_URL:-http://localhost:3001}
     healthcheck:
       # Same timing as the HEALTHCHECK in backend/Dockerfile (guarded by

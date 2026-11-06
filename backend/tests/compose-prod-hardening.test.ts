@@ -16,13 +16,16 @@ import yaml from "js-yaml";
  *   3. Only the dev file pins a top-level project `name:`; the prod file
  *      must not have one (its project name comes from the app directory on
  *      the server; a name there would orphan the live pgdata volume).
- *   4. The four public-origin variables (BACKEND_URL, CORS_ORIGINS,
- *      FRONTEND_URL and the NEXT_PUBLIC_API_URL build arg) are steerable
- *      from the server .env with the panel's own domain as the `:-` default
- *      (no `:?`: the live server .env is not known to set them, and a
- *      required variable would fail the next self-deploy at `compose`). The
- *      localhost default for BACKEND_URL is what sent OAuth logins to
- *      GitHub's redirect_uri_mismatch page.
+ *   4. The prod file has ONE public-origin variable, PANEL_PUBLIC_ORIGIN:
+ *      BACKEND_URL, CORS_ORIGINS, FRONTEND_URL and the NEXT_PUBLIC_API_URL
+ *      build arg all take it with the panel's own domain as the `:-` default
+ *      (no `:?`: an existing deployment whose .env predates these variables
+ *      keeps booting; a required variable would fail its next deploy at
+ *      `compose`). It is deliberately absent from .env.example, so an .env
+ *      made from the template cannot override the prod origins, and entries
+ *      for the four reused names in such an .env stay ignored by the prod
+ *      file. The localhost default for BACKEND_URL is what sent OAuth logins
+ *      to GitHub's redirect_uri_mismatch page.
  *   5. The frontend waits for the backend's health check (the same
  *      `condition: service_healthy` gate as the dev file), which needs the
  *      backend healthcheck block the prod file was missing.
@@ -52,6 +55,20 @@ function load(text: string): ComposeFile {
 const prod = load(prodText);
 const dev = load(devText);
 const prodServices = Object.keys(prod.services).sort();
+
+const envExampleText = readFileSync(path.join(repoRoot, ".env.example"), "utf8");
+
+// Keys of .env.example: key=value lines, comments and blank lines ignored.
+function envExampleKeys(): string[] {
+  const keys: string[] = [];
+  for (const line of envExampleText.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
+    if (match) keys.push(match[1]);
+  }
+  return keys;
+}
 
 describe("docker-compose.prod.yml: fail-closed env wiring", () => {
   it("requires POSTGRES_PASSWORD with :? in both the db service and DATABASE_URL", () => {
@@ -103,38 +120,51 @@ describe("compose project names", () => {
   });
 });
 
-describe("docker-compose.prod.yml: public origin steerable from the server .env", () => {
+describe("docker-compose.prod.yml: one prod-only public origin variable", () => {
   const DOMAIN = "https://deploy-panel.opentriologue.ai";
+  const ORIGIN_REF = `\${PANEL_PUBLIC_ORIGIN:-${DOMAIN}}`;
+  const NAMES = ["BACKEND_URL", "CORS_ORIGINS", "FRONTEND_URL", "NEXT_PUBLIC_API_URL"];
 
-  it.each(["BACKEND_URL", "CORS_ORIGINS", "FRONTEND_URL"])(
-    "%s uses the panel-domain :- default (steerable from the server .env)",
+  it("the panel-domain default is referenced exactly four times, all via PANEL_PUBLIC_ORIGIN", () => {
+    const matches = prodText.match(/\$\{PANEL_PUBLIC_ORIGIN:-https:\/\/deploy-panel\.opentriologue\.ai\}/g);
+    expect(matches, "BACKEND_URL, CORS_ORIGINS, FRONTEND_URL and NEXT_PUBLIC_API_URL").toHaveLength(4);
+  });
+
+  it.each(NAMES)(
+    "%s is filled from PANEL_PUBLIC_ORIGIN, never interpolated with its own default",
     (name) => {
-      expect(prodText).toMatch(
-        new RegExp(`\\$\\{${name}:-https:\\/\\/deploy-panel\\.opentriologue\\.ai\\}`),
-      );
-      expect(
-        (prod.services.backend.environment as Record<string, string>)[name],
-      ).toBe(`\${${name}:-${DOMAIN}}`);
+      expect(prodText).not.toMatch(new RegExp(`${name}:-`));
+      if (name === "NEXT_PUBLIC_API_URL") {
+        const build = prod.services.frontend.build as { args?: Record<string, string> };
+        expect(build.args?.NEXT_PUBLIC_API_URL).toBe(ORIGIN_REF);
+      } else {
+        expect((prod.services.backend.environment as Record<string, string>)[name]).toBe(ORIGIN_REF);
+      }
     },
   );
 
-  it("BACKEND_URL has no localhost default left (the OAuth redirect_uri footgun)", () => {
-    expect(prodText).toMatch(/\$\{BACKEND_URL:-https:\/\/deploy-panel\.opentriologue\.ai\}/);
-    expect(prodText).not.toMatch(/BACKEND_URL:-http:\/\/localhost/);
-  });
-
-  it("the frontend build arg NEXT_PUBLIC_API_URL takes the same :- form", () => {
-    const build = prod.services.frontend.build as { args?: Record<string, string> };
-    expect(build.args?.NEXT_PUBLIC_API_URL).toBe(`\${NEXT_PUBLIC_API_URL:-${DOMAIN}}`);
-    expect(prodText).toMatch(
-      /\$\{NEXT_PUBLIC_API_URL:-https:\/\/deploy-panel\.opentriologue\.ai\}/,
-    );
-  });
-
-  it("CORS_ORIGINS and FRONTEND_URL keep no hard-coded value (unset .env still boots this panel)", () => {
-    for (const name of ["CORS_ORIGINS", "FRONTEND_URL"]) {
-      expect(prodText).not.toMatch(new RegExp(`${name}: https:\\/\\/`));
+  it("the four assignment lines interpolate only PANEL_PUBLIC_ORIGIN, no .env.example key", () => {
+    const originLines = prodText
+      .split(/\r?\n/)
+      .filter((line) => /^\s*(BACKEND_URL|CORS_ORIGINS|FRONTEND_URL|NEXT_PUBLIC_API_URL):/.test(line));
+    expect(originLines.map((line) => line.trim().split(":")[0]).sort()).toEqual([...NAMES].sort());
+    // Keys the template defines (comments ignored): none of them may appear
+    // as an interpolation on the origin lines, or an .env made from
+    // .env.example could override a prod origin.
+    const templateKeys = envExampleKeys();
+    expect(templateKeys.length).toBeGreaterThan(0);
+    for (const line of originLines) {
+      const interpolated = [...line.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]);
+      expect([...new Set(interpolated)].sort()).toEqual(["PANEL_PUBLIC_ORIGIN"]);
+      for (const name of interpolated) {
+        expect(templateKeys, `${name} is a .env.example key`).not.toContain(name);
+      }
     }
+  });
+
+  it(".env.example defines no PANEL_PUBLIC_ORIGIN (a template .env cannot set it)", () => {
+    expect(envExampleKeys()).not.toContain("PANEL_PUBLIC_ORIGIN");
+    expect(envExampleText).not.toMatch(/^\s*PANEL_PUBLIC_ORIGIN\s*=/m);
   });
 });
 
