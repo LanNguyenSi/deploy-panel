@@ -43,7 +43,9 @@ Pin the action to a release tag, not to a branch ref: the `main` ref tracks unre
 | Output | Description |
 |--------|-------------|
 | `deploy-id` | Deploy UUID |
-| `status` | Final deploy status when `wait` is true (`success`, `failed`, `rolled_back`, `interrupted`) or `timeout`; `running` when `wait` is false. When waiting, the job fails for any value other than `success` |
+| `status` | Final deploy status when `wait` is true (`success`, `failed`, `rolled_back`, `interrupted`), `timeout` when it did not finish within `timeout`, or `error` when polling could not settle the deploy (an authentication failure `401`/`403`, or another unexpected HTTP code); `running` when `wait` is false. When waiting, the job fails for any value other than `success` |
+
+When `wait` is true the status poll treats a transient failure as a hiccup rather than the deploy's outcome: a refused connection, a `5xx`, `404`, `408` or `429` from the proxy, and a `2xx` whose body carries no parsable status all leave the deploy running, so the action backs off (10 s, then 20 s, then 30 s, reset to 10 s after a poll that answers) and keeps polling until `timeout` elapses, ending with `status: timeout` and an error that names the last poll's outcome (its HTTP code and deploy status). Any other unexpected HTTP code (`401` and `403` included) is fatal and stops at once with `status: error`. This is what lets the action ride through a self-deploy that restarts the panel mid-deploy.
 
 ## Examples
 
