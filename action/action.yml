@@ -105,6 +105,7 @@ runs:
         # test harness knob: shrinks the backoff base so tests run instantly
         BASE="${DEPLOY_PANEL_ACTION_TEST_POLL_BASE:-10}"
         if ! [[ "$BASE" =~ ^[0-9]+$ ]]; then BASE=10; fi
+        BASE=$((10#$BASE))
 
         if ! [[ "${TIMEOUT:-}" =~ ^[0-9]+$ ]]; then
           echo "::error::timeout must be a number of seconds"
