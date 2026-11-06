@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- GitHub login matching no longer depends on casing. GitHub logins are case-insensitive, but the `ALLOWED_GITHUB_LOGINS` guard compared GitHub's login against the allowlist exactly, so an entry `alice` locked out the account GitHub returns as `Alice` (OAuth callback redirect `forbidden_github_login`, identity broker 403) and the broker's claimed-login check 401'd the same account on a casing difference, all with nothing in the operator's view. Both route checks and the claimed-vs-verified comparison now go through one helper (`isAllowedGitHubLogin` / `normalizeGitHubLogin` in the new `backend/src/lib/github-login.ts`): the login and every allowlist entry are trimmed and their ASCII letters lowercased before they are compared (only ASCII folds, so a look-alike such as the Kelvin sign never stands in for `k`), allowlist entries are lowercased and de-duplicated at config parse, and stored `githubLogin` values keep GitHub's casing. Empty allowlist still means "any verified login"; an empty or whitespace-only login or entry never matches. The broker now answers 400 when a claimed `githubLogin` is not ASCII letters, digits or hyphens of at most 39 characters (such a claim used to get 401 or, with padding, could pass).
+
 - The `Deploy Panel` GitHub Action no longer fails a wait when a status poll is only transient. The "Wait for completion" step now retries a refused connection, a proxy `5xx`, `404`, `408` or `429`, and a `2xx` body that carries no parsable status, backing off 10 s, 20 s then 30 s (reset to 10 s after a poll that answers) and polling until `timeout` on a wall-clock bound measured from the step's start rather than a sum of sleeps, and every request now carries a `--max-time`, so a self-deploy that restarts the panel is waited out instead of ending the job on a bare curl exit code or a `status: null`. It stops at once with `status=error` (naming the HTTP code) on a `401`, a `403` or any other HTTP code outside that table, writes `status=timeout` naming the last poll's outcome (its HTTP code and deploy status) when the bound passes, and an empty or non-numeric `timeout` is now a clear usage error rather than a shell error raised inside the loop.
 
 - The confirm dialog (delete, deploy, rollback and every other confirmation) now behaves as a modal: focus moves to Cancel when it opens and returns to the control that opened it when it closes, Tab and Shift+Tab stay between its two buttons, Escape closes it from anywhere (the key handler used to sit on a backdrop element that never held focus, so Escape did nothing), and the page behind it (`.app-content`, sidebar and header) is inert while it is open. Elements that were already inert stay inert after it closes.
@@ -31,6 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - Dependency updates: `renovate.json` extends the shared `github>LanNguyenSi/renovate-config` preset (weekly grouped patch/minor pull requests, 7-day minimum release age, no automerge, majors only through the Dependency Dashboard).
+
+### Docs
+
+- The examples in `action/README.md` now pin the composite action to a release tag instead of the moving `main` ref, and a new "Pinning and updates" section explains tag pins (or the tag's commit SHA for a stricter pin) and automatic bumps via Renovate's `github-actions` manager or Dependabot's `github-actions` ecosystem. The dashboard example in `README.md` now mirrors what the dashboard actually renders (the status panel line, the totals line, "Recent Deploys" rows with a time-ago stamp) and points to `/deploys` for commit ranges.
 
 ## [0.8.0] - 2026-11-01
 

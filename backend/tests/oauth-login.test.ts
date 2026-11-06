@@ -157,6 +157,60 @@ describe("GET /auth/github/callback", () => {
     expect(mUser.upsert).not.toHaveBeenCalled();
   });
 
+  it("accepts when GitHub's login differs from the allowlist entry only in case", async () => {
+    // GitHub logins are case-insensitive: the helper must see the mocked
+    // list (same reference as the config mock) and compare normalised.
+    allowedLoginsMock.push("Authorized-User");
+    mExchange.mockResolvedValue({
+      access_token: "gh-tok",
+      token_type: "bearer",
+      scope: "read:user",
+    });
+    mFetchUser.mockResolvedValue({
+      id: 42,
+      login: "authorized-user",
+      name: null,
+      avatar_url: "",
+      email: null,
+    });
+    mUser.upsert.mockResolvedValue({ id: "user-1", githubLogin: "authorized-user" });
+
+    const res = await authRouter.request("/github/callback?code=ok&state=xyz", {
+      headers: { Cookie: "dp_oauth_state=xyz" },
+    });
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("http://localhost:3000");
+    expect(mUser.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts the reverse casing: lowercase entry, GitHub login in mixed case", async () => {
+    allowedLoginsMock.push("authorized-user");
+    mExchange.mockResolvedValue({
+      access_token: "gh-tok",
+      token_type: "bearer",
+      scope: "read:user",
+    });
+    mFetchUser.mockResolvedValue({
+      id: 42,
+      login: "Authorized-User",
+      name: null,
+      avatar_url: "",
+      email: null,
+    });
+    mUser.upsert.mockResolvedValue({ id: "user-1", githubLogin: "Authorized-User" });
+
+    const res = await authRouter.request("/github/callback?code=ok&state=xyz", {
+      headers: { Cookie: "dp_oauth_state=xyz" },
+    });
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("http://localhost:3000");
+    expect(mUser.upsert).toHaveBeenCalledTimes(1);
+    // Stored login keeps GitHub's casing.
+    expect(mUser.upsert.mock.calls[0][0].create.githubLogin).toBe("Authorized-User");
+  });
+
   it("upserts user + creates session + redirects to frontend on success", async () => {
     mExchange.mockResolvedValue({
       access_token: "gh-tok",

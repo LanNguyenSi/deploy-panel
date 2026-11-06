@@ -13,13 +13,17 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: LanNguyenSi/deploy-panel/action@main
+      - uses: LanNguyenSi/deploy-panel/action@v0.8.0
         with:
           url: https://panel.example.com
           api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
           server: prod-1
           app: myapp
 ```
+
+## Pinning and updates
+
+Pin the action to a release tag, not to a branch ref: the `main` ref tracks unreleased changes and can break a working workflow. For a stricter pin, use the commit SHA the tag points at. Renovate bumps `uses:` tags through its `github-actions` manager, which is enabled by default, so a repository that already runs Renovate needs no extra configuration; Dependabot does the same with a `package-ecosystem: github-actions` entry in `.github/dependabot.yml`.
 
 ## Inputs
 
@@ -48,7 +52,7 @@ When `wait` is true the status poll treats a transient failure as a hiccup rathe
 ### Deploy with preflight
 
 ```yaml
-- uses: LanNguyenSi/deploy-panel/action@main
+- uses: LanNguyenSi/deploy-panel/action@v0.8.0
   with:
     url: ${{ vars.DEPLOY_PANEL_URL }}
     api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
@@ -62,7 +66,7 @@ When `wait` is true the status poll treats a transient failure as a hiccup rathe
 The preflight step still runs and prints its checks, but a failed preflight no longer fails the job. `force: true` is also sent with the deploy request.
 
 ```yaml
-- uses: LanNguyenSi/deploy-panel/action@main
+- uses: LanNguyenSi/deploy-panel/action@v0.8.0
   with:
     url: ${{ vars.DEPLOY_PANEL_URL }}
     api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
@@ -74,7 +78,7 @@ The preflight step still runs and prints its checks, but a failed preflight no l
 ### Skip preflight
 
 ```yaml
-- uses: LanNguyenSi/deploy-panel/action@main
+- uses: LanNguyenSi/deploy-panel/action@v0.8.0
   with:
     url: ${{ vars.DEPLOY_PANEL_URL }}
     api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
@@ -86,7 +90,7 @@ The preflight step still runs and prints its checks, but a failed preflight no l
 ### Fire and forget
 
 ```yaml
-- uses: LanNguyenSi/deploy-panel/action@main
+- uses: LanNguyenSi/deploy-panel/action@v0.8.0
   with:
     url: ${{ vars.DEPLOY_PANEL_URL }}
     api-key: ${{ secrets.DEPLOY_PANEL_KEY }}

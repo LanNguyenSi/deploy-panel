@@ -48,12 +48,19 @@ Dashboard, fleet overview:
 
 ```
 # example output
-Servers   3 online / 0 offline / 0 no-relay
-Apps      11 healthy / 1 unhealthy / 0 deploying
-Recent    web-prod      success    2m ago    (a1b2c3d -> e4f5g6h)
-          api-staging   success    14m ago   (9e8d7c6 -> 5b4a3c2)
-          worker-prod   failed     1h ago    (timeout reaching relay)
+All systems operational
+3 of 3 servers online. No current failures in the last 4 deploys.
+
+3 servers (3 online)   11 apps   4 recent deploys (4 successful)
+
+Recent Deploys
+web-prod     on prod-1     Success   just now
+api-staging  on staging-1  Success   2m ago
+worker-prod  on prod-1     Success   1h ago
+web-prod     on staging-1  Success   3d ago
 ```
+
+The dashboard rows show no commits: the `/deploys` page expands a deploy row to a "Commit Range" with the Before and After commits.
 
 API v1 deploy from a CI job:
 
