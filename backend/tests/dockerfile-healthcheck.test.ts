@@ -100,15 +100,15 @@ describe.each(DOCKERFILES)("%s HEALTHCHECK", (file) => {
 });
 
 /**
- * docker-compose.yml overrides the backend image's HEALTHCHECK for the dev
- * stack (the frontend waits for `service_healthy`); keep it identical to the
- * Dockerfile flags so the dev stack uses the same timing as the image.
+ * Both compose files override the backend image's HEALTHCHECK (the frontend
+ * waits for `service_healthy`); keep each block identical to the Dockerfile
+ * flags so both stacks use the same timing as the image.
  */
-function composeBackendHealthcheck(text: string): Record<string, string> {
+function composeBackendHealthcheck(text: string, label: string): Record<string, string> {
   const backend = /\n  backend:\n([\s\S]*?)(?=\n  [a-z][\w-]*:\n|\nvolumes:|$)/.exec(text);
-  expect(backend, "docker-compose.yml must define a backend service").not.toBeNull();
+  expect(backend, `${label} must define a backend service`).not.toBeNull();
   const hc = /\n    healthcheck:\n((?:      .*\n|\s*#.*\n)+)/.exec(backend![1] + "\n");
-  expect(hc, "backend service must declare a healthcheck").not.toBeNull();
+  expect(hc, `${label} backend service must declare a healthcheck`).not.toBeNull();
   const values: Record<string, string> = {};
   for (const m of hc![1].matchAll(/^      (interval|timeout|start_period|retries):\s*(\S+)\s*$/gm)) {
     values[m[1] === "start_period" ? "start-period" : m[1]] = m[2];
@@ -120,11 +120,26 @@ describe("docker-compose.yml backend healthcheck", () => {
   it("matches the backend Dockerfile HEALTHCHECK flags", () => {
     const compose = composeBackendHealthcheck(
       readFileSync(path.join(repoRoot, "docker-compose.yml"), "utf8"),
+      "docker-compose.yml",
     );
     const dockerfile = parseHealthcheck("backend/Dockerfile");
     for (const name of FLAGS) {
       expect(compose[name], `docker-compose.yml backend healthcheck is missing ${name}`).toBeDefined();
       expect(toSeconds(compose[name]), `docker-compose.yml ${name}`).toBe(toSeconds(dockerfile[name]));
+    }
+  });
+});
+
+describe("docker-compose.prod.yml backend healthcheck", () => {
+  it("matches the backend Dockerfile HEALTHCHECK flags", () => {
+    const compose = composeBackendHealthcheck(
+      readFileSync(path.join(repoRoot, "docker-compose.prod.yml"), "utf8"),
+      "docker-compose.prod.yml",
+    );
+    const dockerfile = parseHealthcheck("backend/Dockerfile");
+    for (const name of FLAGS) {
+      expect(compose[name], `docker-compose.prod.yml backend healthcheck is missing ${name}`).toBeDefined();
+      expect(toSeconds(compose[name]), `docker-compose.prod.yml ${name}`).toBe(toSeconds(dockerfile[name]));
     }
   });
 });
