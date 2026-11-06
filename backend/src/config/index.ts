@@ -58,10 +58,13 @@ export const config = result.data;
  * refused at startup instead (guard below), so this back-compat meaning only
  * applies to development and test.
  */
-export const allowedGitHubLogins: string[] = config.ALLOWED_GITHUB_LOGINS
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+export const allowedGitHubLogins: string[] = [
+  ...new Set(
+    config.ALLOWED_GITHUB_LOGINS.split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
+  ),
+];
 
 // Fail closed in production: an empty allowlist (unset, empty, or only
 // spaces and commas) would let any verified GitHub account register through
