@@ -21,11 +21,11 @@ import yaml from "js-yaml";
  *      build arg all take it with the panel's own domain as the `:-` default
  *      (no `:?`: an existing deployment whose .env predates these variables
  *      keeps booting; a required variable would fail its next deploy at
- *      `compose`). It is deliberately absent from .env.example, so an .env
- *      made from the template cannot override the prod origins, and entries
- *      for the four reused names in such an .env stay ignored by the prod
- *      file. The localhost default for BACKEND_URL is what sent OAuth logins
- *      to GitHub's redirect_uri_mismatch page.
+ *      `compose`). It is deliberately not a value in .env.example, so an
+ *      .env made from the template cannot override the prod origins, and
+ *      entries for the four reused names in such an .env stay ignored by
+ *      the prod file. The localhost default for BACKEND_URL is what sent
+ *      OAuth logins to GitHub's redirect_uri_mismatch page.
  *   5. The frontend waits for the backend's health check (the same
  *      `condition: service_healthy` gate as the dev file), which needs the
  *      backend healthcheck block the prod file was missing.
@@ -58,16 +58,23 @@ const prodServices = Object.keys(prod.services).sort();
 
 const envExampleText = readFileSync(path.join(repoRoot, ".env.example"), "utf8");
 
-// Keys of .env.example: key=value lines, comments and blank lines ignored.
-function envExampleKeys(): string[] {
+// Keys a compose-run .env (or a template copy of one) would set, in every
+// form docker compose reads as an assignment: `KEY=value`, `export KEY=value`
+// and `KEY: value`, leading whitespace allowed. Comments and blank lines are
+// not assignments.
+function dotenvKeys(text: string): string[] {
   const keys: string[] = [];
-  for (const line of envExampleText.split(/\r?\n/)) {
+  for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
-    const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
+    const match = trimmed.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*[=:]/);
     if (match) keys.push(match[1]);
   }
   return keys;
+}
+
+function envExampleKeys(): string[] {
+  return dotenvKeys(envExampleText);
 }
 
 describe("docker-compose.prod.yml: fail-closed env wiring", () => {
@@ -162,9 +169,16 @@ describe("docker-compose.prod.yml: one prod-only public origin variable", () => 
     }
   });
 
+  it("dotenvKeys parses every assignment form docker compose reads", () => {
+    expect(dotenvKeys("export PANEL_PUBLIC_ORIGIN=x")).toEqual(["PANEL_PUBLIC_ORIGIN"]);
+    expect(dotenvKeys("PANEL_PUBLIC_ORIGIN: x")).toEqual(["PANEL_PUBLIC_ORIGIN"]);
+    expect(dotenvKeys("  PANEL_PUBLIC_ORIGIN=x")).toEqual(["PANEL_PUBLIC_ORIGIN"]);
+    expect(dotenvKeys("# PANEL_PUBLIC_ORIGIN=x")).toEqual([]);
+  });
+
   it(".env.example defines no PANEL_PUBLIC_ORIGIN (a template .env cannot set it)", () => {
     expect(envExampleKeys()).not.toContain("PANEL_PUBLIC_ORIGIN");
-    expect(envExampleText).not.toMatch(/^\s*PANEL_PUBLIC_ORIGIN\s*=/m);
+    expect(envExampleText).not.toMatch(/^\s*(?:export\s+)?PANEL_PUBLIC_ORIGIN\s*[=:]/m);
   });
 });
 

@@ -87,14 +87,16 @@ services:
       # the prod default. The backend default stays empty for dev.
       ALLOWED_GITHUB_LOGINS: ${ALLOWED_GITHUB_LOGINS:?ALLOWED_GITHUB_LOGINS must be set}
       # Native GitHub OAuth (pairs with #60 — standalone login). Empty =
-      # disabled (routes 503, frontend hides button). Set all three in
-      # prod .env to enable. With OAuth enabled, BACKEND_URL must be the
-      # public backend origin: the backend sends
+      # disabled (routes 503, frontend hides button). Set GITHUB_CLIENT_ID
+      # and GITHUB_CLIENT_SECRET in the prod .env to enable. With OAuth
+      # enabled, BACKEND_URL must be the public backend origin: the backend sends
       # `${BACKEND_URL}/api/auth/github/callback` as the redirect_uri to
       # GitHub, so a localhost value there fails every login with
       # redirect_uri_mismatch while health stays green (a production backend
       # with OAuth configured and a localhost BACKEND_URL refuses to start;
-      # see backend/tests/config-backend-url-guard.test.ts).
+      # see backend/tests/config-backend-url-guard.test.ts). BACKEND_URL
+      # below is filled from PANEL_PUBLIC_ORIGIN, so a BACKEND_URL in the
+      # server .env is ignored by this file.
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
       BACKEND_URL: ${PANEL_PUBLIC_ORIGIN:-https://deploy-panel.opentriologue.ai}
