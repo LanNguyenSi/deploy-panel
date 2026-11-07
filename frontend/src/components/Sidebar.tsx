@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { acquireInert, releaseInert } from "@/lib/inert";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
@@ -69,16 +70,18 @@ export default function Sidebar() {
   // must leave the tab order. AppShell renders `.app-content` but does not
   // manage its `inert` attribute, so the drawer's owner (this component,
   // which owns every close path: Escape, overlay, link click, menu button,
-  // viewport change) toggles the attribute directly. Declared before the
-  // focus effect so the attribute is gone before focus is returned to the
-  // menu button. Keyed on drawerOpen so a desktop render also runs the
-  // removal even though mobileOpen may not have changed yet.
+  // viewport change) holds it through the shared inert counter: a confirm
+  // dialog open at the same time keeps the element inert after this hold is
+  // released (and the other way round). Declared before the focus effect so
+  // the attribute is gone before focus is returned to the menu button.
+  // Keyed on drawerOpen so a desktop render also runs the release even
+  // though mobileOpen may not have changed yet.
   useEffect(() => {
+    if (!drawerOpen) return;
     const content = document.querySelector(".app-content");
     if (!content) return;
-    if (drawerOpen) content.setAttribute("inert", "");
-    else content.removeAttribute("inert");
-    return () => content.removeAttribute("inert");
+    acquireInert(content);
+    return () => releaseInert(content);
   }, [drawerOpen]);
 
   // Open: move focus into the drawer (nothing else is focusable while open,

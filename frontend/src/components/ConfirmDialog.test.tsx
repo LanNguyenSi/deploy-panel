@@ -308,15 +308,24 @@ describe("ConfirmDialog / ConfirmProvider", () => {
   });
 
   describe("inert background", () => {
+    // Mirrors the real shell (AppShell.tsx): Sidebar renders the aside and
+    // the header as direct children of `.app-layout`, next to `.app-content`
+    // (a fragment adds no DOM node). The page-aside / page-header stand for
+    // an aside or header rendered inside page content: the dialog must never
+    // touch them.
     function Shell({ preInert }: { preInert?: boolean }) {
       return (
         <ConfirmProvider>
-          <aside data-testid="aside" {...(preInert ? { inert: true } : {})}>
-            side
-          </aside>
-          <header data-testid="header">head</header>
-          <div className="app-content" data-testid="content">
-            <ResultRecorder />
+          <div className="app-layout">
+            <aside data-testid="aside" {...(preInert ? { inert: true } : {})}>
+              side
+            </aside>
+            <header data-testid="header">head</header>
+            <div className="app-content" data-testid="content">
+              <aside data-testid="page-aside">page side</aside>
+              <header data-testid="page-header">page head</header>
+              <ResultRecorder />
+            </div>
           </div>
         </ConfirmProvider>
       );
@@ -348,6 +357,109 @@ describe("ConfirmDialog / ConfirmProvider", () => {
 
       expect(aside).toHaveAttribute("inert");
       expect(screen.getByTestId("header")).not.toHaveAttribute("inert");
+    });
+
+    it("never inerts an aside or header rendered inside page content", async () => {
+      const user = userEvent.setup();
+      render(<Shell />);
+      const pageAside = screen.getByTestId("page-aside");
+      const pageHeader = screen.getByTestId("page-header");
+
+      await user.click(screen.getByRole("button", { name: "open" }));
+
+      // The shell regions are inert; the regions inside page content are not.
+      expect(screen.getByTestId("aside")).toHaveAttribute("inert");
+      expect(screen.getByTestId("header")).toHaveAttribute("inert");
+      expect(screen.getByTestId("content")).toHaveAttribute("inert");
+      expect(pageAside).not.toHaveAttribute("inert");
+      expect(pageHeader).not.toHaveAttribute("inert");
+
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      expect(pageAside).not.toHaveAttribute("inert");
+      expect(pageHeader).not.toHaveAttribute("inert");
+    });
+
+    it("a page outside the shell inerts nothing and the dialog still works", async () => {
+      const user = userEvent.setup();
+      // No `.app-layout` anywhere (e.g. the login page renders outside the
+      // shell): the dialog must still open, resolve and unmount, and the
+      // document-wide aside/header must not be touched.
+      render(
+        <ConfirmProvider>
+          <aside data-testid="aside">side</aside>
+          <header data-testid="header">head</header>
+          <ResultRecorder />
+        </ConfirmProvider>,
+      );
+
+      await user.click(screen.getByRole("button", { name: "open" }));
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+      expect(screen.getByTestId("aside")).not.toHaveAttribute("inert");
+      expect(screen.getByTestId("header")).not.toHaveAttribute("inert");
+
+      await user.click(screen.getByRole("button", { name: "Confirm" }));
+      await waitFor(() => expect(screen.getByTestId("result")).toHaveTextContent("confirmed"));
+    });
+  });
+
+  describe("a confirm() while one is already open", () => {
+    function StackedOpener() {
+      const { confirm } = useConfirm();
+      const [first, setFirst] = useState("pending");
+      const [second, setSecond] = useState("pending");
+
+      return (
+        <div>
+          <div data-testid="first">{first}</div>
+          <div data-testid="second">{second}</div>
+          <button
+            onClick={() => {
+              confirm({ title: "First", message: "a" }).then((v) => setFirst(v ? "true" : "false"));
+              confirm({ title: "Second", message: "b" }).then((v) => setSecond(v ? "true" : "false"));
+            }}
+          >
+            open two
+          </button>
+        </div>
+      );
+    }
+
+    it("resolves the previous promise with false and the new dialog answers on its own", async () => {
+      const user = userEvent.setup();
+      render(
+        <ConfirmProvider>
+          <StackedOpener />
+        </ConfirmProvider>,
+      );
+
+      await user.click(screen.getByRole("button", { name: "open two" }));
+
+      // The replaced first caller settles with false; the second dialog is
+      // the one on screen and its promise is still pending.
+      await waitFor(() => expect(screen.getByTestId("first")).toHaveTextContent("false"));
+      expect(screen.getByTestId("second")).toHaveTextContent("pending");
+      expect(screen.getByText("Second")).toBeInTheDocument();
+      expect(screen.queryByText("First")).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Confirm" }));
+      await waitFor(() => expect(screen.getByTestId("second")).toHaveTextContent("true"));
+    });
+
+    it("the new dialog still resolves false on Cancel", async () => {
+      const user = userEvent.setup();
+      render(
+        <ConfirmProvider>
+          <StackedOpener />
+        </ConfirmProvider>,
+      );
+
+      await user.click(screen.getByRole("button", { name: "open two" }));
+      await waitFor(() => expect(screen.getByTestId("first")).toHaveTextContent("false"));
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+      await waitFor(() => expect(screen.getByTestId("second")).toHaveTextContent("false"));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
   });
 

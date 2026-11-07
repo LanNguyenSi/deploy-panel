@@ -1,10 +1,11 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { hydrateRoot } from "react-dom/client";
 import { renderToString } from "react-dom/server";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Sidebar from "./Sidebar";
+import { ConfirmProvider, useConfirm } from "./ConfirmDialog";
 
 let currentPath = "/";
 
@@ -255,5 +256,94 @@ describe("Sidebar drawer close on viewport resize", () => {
     expect(drawer).not.toHaveClass("sidebar-open");
     expect(content).not.toHaveAttribute("inert");
     expect(bar).not.toHaveAttribute("inert");
+  });
+});
+
+// The drawer and the confirm dialog can hold `.app-content` inert at the same
+// time (mobile: a dialog opened from the page while the drawer was toggled).
+// Both go through the shared counter, so whichever releases first, the element
+// stays inert until its last holder releases. The tree mirrors AppShell:
+// Sidebar's header/aside are direct children of `.app-layout` (a fragment
+// adds no DOM node), next to `.app-content`.
+function ConfirmOpener() {
+  const { confirm } = useConfirm();
+  const [result, setResult] = useState("pending");
+  return (
+    <div>
+      <div data-testid="confirm-result">{result}</div>
+      <button
+        onClick={async () => {
+          const ok = await confirm({ title: "Deploy", message: "Deploy it?" });
+          setResult(ok ? "confirmed" : "cancelled");
+        }}
+      >
+        open confirm
+      </button>
+    </div>
+  );
+}
+
+function shellTree() {
+  return (
+    <ConfirmProvider>
+      <div className="app-layout">
+        <Sidebar />
+        <div className="app-content">
+          <ConfirmOpener />
+        </div>
+      </div>
+    </ConfirmProvider>
+  );
+}
+
+describe("drawer and confirm dialog share the inert hold on .app-content", () => {
+  it("a drawer opened and closed while a dialog is open leaves the content inert until the dialog closes", async () => {
+    mockViewport(true);
+    const user = userEvent.setup();
+    const { container } = render(shellTree());
+    const content = container.querySelector(".app-content") as HTMLElement;
+
+    await user.click(screen.getByRole("button", { name: "open confirm" }));
+    expect(content).toHaveAttribute("inert");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    // Toggle the drawer open and closed while the dialog stays open.
+    await user.click(screen.getByRole("button", { name: "Toggle menu" }));
+    expect(screen.getByRole("button", { name: "Toggle menu" })).toHaveAttribute("aria-expanded", "true");
+    await user.click(screen.getByRole("button", { name: "Close menu" }));
+
+    // The drawer released its hold; the dialog still holds the content inert.
+    expect(content).toHaveAttribute("inert");
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    // Last holder gone: the content is no longer inert.
+    expect(content).not.toHaveAttribute("inert");
+  });
+
+  it("a dialog opened and closed while the drawer is open leaves the content inert for the drawer", async () => {
+    mockViewport(true);
+    const user = userEvent.setup();
+    const { container } = render(shellTree());
+    const content = container.querySelector(".app-content") as HTMLElement;
+
+    await user.click(screen.getByRole("button", { name: "Toggle menu" }));
+    expect(content).toHaveAttribute("inert");
+
+    await user.click(screen.getByRole("button", { name: "open confirm" }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    // The dialog released its hold; the drawer still holds the content inert.
+    expect(content).toHaveAttribute("inert");
+    expect(screen.getByRole("button", { name: "Toggle menu" })).toHaveAttribute("aria-expanded", "true");
+
+    // Closing the drawer releases the last holder.
+    await user.keyboard("{Escape}");
+    expect(content).not.toHaveAttribute("inert");
+    expect(screen.getByTestId("confirm-result")).toHaveTextContent("cancelled");
   });
 });
