@@ -1212,3 +1212,120 @@ describe("ServerDetailPage - single deploy poll backoff", () => {
     expect(screen.queryByText("deploying", { selector: ".badge" })).not.toBeInTheDocument();
   });
 });
+
+// Deploys are tracked per app: two apps can deploy at once, and one finishing,
+// the panel switching or the panel closing must not touch the other's state.
+describe("ServerDetailPage - concurrent deploys of different apps", () => {
+  type Answer = { status: string; steps: Array<{ name: string; status: string; durationMs: number }> };
+  const answers: Record<string, Answer> = {};
+  const step = (name: string, status = "success") => ({ name, status, durationMs: 1 });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    mGetDeployStatus.mockReset();
+    mDeployApp.mockReset();
+    mGetApps.mockReset();
+  });
+
+  async function startTwo() {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    answers["my-app"] = { status: "running", steps: [step("alpha-step", "running")] };
+    answers["other-app"] = { status: "running", steps: [step("beta-step", "running")] };
+    mGetServer.mockResolvedValue(SERVER);
+    mGetApps.mockResolvedValue({ apps: [APPS.apps[0], { ...APPS.apps[0], id: "app-b", name: "other-app" }] });
+    mSyncServer.mockResolvedValue({ synced: true, apps: 2, created: 0, updated: 0 });
+    mDeployApp.mockImplementation(async (_s: string, name: string) => ({ deploy: { id: `deploy-${name}` } }));
+    mGetDeployStatus.mockImplementation(async (_s: string, name: string) => ({
+      deploy: { id: `deploy-${name}`, status: answers[name].status, log: JSON.stringify(answers[name].steps) },
+    }));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const view = render(
+      <Providers>
+        <ServerDetailPage />
+      </Providers>,
+    );
+    await screen.findByText("other-app");
+    for (const index of [0, 1]) {
+      await user.click(screen.getAllByRole("button", { name: "Deploy" })[0]);
+      const dialog = await screen.findByRole("dialog");
+      await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
+      await waitFor(() => expect(screen.getAllByRole("button", { name: "Deploying..." })).toHaveLength(index + 1));
+    }
+    return { view, user };
+  }
+
+  async function tick(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+  const polls = (name: string) => mGetDeployStatus.mock.calls.filter((c) => c[1] === name).length;
+
+  it("both buttons show their own state; the panel shows the app opened last", async () => {
+    await startTwo();
+    expect(screen.getAllByRole("button", { name: "Deploying..." })).toHaveLength(2);
+    await tick(2500);
+    expect(polls("my-app")).toBe(1);
+    expect(polls("other-app")).toBe(1);
+    expect(screen.getByText("beta-step")).toBeInTheDocument();
+    expect(screen.queryByText("alpha-step")).not.toBeInTheDocument();
+  });
+
+  it("the first app finishing leaves the second deploying with its log", async () => {
+    await startTwo();
+    answers["my-app"] = { status: "success", steps: [step("alpha-step")] };
+    await tick(2500);
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Deploying..." })).toHaveLength(1));
+    expect(screen.getAllByRole("button", { name: "Deploy" })).toHaveLength(1);
+    expect(screen.getByText("beta-step")).toBeInTheDocument();
+    // The second chain keeps polling.
+    const before = polls("other-app");
+    await tick(2500);
+    expect(polls("other-app")).toBeGreaterThan(before);
+  });
+
+  it("the second app finishing leaves the first deploying, and its log stays in the open panel", async () => {
+    await startTwo();
+    answers["other-app"] = { status: "success", steps: [step("beta-step")] };
+    await tick(2500);
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Deploying..." })).toHaveLength(1));
+    // The panel still belongs to the second app and shows its final state.
+    expect(screen.getByText("beta-step")).toBeInTheDocument();
+    expect(screen.getByText("success", { selector: ".badge" })).toBeInTheDocument();
+    const before = polls("my-app");
+    await tick(2500);
+    expect(polls("my-app")).toBeGreaterThan(before);
+  });
+
+  it("closing the panel keeps the other app's chain and its button state", async () => {
+    const { user } = await startTwo();
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByText("Deploy Progress")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Deploying..." })).toHaveLength(2);
+    const a = polls("my-app");
+    const b = polls("other-app");
+    await tick(2500);
+    expect(polls("my-app")).toBeGreaterThan(a);
+    expect(polls("other-app")).toBeGreaterThan(b);
+    // A chain that finishes while the panel is closed leaves the other running.
+    answers["my-app"] = { status: "success", steps: [step("alpha-step")] };
+    await tick(2500);
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Deploying..." })).toHaveLength(1));
+  });
+
+  it("a running app's Deploy button stays disabled", async () => {
+    await startTwo();
+    for (const b of screen.getAllByRole("button", { name: "Deploying..." })) expect(b).toBeDisabled();
+  });
+
+  it("unmount stops both poll chains", async () => {
+    const { view } = await startTwo();
+    await tick(2500);
+    const a = polls("my-app");
+    const b = polls("other-app");
+    view.unmount();
+    for (let i = 0; i < 10; i++) await tick(2000);
+    expect(polls("my-app")).toBe(a);
+    expect(polls("other-app")).toBe(b);
+  });
+});

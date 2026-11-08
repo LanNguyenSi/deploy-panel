@@ -34,7 +34,7 @@ export interface InstallEnvVars {
   traefikNetwork?: string;
   /** ACME resolver name on an existing Traefik. Default `letsencrypt`. */
   traefikCertResolver?: string;
-  /** Host bind IP for port-only mode. Default `127.0.0.1`; use `0.0.0.0` to expose publicly. */
+  /** Host bind IP, for port-only and greenfield (greenfield with TLS defaults to `127.0.0.1`, without it empty means all interfaces); ignored with existing Traefik. */
   relayBind?: string;
   /** Absolute path on the VPS where install.sh should put compose + .env. Default `/opt/agent-relay`. */
   relayDir?: string;
