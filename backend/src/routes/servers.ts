@@ -303,7 +303,7 @@ const installEnvSchema = z.object({
     .max(64)
     .regex(/^[A-Za-z0-9_-]+$/, "traefikCertResolver must be alnum/underscore/hyphen")
     .optional(),
-  // Host bind IP for port-only mode. IPv4 / IPv6 shape (loose).
+  // Host bind IP (port-only and greenfield; ignored with existing Traefik). IPv4 / IPv6 shape (loose).
   relayBind: z
     .string()
     .min(1)

@@ -21,6 +21,7 @@ import { ServerUpdateImageDialog } from "@/components/ServerUpdateImageDialog";
 import { countOutdated, describeUpstream, failedUpstream, formatCheckedAt, githubCompareUrl, shortSha } from "@/lib/upstream";
 import { EmptyStateIcon } from "@/components/EmptyStateIcon";
 
+type DeployLogState = { status: string; steps: DeployStep[] };
 type Panel = { type: "logs" | "deploy" | "preflight" | "env" | "secrets"; app: string };
 
 // Single-app deploy polling: 2 s while polls succeed; after a failed poll the
@@ -48,10 +49,10 @@ export default function ServerDetailPage() {
   // Upstream staleness arrives after the list: null = not arrived yet, "failed" = request failed.
   const [upstream, setUpstream] = useState<Record<string, AppUpstream> | "failed" | null>(null);
   const upstreamSeq = useRef(0);
-  // Single-app deploy poll chain (a self-rescheduling setTimeout): the pending
-  // timer and an unmount flag, so no poll is scheduled and no state is updated
-  // after the page unmounts.
-  const deployPollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Per-app deploy poll chains (a self-rescheduling setTimeout each): the
+  // pending timer of every running deploy and one unmount flag, so no poll is
+  // scheduled and no state is updated after the page unmounts.
+  const deployPollTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const deployPollCancelled = useRef(false);
   // Upstream requests still in flight (a stale one may outlive a newer one), so an app the current map does not cover yet shows "Checking".
   const [upstreamInFlight, setUpstreamInFlight] = useState(0);
@@ -59,8 +60,9 @@ export default function ServerDetailPage() {
   const [panel, setPanel] = useState<Panel | null>(null);
   const [logs, setLogs] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
-  const [deploying, setDeploying] = useState<string | null>(null);
-  const [deployLog, setDeployLog] = useState<{ status: string; steps: DeployStep[] } | null>(null);
+  // Deploys are tracked per app so two apps can deploy at the same time.
+  const [deploying, setDeploying] = useState<Set<string>>(new Set());
+  const [deployLogs, setDeployLogs] = useState<Record<string, DeployLogState>>({});
   const [preflight, setPreflight] = useState<{ passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> } | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkDeploying, setBulkDeploying] = useState(false);
@@ -225,11 +227,31 @@ export default function ServerDetailPage() {
     load().then(() => autoSync());
   }, [id]);
 
-  // Unmount: cancel the deploy poll chain. The flag also stops a poll already
+  // Unmount: cancel every deploy poll chain. The flag also stops a poll already
   // in flight from touching state after the page is gone.
   function cancelDeployPoll() {
     deployPollCancelled.current = true;
-    if (deployPollTimer.current) clearTimeout(deployPollTimer.current);
+    deployPollTimers.current.forEach((t) => clearTimeout(t));
+    deployPollTimers.current.clear();
+  }
+
+  function markDeploying(name: string, on: boolean) {
+    setDeploying((prev) => {
+      if (prev.has(name) === on) return prev;
+      const next = new Set(prev);
+      if (on) next.add(name);
+      else next.delete(name);
+      return next;
+    });
+  }
+
+  function setDeployLogFor(name: string, log: DeployLogState | null) {
+    setDeployLogs((prev) => {
+      const next = { ...prev };
+      if (log) next[name] = log;
+      else delete next[name];
+      return next;
+    });
   }
 
   // Arm the flag in the effect, not in handleDeploy: a page unmounted while
@@ -245,11 +267,12 @@ export default function ServerDetailPage() {
     const ok = await confirm({ title: "Deploy", message: `Deploy "${name}"?`, confirmLabel: "Deploy" });
     if (!ok) return;
 
-    setDeploying(name);
+    if (deploying.has(name)) return;
+    markDeploying(name, true);
     setPanel({ type: "deploy", app: name });
     setLogs(null);
     setPreflight(null);
-    setDeployLog({ status: "running", steps: [] });
+    setDeployLogFor(name, { status: "running", steps: [] });
     setApps((prev) => prev.map((a) => a.name === name ? { ...a, status: "deploying" } : a));
 
     try {
@@ -280,7 +303,7 @@ export default function ServerDetailPage() {
               steps = normalizeDeploySteps(JSON.parse(d.log));
             } catch {}
           }
-          setDeployLog({ status: d.status, steps });
+          setDeployLogFor(name, { status: d.status, steps });
           if (d.status !== "running") terminal = { status: d.status, steps };
           failedPolls = 0;
         } catch {
@@ -289,14 +312,14 @@ export default function ServerDetailPage() {
         if (deployPollCancelled.current) return;
 
         if (terminal) {
-          setDeploying(null);
+          markDeploying(name, false);
           notifyDeployResult(name, terminal.status, classifyDeployOutcome(terminal.status, terminal.steps));
           await load();
           return;
         }
         if (Date.now() >= deadline) {
-          setDeploying(null);
-          setDeployLog(null);
+          markDeploying(name, false);
+          setDeployLogFor(name, null);
           // The optimistic app status goes too: the load() below can still
           // fail (panel still down), and the badge must not stay deploying.
           setApps((prev) => prev.map((a) => (a.name === name ? { ...a, status: "unknown" } : a)));
@@ -304,12 +327,12 @@ export default function ServerDetailPage() {
           await load();
           return;
         }
-        deployPollTimer.current = setTimeout(poll, nextPollDelay());
+        deployPollTimers.current.set(name, setTimeout(poll, nextPollDelay()));
       };
-      deployPollTimer.current = setTimeout(poll, nextPollDelay());
+      deployPollTimers.current.set(name, setTimeout(poll, nextPollDelay()));
     } catch (err: any) {
-      setDeploying(null);
-      setDeployLog(null);
+      markDeploying(name, false);
+      setDeployLogFor(name, null);
       toast(`Deploy failed: ${err.message ?? "unknown error"}`, "error");
       setApps((prev) => prev.map((a) => a.name === name ? { ...a, status: "unhealthy" } : a));
     }
@@ -405,10 +428,14 @@ export default function ServerDetailPage() {
   function closePanel() {
     setPanel(null);
     setLogs(null);
-    setDeployLog(null);
+    // The shown app's log goes; every running deploy keeps its poll chain,
+    // which writes that app's log again on its next poll.
+    if (panel?.type === "deploy") setDeployLogFor(panel.app, null);
     setPreflight(null);
   }
 
+  // The deploy panel shows the log of the app it was opened for.
+  const deployLog = panel?.type === "deploy" ? deployLogs[panel.app] : undefined;
   const upstreamPending = upstream === null || upstreamInFlight > 0;
   const upstreamOf = (name: string): AppUpstream | undefined =>
     upstream === "failed" ? failedUpstream() : upstream?.[name];
@@ -678,8 +705,8 @@ export default function ServerDetailPage() {
 
               {/* Action buttons — primary separated from secondary */}
               <div style={{ display: "flex", alignItems: "center", gap: "var(--space-2)", flexWrap: "wrap" }}>
-                <button onClick={() => handleDeploy(app.name)} disabled={deploying === app.name} className="btn btn-primary btn-sm">
-                  {deploying === app.name ? "Deploying..." : "Deploy"}
+                <button onClick={() => handleDeploy(app.name)} disabled={deploying.has(app.name)} className="btn btn-primary btn-sm">
+                  {deploying.has(app.name) ? "Deploying..." : "Deploy"}
                 </button>
 
                 <div className="action-group-secondary">

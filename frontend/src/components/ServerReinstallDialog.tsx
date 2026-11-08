@@ -314,8 +314,11 @@ export function ServerReinstallDialog({
                     <input id="rein-resolver" type="text" placeholder="letsencrypt" value={traefikCertResolver} onChange={(e) => setTraefikCertResolver(e.target.value)} className="input" />
                   </div>
                   <div>
-                    <Label htmlFor="rein-bind">RELAY_BIND</Label>
-                    <input id="rein-bind" type="text" placeholder="127.0.0.1" value={relayBind} onChange={(e) => setRelayBind(e.target.value)} className="input" />
+                    <Label htmlFor="rein-bind">
+                      RELAY_BIND{" "}
+                      <span style={{ color: "var(--muted)" }}>(port-only and greenfield; ignored with existing Traefik)</span>
+                    </Label>
+                    <input id="rein-bind" type="text" placeholder="default depends on mode" value={relayBind} onChange={(e) => setRelayBind(e.target.value)} className="input" />
                   </div>
                   <div style={{ gridColumn: "1 / -1" }}>
                     <Label htmlFor="rein-relay-dir">

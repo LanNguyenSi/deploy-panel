@@ -513,12 +513,12 @@ export function ServerInstallWizard({ onCreated, onCancel, onSwitchToManual }: P
                   <div>
                     <Label htmlFor="relay-bind">
                       RELAY_BIND{" "}
-                      <span style={{ color: "var(--muted)" }}>(port-only only)</span>
+                      <span style={{ color: "var(--muted)" }}>(port-only and greenfield; ignored with existing Traefik)</span>
                     </Label>
                     <input
                       id="relay-bind"
                       type="text"
-                      placeholder="127.0.0.1"
+                      placeholder="default depends on mode"
                       value={relayBind}
                       onChange={(e) => setRelayBind(e.target.value)}
                       className="input"
