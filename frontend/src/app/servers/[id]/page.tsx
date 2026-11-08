@@ -428,9 +428,9 @@ export default function ServerDetailPage() {
   function closePanel() {
     setPanel(null);
     setLogs(null);
-    // Only the finished log of the app the panel showed goes; a running
-    // deploy (this app's or another's) keeps its poll chain and its log.
-    if (panel?.type === "deploy" && !deploying.has(panel.app)) setDeployLogFor(panel.app, null);
+    // The shown app's log goes; every running deploy keeps its poll chain,
+    // which writes that app's log again on its next poll.
+    if (panel?.type === "deploy") setDeployLogFor(panel.app, null);
     setPreflight(null);
   }
 
