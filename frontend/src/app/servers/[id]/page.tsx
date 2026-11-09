@@ -338,6 +338,16 @@ export default function ServerDetailPage() {
     }
   }
 
+  // The panel shows one app at a time, so starting a second app's deploy moves
+  // it away from the first while that deploy keeps polling. This only points
+  // the panel back at a running deploy's own app; it never starts a deploy.
+  function viewDeploy(name: string) {
+    setPanel({ type: "deploy", app: name });
+    // Close deleted the shown app's log: until this deploy's next poll writes
+    // its real status again, show a placeholder so the panel is not empty.
+    if (!deployLogs[name]) setDeployLogFor(name, { status: "Deploy running, waiting for the next status update.", steps: [] });
+  }
+
   async function handleRollback(name: string) {
     const ok = await confirm({ title: "Rollback", message: `Rollback "${name}" to previous version?`, confirmLabel: "Rollback", danger: true });
     if (!ok) return;
@@ -708,6 +718,9 @@ export default function ServerDetailPage() {
                 <button onClick={() => handleDeploy(app.name)} disabled={deploying.has(app.name)} className="btn btn-primary btn-sm">
                   {deploying.has(app.name) ? "Deploying..." : "Deploy"}
                 </button>
+                {deploying.has(app.name) && (
+                  <button onClick={() => viewDeploy(app.name)} className="btn btn-secondary btn-sm">View progress</button>
+                )}
 
                 <div className="action-group-secondary">
                   <button onClick={() => handleRollback(app.name)} className="btn btn-secondary btn-sm">Rollback</button>

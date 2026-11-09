@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- The servers page can reopen the live log of a running deploy. Each deploying app's row now shows a `View progress` button next to its disabled Deploy button: it opens that app's deploy panel again even after another app's deploy moved the panel away, and after the panel was closed it shows a "deploy running" placeholder until that app's own poll chain writes its real log again. It never starts a deploy.
+
 ### Fixed
 
 - The servers page tracks deploys per app. Starting a second app's deploy while another one runs no longer overwrites the first one's state: each Deploy button shows its own app's state, the deploy panel shows the log of the app it was opened for, an app finishing leaves the other's poll chain and log untouched, closing the panel keeps every running deploy polling, and leaving the page stops every chain. A second deploy of an app that is already deploying stays disabled.

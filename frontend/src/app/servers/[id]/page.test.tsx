@@ -1227,7 +1227,7 @@ describe("ServerDetailPage - concurrent deploys of different apps", () => {
     mGetApps.mockReset();
   });
 
-  async function startTwo() {
+  async function setupTwo() {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     answers["my-app"] = { status: "running", steps: [step("alpha-step", "running")] };
     answers["other-app"] = { status: "running", steps: [step("beta-step", "running")] };
@@ -1245,6 +1245,11 @@ describe("ServerDetailPage - concurrent deploys of different apps", () => {
       </Providers>,
     );
     await screen.findByText("other-app");
+    return { view, user };
+  }
+
+  async function startTwo() {
+    const { view, user } = await setupTwo();
     for (const index of [0, 1]) {
       await user.click(screen.getAllByRole("button", { name: "Deploy" })[0]);
       const dialog = await screen.findByRole("dialog");
@@ -1327,5 +1332,62 @@ describe("ServerDetailPage - concurrent deploys of different apps", () => {
     for (let i = 0; i < 10; i++) await tick(2000);
     expect(polls("my-app")).toBe(a);
     expect(polls("other-app")).toBe(b);
+  });
+
+  it("View progress reopens the first app's own log after the panel moved to the second app", async () => {
+    const { user } = await startTwo();
+    await tick(2500);
+    // The panel belongs to the second app now.
+    expect(screen.getByText("beta-step")).toBeInTheDocument();
+    expect(screen.queryByText("alpha-step")).not.toBeInTheDocument();
+    const buttons = screen.getAllByRole("button", { name: "View progress" });
+    expect(buttons).toHaveLength(2);
+    await user.click(buttons[0]);
+    expect(screen.getByText("Deploy Progress")).toBeInTheDocument();
+    expect(screen.getByText("alpha-step")).toBeInTheDocument();
+    expect(screen.queryByText("beta-step")).not.toBeInTheDocument();
+    // Reopening only points the panel; no deploy was started.
+    expect(mDeployApp).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("View progress after Close shows the running log again", async () => {
+    const { user } = await startTwo();
+    await tick(2500);
+    // Reopen the first app's log and Close it: Close deletes the shown log.
+    await user.click(screen.getAllByRole("button", { name: "View progress" })[0]);
+    expect(screen.getByText("alpha-step")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByText("Deploy Progress")).not.toBeInTheDocument();
+    // Reopening before the deploy's next poll shows a placeholder at once,
+    // and the app's own poll chain restores its real log on the next poll.
+    await user.click(screen.getAllByRole("button", { name: "View progress" })[0]);
+    expect(screen.getByText("Deploy running, waiting for the next status update.")).toBeInTheDocument();
+    await tick(2500);
+    expect(screen.getByText("alpha-step")).toBeInTheDocument();
+  });
+
+  it("View progress never starts a deploy", async () => {
+    const { user } = await startTwo();
+    await user.click(screen.getAllByRole("button", { name: "View progress" })[0]);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(mDeployApp).toHaveBeenCalledTimes(2);
+    for (const b of screen.getAllByRole("button", { name: "Deploying..." })) expect(b).toBeDisabled();
+  });
+
+  it("View progress is absent for an app that is not deploying", async () => {
+    const { user } = await setupTwo();
+    expect(screen.queryByRole("button", { name: "View progress" })).not.toBeInTheDocument();
+    // Only my-app deploys, so only its row shows the button.
+    await user.click(screen.getAllByRole("button", { name: "Deploy" })[0]);
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Deploy" }));
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Deploying..." })).toHaveLength(1));
+    expect(screen.getAllByRole("button", { name: "View progress" })).toHaveLength(1);
+    // When that deploy finishes, its button disappears with the deploying flag.
+    answers["my-app"] = { status: "success", steps: [step("alpha-step")] };
+    await tick(2500);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Deploying..." })).not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "View progress" })).not.toBeInTheDocument();
   });
 });
