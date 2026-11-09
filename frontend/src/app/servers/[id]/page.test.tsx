@@ -1362,9 +1362,21 @@ describe("ServerDetailPage - concurrent deploys of different apps", () => {
     // Reopening before the deploy's next poll shows a placeholder at once,
     // and the app's own poll chain restores its real log on the next poll.
     await user.click(screen.getAllByRole("button", { name: "View progress" })[0]);
-    expect(screen.getByText("Deploy running, waiting for the next status update.")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for steps...")).toBeInTheDocument();
     await tick(2500);
     expect(screen.getByText("alpha-step")).toBeInTheDocument();
+  });
+
+  it("View progress on the app whose panel is already open keeps it open", async () => {
+    const { user } = await startTwo();
+    await tick(2500);
+    // The panel shows the second app; its own View progress must not close it.
+    const second = screen.getAllByRole("button", { name: "View progress" })[1];
+    for (let i = 0; i < 2; i++) {
+      await user.click(second);
+      expect(screen.getByText("Deploy Progress")).toBeInTheDocument();
+      expect(screen.getByText("beta-step")).toBeInTheDocument();
+    }
   });
 
   it("View progress never starts a deploy", async () => {

@@ -344,8 +344,10 @@ export default function ServerDetailPage() {
   function viewDeploy(name: string) {
     setPanel({ type: "deploy", app: name });
     // Close deleted the shown app's log: until this deploy's next poll writes
-    // its real status again, show a placeholder so the panel is not empty.
-    if (!deployLogs[name]) setDeployLogFor(name, { status: "Deploy running, waiting for the next status update.", steps: [] });
+    // its real status again, show the same "running" state handleDeploy starts
+    // with. Decide inside the updater so a log a poll wrote just before the
+    // click is never overwritten.
+    setDeployLogs((prev) => (prev[name] ? prev : { ...prev, [name]: { status: "running", steps: [] } }));
   }
 
   async function handleRollback(name: string) {
