@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The streaming fetch to the relay has no cap on the total length of a deploy;
-// it aborts only after STREAM_IDLE_TIMEOUT_MS without any bytes (heartbeat
-// comment lines included), and an idle abort falls back to recovery.
+// The streaming fetch to the relay has no cap on the total length of a deploy.
+// Before the first body chunk (and until response headers) it tolerates
+// STREAM_FIRST_BYTE_TIMEOUT_MS of silence, so a relay without the heartbeat is
+// no worse off than under the old fixed cap; after the first chunk it aborts
+// after STREAM_IDLE_TIMEOUT_MS without bytes (heartbeat comment lines
+// included). Any abort falls back to recovery.
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
@@ -26,7 +29,7 @@ vi.mock("../src/lib/post-deploy-gate.js", () => ({
 
 import { prisma } from "../src/lib/prisma.js";
 import { recoverBrokenDeploy } from "../src/lib/deploy-recovery.js";
-import { STREAM_IDLE_TIMEOUT_MS, streamDeploy } from "../src/lib/stream-deploy.js";
+import { STREAM_FIRST_BYTE_TIMEOUT_MS, STREAM_IDLE_TIMEOUT_MS, streamDeploy } from "../src/lib/stream-deploy.js";
 
 const mAppFindUnique = (prisma.app as any).findUnique as ReturnType<typeof vi.fn>;
 const mDeployFindUnique = (prisma.deploy as any).findUnique as ReturnType<typeof vi.fn>;
@@ -131,7 +134,9 @@ describe("streamDeploy: idle timeout instead of a fixed total cap", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("a relay that never sends response headers hits the same idle timeout", async () => {
+  const stepEvent = (name: string) => `event: step\ndata: ${JSON.stringify({ name, status: "success", durationMs: 1 })}\n\n`;
+
+  it("a relay that never sends response headers aborts at the first-byte window, not before", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(
       (_url, init) =>
         new Promise((_resolve, reject) => {
@@ -141,9 +146,67 @@ describe("streamDeploy: idle timeout instead of a fixed total cap", () => {
     );
 
     const run = streamDeploy(opts);
-    await vi.advanceTimersByTimeAsync(STREAM_IDLE_TIMEOUT_MS);
+    await vi.advanceTimersByTimeAsync(STREAM_FIRST_BYTE_TIMEOUT_MS - 1);
+    expect(mRecover).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
     await run;
 
+    expect(mRecover).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a relay without heartbeat that is silent for 5 minutes after the headers keeps the stream", async () => {
+    let stream!: ReturnType<typeof liveStream>;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      stream = liveStream(init!.signal as AbortSignal);
+      return stream.res;
+    });
+
+    const run = streamDeploy(opts);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(mRecover).not.toHaveBeenCalled();
+    stream.send(stepEvent("compose up"));
+    stream.close();
+    await run;
+
+    expect(mRecover).not.toHaveBeenCalled();
+    expect(mDeployUpdate.mock.calls[mDeployUpdate.mock.calls.length - 1][0].data.status).toBe("success");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("silence before the first chunk aborts at the first-byte window", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => liveStream(init!.signal as AbortSignal).res);
+
+    const run = streamDeploy(opts);
+    await vi.advanceTimersByTimeAsync(STREAM_FIRST_BYTE_TIMEOUT_MS - 1);
+    expect(mRecover).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await run;
+    expect(mRecover).toHaveBeenCalledTimes(1);
+  });
+
+  it("late headers restart the first-byte window, and the first chunk switches to the short window", async () => {
+    let stream!: ReturnType<typeof liveStream>;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const signal = init!.signal as AbortSignal;
+      await new Promise((resolve) => setTimeout(resolve, STREAM_FIRST_BYTE_TIMEOUT_MS - 1));
+      stream = liveStream(signal);
+      return stream.res;
+    });
+
+    const run = streamDeploy(opts);
+    await vi.advanceTimersByTimeAsync(STREAM_FIRST_BYTE_TIMEOUT_MS - 1);
+    // Headers are in. The first-byte window starts over: 599 s more is fine.
+    await vi.advanceTimersByTimeAsync(STREAM_FIRST_BYTE_TIMEOUT_MS - 1);
+    expect(mRecover).not.toHaveBeenCalled();
+
+    stream.send(": ping\n\n");
+    // After the first chunk the short window rules: just inside it is fine ...
+    await vi.advanceTimersByTimeAsync(STREAM_IDLE_TIMEOUT_MS - 1);
+    expect(mRecover).not.toHaveBeenCalled();
+    // ... and it aborts exactly at the idle limit.
+    await vi.advanceTimersByTimeAsync(1);
+    await run;
     expect(mRecover).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
   });

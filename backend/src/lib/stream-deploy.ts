@@ -25,13 +25,22 @@ function failureStepLog(output: string): string {
 const STATUS_FALLBACK_LOOKBACK = 20;
 
 /**
- * How long a streamed relay deploy may stay silent before the panel gives up
- * on the stream. Applies to the wait for response headers and to every gap
- * between chunks; bytes of any kind re-arm it. agent-relay sends a `: ping`
- * SSE comment every 15 s, so this is several heartbeats of slack. There is no
- * cap on the total length of a deploy.
+ * Silence limit of a streamed relay deploy once the stream has shown life (its
+ * first body chunk, a `: ping` comment line included, has arrived): the panel
+ * gives up on the stream after this long without a chunk. Safe only because
+ * agent-relay sends a `: ping` SSE comment every 15 s (several heartbeats of
+ * slack); there is no cap on the total length of a deploy.
  */
 export const STREAM_IDLE_TIMEOUT_MS = 90_000;
+
+/**
+ * Silence limit before the stream has shown life: the wait for response
+ * headers and the wait for the first body chunk. A relay without the
+ * heartbeat (or a legacy JSON relay that sends its headers only at the end)
+ * can stay silent for a whole build step, so this is the old fixed cap of 10
+ * minutes: such a relay is never treated worse than before.
+ */
+export const STREAM_FIRST_BYTE_TIMEOUT_MS = 600_000;
 
 /**
  * The app status a blocked deploy must leave behind. A blocked deploy never
@@ -226,10 +235,14 @@ export async function streamDeploy(opts: {
   relayUrl: string;
   relayToken: string | null;
   body: { branch?: string; force?: boolean };
+  /** Override of the two silence limits; for tests only. */
+  timeouts?: { firstByteMs?: number; idleMs?: number };
   /** App status before the dispatch set it to `deploying`; restored if the deploy is blocked by preflight. */
   previousStatus?: string;
 }) {
   const { serverId, deployId, appId, appName, relayUrl, relayToken, body, previousStatus } = opts;
+  const firstByteMs = opts.timeouts?.firstByteMs ?? STREAM_FIRST_BYTE_TIMEOUT_MS;
+  const idleMs = opts.timeouts?.idleMs ?? STREAM_IDLE_TIMEOUT_MS;
   const startedAt = Date.now();
   const steps: Array<{ name: string; status: string; durationMs: number; output?: string; kind?: string; message?: string }> = [];
 
@@ -239,7 +252,7 @@ export async function streamDeploy(opts: {
   // deploy apart from one orphaned by a process restart.
   registerActiveDeploy(deployId);
 
-  // Idle timer of the streaming fetch (see STREAM_IDLE_TIMEOUT_MS); cleared in
+  // Idle timer of the streaming fetch (see STREAM_FIRST_BYTE_TIMEOUT_MS and STREAM_IDLE_TIMEOUT_MS); cleared in
   // the finally on every exit path.
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -293,22 +306,26 @@ export async function streamDeploy(opts: {
     const headers: Record<string, string> = { "Content-Type": "application/json", "X-Deploy-Id": deployId };
     if (relayToken) headers["Authorization"] = `Bearer ${relayToken}`;
 
-    // Idle timeout instead of a fixed total cap: the one timer covers the
-    // connect phase (no response headers within the window) and every gap
-    // between chunks of the stream. Any received bytes re-arm it, the relay's
-    // `: ping` comment lines included, so a deploy of any length stays
-    // attached as long as the relay keeps talking. An idle abort rejects the
-    // fetch or the read and lands in the catch block below (connection-lost
-    // recovery), like the old fixed timeout did.
+    // Silence limits instead of a fixed total cap. The timer runs only while
+    // the panel waits on the relay: the fetch until response headers, a body
+    // read of a JSON or error response, and each `reader.read()` of the
+    // stream. It is cleared as soon as a read returns, so time spent
+    // handling an event (a `done` can run the post-deploy health check for
+    // minutes) never counts as relay silence. Until the first body chunk has
+    // arrived the long window applies (firstByteMs); after it, the short one
+    // (idleMs), which relies on the relay's `: ping` heartbeat. A timeout
+    // rejects the fetch or the read and lands in the catch block below
+    // (connection-lost recovery), like the old fixed timeout did.
     const idle = new AbortController();
-    const armIdleTimer = () => {
+    const armIdleTimer = (ms: number) => {
       if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(
-        () => idle.abort(new Error(`no data from the relay for ${STREAM_IDLE_TIMEOUT_MS / 1000}s`)),
-        STREAM_IDLE_TIMEOUT_MS,
-      );
+      idleTimer = setTimeout(() => idle.abort(new Error(`no data from the relay for ${ms / 1000}s`)), ms);
     };
-    armIdleTimer();
+    const disarmIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = undefined;
+    };
+    armIdleTimer(firstByteMs);
 
     const res = await fetch(`${relayUrl}/api/apps/${appName}/deploy?stream=true`, {
       method: "POST",
@@ -316,7 +333,7 @@ export async function streamDeploy(opts: {
       body: JSON.stringify(body),
       signal: idle.signal,
     });
-    armIdleTimer();
+    armIdleTimer(firstByteMs);
 
     // A 4xx here means the relay received and definitively rejected the
     // deploy request (e.g. unknown app, bad branch), not a connection
@@ -439,10 +456,19 @@ export async function streamDeploy(opts: {
     // line arrived in the next read().
     let eventType = "";
 
+    let sawChunk = false;
+
     while (true) {
-      const { done, value } = await reader.read();
+      armIdleTimer(sawChunk ? idleMs : firstByteMs);
+      let chunk: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        chunk = await reader.read();
+      } finally {
+        disarmIdleTimer();
+      }
+      const { done, value } = chunk;
       if (done) break;
-      armIdleTimer();
+      sawChunk = true;
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
