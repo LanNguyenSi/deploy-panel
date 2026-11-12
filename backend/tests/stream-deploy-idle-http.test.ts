@@ -43,8 +43,10 @@ const HEALTH_CHECK_MS = 600; // several idle windows
 
 let server: Server;
 let relayUrl: string;
+let jsonMode = false;
 
 beforeEach(async () => {
+  jsonMode = false;
   vi.clearAllMocks();
   mAppFindUnique.mockResolvedValue({ requiredEnvKeys: [], liveUrl: null });
   let currentStatus = "running";
@@ -56,7 +58,14 @@ beforeEach(async () => {
   mVerify.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve({ healthy: true }), HEALTH_CHECK_MS)));
 
   server = createServer((_req, res) => {
+    if (jsonMode) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ result: { success: true, durationMs: 5 } }));
+      return;
+    }
     res.writeHead(200, { "Content-Type": "text/event-stream" });
+    // A heartbeat first, so the short window applies to the read that returns `done`.
+    res.write(": ping\n\n");
     const done = { success: true, steps: [{ name: "compose up", status: "success", durationMs: 1 }], durationMs: 5 };
     res.end(`event: done\ndata: ${JSON.stringify(done)}\n\n`);
   });
@@ -78,12 +87,30 @@ describe("streamDeploy: finalizing after `done` is not relay silence", () => {
       relayUrl,
       relayToken: null,
       body: {},
-      timeouts: { idleMs: IDLE_MS, firstByteMs: 5_000 },
+      timeouts: { idleMs: IDLE_MS, firstByteMs: IDLE_MS },
     });
 
     expect(mVerify).toHaveBeenCalledTimes(1);
     expect(mRecover).not.toHaveBeenCalled();
     const statuses = mDeployUpdate.mock.calls.map((c) => c[0].data.status).filter(Boolean);
     expect(statuses).toEqual(["success"]);
+  });
+
+  it("a JSON relay answer is finalized without the timer still running", async () => {
+    jsonMode = true;
+    await streamDeploy({
+      serverId: "srv-a",
+      deployId: "d1",
+      appId: "app-1",
+      appName: "my-app",
+      relayUrl,
+      relayToken: null,
+      body: {},
+      timeouts: { idleMs: IDLE_MS, firstByteMs: IDLE_MS },
+    });
+
+    expect(mVerify).toHaveBeenCalledTimes(1);
+    expect(mRecover).not.toHaveBeenCalled();
+    expect(mDeployUpdate.mock.calls.map((c) => c[0].data.status).filter(Boolean)).toEqual(["success"]);
   });
 });

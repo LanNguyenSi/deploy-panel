@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The streaming fetch to the relay has no cap on the total length of a deploy.
-// Before the first body chunk (and until response headers) it tolerates
-// STREAM_FIRST_BYTE_TIMEOUT_MS of silence, so a relay without the heartbeat is
-// no worse off than under the old fixed cap; after the first chunk it aborts
-// after STREAM_IDLE_TIMEOUT_MS without bytes (heartbeat comment lines
-// included). Any abort falls back to recovery.
+// Every wait (response headers, each gap between chunks) tolerates
+// STREAM_FIRST_BYTE_TIMEOUT_MS of silence until a `: ping` comment line has
+// been seen, so a relay without the heartbeat is no worse off than under the
+// old fixed cap, whatever step events it sent before going quiet. Once a ping
+// has been seen the window is STREAM_IDLE_TIMEOUT_MS. Any abort falls back to
+// recovery.
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
@@ -174,7 +175,7 @@ describe("streamDeploy: idle timeout instead of a fixed total cap", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("silence before the first chunk aborts at the first-byte window", async () => {
+  it("silence before any chunk aborts at the first-byte window", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => liveStream(init!.signal as AbortSignal).res);
 
     const run = streamDeploy(opts);
@@ -185,7 +186,7 @@ describe("streamDeploy: idle timeout instead of a fixed total cap", () => {
     expect(mRecover).toHaveBeenCalledTimes(1);
   });
 
-  it("late headers restart the first-byte window, and the first chunk switches to the short window", async () => {
+  it("late headers restart the first-byte window, and the first ping switches to the short window", async () => {
     let stream!: ReturnType<typeof liveStream>;
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
       const signal = init!.signal as AbortSignal;
@@ -208,6 +209,93 @@ describe("streamDeploy: idle timeout instead of a fixed total cap", () => {
     await vi.advanceTimersByTimeAsync(1);
     await run;
     expect(mRecover).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a step event followed by 190 s of silence keeps the stream (no heartbeat seen)", async () => {
+    let stream!: ReturnType<typeof liveStream>;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      stream = liveStream(init!.signal as AbortSignal);
+      return stream.res;
+    });
+
+    const run = streamDeploy(opts);
+    await vi.advanceTimersByTimeAsync(2_000);
+    stream.send(stepEvent("git pull"));
+    await vi.advanceTimersByTimeAsync(190_000);
+    expect(mRecover).not.toHaveBeenCalled();
+    stream.send(stepEvent("compose up"));
+    stream.close();
+    await run;
+
+    expect(mRecover).not.toHaveBeenCalled();
+    expect(mDeployUpdate.mock.calls[mDeployUpdate.mock.calls.length - 1][0].data.status).toBe("success");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("step events without pings: a gap just under the first-byte window is fine, the window itself aborts", async () => {
+    let stream!: ReturnType<typeof liveStream>;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      stream = liveStream(init!.signal as AbortSignal);
+      return stream.res;
+    });
+
+    const run = streamDeploy(opts);
+    await vi.advanceTimersByTimeAsync(0);
+    stream.send(stepEvent("git pull"));
+    await vi.advanceTimersByTimeAsync(STREAM_FIRST_BYTE_TIMEOUT_MS - 1);
+    expect(mRecover).not.toHaveBeenCalled();
+    stream.send(stepEvent("compose build"));
+    await vi.advanceTimersByTimeAsync(STREAM_FIRST_BYTE_TIMEOUT_MS - 1);
+    expect(mRecover).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await run;
+    expect(mRecover).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a ping after step events switches to the short window", async () => {
+    let stream!: ReturnType<typeof liveStream>;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      stream = liveStream(init!.signal as AbortSignal);
+      return stream.res;
+    });
+
+    const run = streamDeploy(opts);
+    await vi.advanceTimersByTimeAsync(0);
+    stream.send(stepEvent("git pull"));
+    await vi.advanceTimersByTimeAsync(1_000);
+    stream.send(": ping\n\n");
+    await vi.advanceTimersByTimeAsync(STREAM_IDLE_TIMEOUT_MS - 1);
+    expect(mRecover).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await run;
+    expect(mRecover).toHaveBeenCalledTimes(1);
+  });
+
+  it("late headers restart the window for a JSON body that is read inside the fresh window", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const signal = init!.signal as AbortSignal;
+      await new Promise((resolve) => setTimeout(resolve, STREAM_FIRST_BYTE_TIMEOUT_MS - 1));
+      return {
+        ok: true,
+        status: 200,
+        body: {},
+        headers: new Headers({ "content-type": "application/json" }),
+        json: () =>
+          new Promise((resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason));
+            setTimeout(() => resolve({ result: { success: true, durationMs: 5 } }), STREAM_FIRST_BYTE_TIMEOUT_MS - 1);
+          }),
+      } as unknown as Response;
+    });
+
+    const run = streamDeploy(opts);
+    await vi.advanceTimersByTimeAsync(2 * STREAM_FIRST_BYTE_TIMEOUT_MS);
+    await run;
+
+    expect(mRecover).not.toHaveBeenCalled();
+    expect(mDeployUpdate.mock.calls[mDeployUpdate.mock.calls.length - 1][0].data.status).toBe("success");
     expect(vi.getTimerCount()).toBe(0);
   });
 });

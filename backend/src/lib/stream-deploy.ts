@@ -25,20 +25,25 @@ function failureStepLog(output: string): string {
 const STATUS_FALLBACK_LOOKBACK = 20;
 
 /**
- * Silence limit of a streamed relay deploy once the stream has shown life (its
- * first body chunk, a `: ping` comment line included, has arrived): the panel
- * gives up on the stream after this long without a chunk. Safe only because
- * agent-relay sends a `: ping` SSE comment every 15 s (several heartbeats of
- * slack); there is no cap on the total length of a deploy.
+ * Silence limit of a streamed relay deploy once the stream has proven it sends
+ * heartbeats, i.e. after the first SSE comment line (`: ping`) has been seen:
+ * the panel gives up on the stream after this long without any bytes. Safe
+ * only because agent-relay with the SSE heartbeat sends a `: ping` every 15 s
+ * (several heartbeats of slack). Step events and other data do not switch to
+ * this window: relays without the heartbeat send a few step events early and
+ * then stay silent through the whole build. There is no cap on the total
+ * length of a deploy.
  */
 export const STREAM_IDLE_TIMEOUT_MS = 90_000;
 
 /**
- * Silence limit before the stream has shown life: the wait for response
- * headers and the wait for the first body chunk. A relay without the
- * heartbeat (or a legacy JSON relay that sends its headers only at the end)
- * can stay silent for a whole build step, so this is the old fixed cap of 10
- * minutes: such a relay is never treated worse than before.
+ * Silence limit for every wait until the heartbeat has been seen: the wait for
+ * response headers and each gap between chunks. A relay without the heartbeat
+ * (or a legacy JSON relay that sends its headers only at the end) can stay
+ * silent for a whole build step, so this is the old fixed cap of 10 minutes,
+ * now per gap: such a relay is never treated worse than before for any single
+ * wait. Worst case before the first body byte: up to 10 minutes for the
+ * headers and again up to 10 minutes for the first chunk.
  */
 export const STREAM_FIRST_BYTE_TIMEOUT_MS = 600_000;
 
@@ -311,9 +316,9 @@ export async function streamDeploy(opts: {
     // read of a JSON or error response, and each `reader.read()` of the
     // stream. It is cleared as soon as a read returns, so time spent
     // handling an event (a `done` can run the post-deploy health check for
-    // minutes) never counts as relay silence. Until the first body chunk has
-    // arrived the long window applies (firstByteMs); after it, the short one
-    // (idleMs), which relies on the relay's `: ping` heartbeat. A timeout
+    // minutes) never counts as relay silence. Until a `: ping`
+    // comment line has been seen the long window applies (firstByteMs); after
+    // it, the short one (idleMs), which relies on the relay's heartbeat. A timeout
     // rejects the fetch or the read and lands in the catch block below
     // (connection-lost recovery), like the old fixed timeout did.
     const idle = new AbortController();
@@ -348,7 +353,7 @@ export async function streamDeploy(opts: {
     // through recoverBrokenDeploy: those cases can't be told apart from a
     // dropped connection.
     if (!res.ok && res.status >= 400 && res.status < 500) {
-      const bodyText = await res.text().catch(() => "");
+      const bodyText = await res.text().catch(() => "").finally(disarmIdleTimer);
       const reason = `Relay rejected the deploy: ${res.status} ${bodyText || res.statusText}`;
       // 409: another deploy is already running on the relay. Nothing was
       // deployed by this request, so the app keeps its previous status
@@ -391,7 +396,9 @@ export async function streamDeploy(opts: {
       let data: any;
       try {
         data = await res.json();
+        disarmIdleTimer();
       } catch {
+        disarmIdleTimer();
         await prisma.deploy.update({ where: { id: deployId }, data: { status: "failed", log: failureStepLog("Relay returned invalid JSON") } });
         await prisma.app.update({ where: { id: appId }, data: { status: "unhealthy" } });
         return;
@@ -456,10 +463,12 @@ export async function streamDeploy(opts: {
     // line arrived in the next read().
     let eventType = "";
 
-    let sawChunk = false;
+    // Set once a comment line (the relay's `: ping`) has been seen: only a
+    // stream that proved it sends heartbeats gets the short window.
+    let sawHeartbeat = false;
 
     while (true) {
-      armIdleTimer(sawChunk ? idleMs : firstByteMs);
+      armIdleTimer(sawHeartbeat ? idleMs : firstByteMs);
       let chunk: Awaited<ReturnType<typeof reader.read>>;
       try {
         chunk = await reader.read();
@@ -468,14 +477,15 @@ export async function streamDeploy(opts: {
       }
       const { done, value } = chunk;
       if (done) break;
-      sawChunk = true;
 
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
 
       for (const line of lines) {
-        if (line.startsWith("event: ")) {
+        if (line.startsWith(":")) {
+          sawHeartbeat = true;
+        } else if (line.startsWith("event: ")) {
           eventType = line.slice(7).trim();
         } else if (line.startsWith("data: ") && eventType) {
           try {
