@@ -68,3 +68,46 @@ export class RelayError extends Error {
     return err;
   }
 }
+
+/** Cap of the message derived from the relay's env-unreadable answer. */
+const ENV_UNREADABLE_MESSAGE_MAX_CHARS = 300;
+
+/**
+ * Recognises the relay's "I cannot read this app's .env file" answer: an
+ * HTTP 409 actually returned by a relay for the app-env read (agent-relay
+ * sends it when the `.env` is a symlink or otherwise not a regular file;
+ * only the GET answers 409, the env PUT has no 409 answer). Errors the
+ * panel raised itself (`local`) are never that answer, even if they happen
+ * to carry a 409 code.
+ *
+ * Returns a bounded message (line breaks in the relay text are kept)
+ * naming the unreadable env file and carrying the relay's own text (from the response body when present, which
+ * is preferred, else the raw body, else the error message), or null for
+ * anything else. Callers treat a non-null answer as "cannot provision or
+ * check the env, block the deploy / fail the check", never as a lost
+ * connection or as missing keys.
+ */
+export function envUnreadableRelayMessage(err: unknown): string | null {
+  if (!(err instanceof RelayError) || err.status !== 409 || err.local) return null;
+  const detail = relayMessageText(err.body) ?? relayMessageText(err.message) ?? "no message from the relay";
+  return `Env file unreadable on the relay: ${detail.slice(0, ENV_UNREADABLE_MESSAGE_MAX_CHARS)}`;
+}
+
+/**
+ * Message text of a relay error response: a JSON body's `message` field,
+ * else its `error` field, else the raw text. Same parse-the-body-first order
+ * as rollback-app-status.ts; returns null for blank input.
+ */
+function relayMessageText(raw: string | undefined): string | null {
+  const text = raw?.trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text) as { message?: unknown; error?: unknown };
+    for (const field of [parsed?.message, parsed?.error]) {
+      if (typeof field === "string" && field.trim()) return field.trim();
+    }
+  } catch {
+    // Not JSON: the raw text itself is the message.
+  }
+  return text;
+}

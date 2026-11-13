@@ -45,6 +45,7 @@ vi.mock("../src/lib/post-deploy-gate.js", () => ({
 import { prisma } from "../src/lib/prisma.js";
 import { provisionAndCheckAppSecrets } from "../src/lib/provision-secrets.js";
 import { recoverBrokenDeploy } from "../src/lib/deploy-recovery.js";
+import { RelayError } from "../src/lib/relay.js";
 import { streamDeploy } from "../src/lib/stream-deploy.js";
 import { blockedDeployLogSteps, blockedPreflightSteps, isBlockedDeployLog, normalizeDeployLog } from "../src/lib/deploy-log.js";
 
@@ -164,6 +165,91 @@ describe("streamDeploy — pre-deploy secret provisioning + required-env gate", 
     expect(deployUpdateData?.log).toContain("METRICS_API_TOKEN");
 
     fetchSpy.mockRestore();
+  });
+});
+
+// The relay answers GET /api/apps/:name/env with 409 when the app's .env is
+// a symlink or otherwise not a regular file. That is a definitive "cannot
+// read the env file" answer, not a lost connection: the deploy must end
+// blocked before anything ran (same shape as the missing-keys branch above),
+// and recoverBrokenDeploy (which probes health and can mark an outage) must
+// not run. 5xx / network errors from the same read keep the recovery path.
+describe("streamDeploy: relay 409 env-unreadable from the provisioning env read", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // clearAllMocks keeps implementations set by earlier tests; reset the
+    // history fallback of statusAfterBlocked so only previousStatus can
+    // produce the restored status.
+    mDeployFindMany.mockReset();
+    mDeployFindMany.mockResolvedValue([]);
+    mAppFindUnique.mockResolvedValue({ requiredEnvKeys: ["METRICS_API_TOKEN"] });
+  });
+
+  const unreadableError = () => {
+    const body = JSON.stringify({ error: "env_unreadable", message: "/srv/app/.env is a symlink, not a regular file" });
+    return new RelayError(`Relay error (409): ${body}`, 409, body);
+  };
+
+  it("env read answered 409: deploy blocked with the relay's message in an env-preflight failure step, no recovery, app keeps its previous status", async () => {
+    mProvision.mockRejectedValue(unreadableError());
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    await streamDeploy({ ...baseOpts, previousStatus: "unhealthy" });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    expect(lastCall(mAppUpdate).data.status).toBe("unhealthy");
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps.at(-1)).toMatchObject({ name: "env-preflight", kind: "preflight-check", status: "failure" });
+    expect(steps.at(-1).message).toContain("unreadable");
+    expect(steps.at(-1).message).toContain("symlink");
+    expect(steps.at(-1).output).toContain("symlink");
+    expect(isBlockedDeployLog(lastCall(mDeployUpdate).data.log)).toBe(true);
+
+    fetchSpy.mockRestore();
+  });
+
+  it("env read 409 with a `deploying` capture: the app row is not written (same keepAppStatus rule as the missing-keys branch)", async () => {
+    mProvision.mockRejectedValue(unreadableError());
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    await streamDeploy({ ...baseOpts, previousStatus: "deploying" });
+
+    expect(mAppUpdate).not.toHaveBeenCalled();
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    expect(isBlockedDeployLog(lastCall(mDeployUpdate).data.log)).toBe(true);
+
+    fetchSpy.mockRestore();
+  });
+
+  it("env read answered 500: today's behaviour unchanged, routed through recoverBrokenDeploy", async () => {
+    mProvision.mockRejectedValue(new RelayError("Relay error (500): boom", 500, "boom"));
+
+    await streamDeploy({ ...baseOpts, previousStatus: "healthy" });
+
+    expect(recoverBrokenDeploy).toHaveBeenCalledOnce();
+    expect(recoverBrokenDeploy).toHaveBeenCalledWith("d1", "app-1", "srv-a", "thd", expect.stringContaining("500"));
+    expect(mDeployUpdate).not.toHaveBeenCalled();
+  });
+
+  it("env read network error (rejection): today's behaviour unchanged, routed through recoverBrokenDeploy", async () => {
+    mProvision.mockRejectedValue(new TypeError("fetch failed"));
+
+    await streamDeploy({ ...baseOpts, previousStatus: "healthy" });
+
+    expect(recoverBrokenDeploy).toHaveBeenCalledOnce();
+    expect(mDeployUpdate).not.toHaveBeenCalled();
+  });
+
+  it("a panel-raised (local) RelayError carrying a 409 is not an unreadable env: recovery path unchanged (local wins)", async () => {
+    mProvision.mockRejectedValue(RelayError.local("No relay URL configured for this server", 409));
+
+    await streamDeploy({ ...baseOpts, previousStatus: "healthy" });
+
+    expect(recoverBrokenDeploy).toHaveBeenCalledOnce();
+    expect(mDeployUpdate).not.toHaveBeenCalled();
   });
 });
 
