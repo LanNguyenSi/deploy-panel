@@ -27,6 +27,7 @@ import {
   assertHostAllowedForNonAdmin,
   assertServerTargetsAllowed,
   consumeProbeQuota,
+  isTrustedRelayServer,
 } from "../services/probe-guard.js";
 import { denyPrivateServerTargets } from "../lib/target-guard.js";
 import { relayFetch } from "../lib/relay-fetch.js";
@@ -139,6 +140,25 @@ serversRouter.patch("/:id", validatedJson(updateServerSchema), async (c) => {
   const owned = await findOwnedServer(actor, id);
   if (!owned) return c.json({ error: "not_found" }, 404);
   const data = c.req.valid("json");
+
+  // A server listed in TRUSTED_RELAY_SERVER_IDS keeps the host and relayUrl
+  // the operator set: its use sites skip the private-target check, so a
+  // non-admin owner must not be able to move it (for instance to a name whose
+  // DNS they later repoint). Resending the stored value is a no-op and passes.
+  if (
+    !actor.isAdmin &&
+    isTrustedRelayServer(owned.id) &&
+    ((data.relayUrl !== undefined && data.relayUrl !== owned.relayUrl) ||
+      (data.host !== undefined && data.host !== owned.host))
+  ) {
+    return c.json(
+      {
+        error: "trusted_server_locked",
+        message: "this server's relay target is pinned by the operator; change it with the panel token",
+      },
+      403,
+    );
+  }
 
   // Only the fields this PATCH changes; rows that already hold a private
   // target are caught at their use sites.
@@ -1038,10 +1058,15 @@ serversRouter.post("/:id/install-relay", async (c) => {
           ? parsedOutput.value.relayMode
           : undefined;
 
+      // A non-admin re-installing a server listed in TRUSTED_RELAY_SERVER_IDS
+      // keeps the stored relayUrl: the listed row skips the use-site check, so
+      // the installer's output must not move it. The check above still ran.
+      const relayUrlPinned = !actor.isAdmin && isTrustedRelayServer(server.id);
+
       await prisma.server.update({
         where: { id: server.id },
         data: {
-          relayUrl: parsedOutput.value.relayUrl,
+          ...(relayUrlPinned ? {} : { relayUrl: parsedOutput.value.relayUrl }),
           // Reinstall completed successfully. Install.sh just brought
           // the relay up and pulled the latest image — assert
           // `status: online` here as the authoritative post-action
@@ -1098,7 +1123,10 @@ serversRouter.post("/:id/install-relay", async (c) => {
           serverId: server.id,
           name: server.name,
           host: server.host,
-          relayUrl: parsedOutput.value.relayUrl,
+          // The stored URL when it is pinned (`relayUrlPinned`), else the one
+          // the installer printed.
+          relayUrl: relayUrlPinned ? server.relayUrl : parsedOutput.value.relayUrl,
+          ...(relayUrlPinned ? { relayUrlPinned: true } : {}),
           tokenRotated,
           tokenDiverged,
           ...(persistableMode ? { relayMode: persistableMode } : {}),

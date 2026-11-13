@@ -534,17 +534,68 @@ describe("TRUSTED_RELAY_SERVER_IDS on the per-id routes", () => {
     expect(executeSshCommand).toHaveBeenCalled();
   });
 
-  it("PATCH: a listed id cannot be repointed to a private relayUrl or host by a non-admin", async () => {
-    config.TRUSTED_RELAY_SERVER_IDS.push("srv-a");
-    mServer.findUnique.mockResolvedValue(internalRelay());
-    const relay = await appFor(NON_ADMIN).request(
-      "/servers/srv-a",
-      send("PATCH", { relayUrl: "http://10.9.9.9:8222" }),
-    );
-    await expectPrivateHost(relay, "relayUrl");
-    const host = await appFor(NON_ADMIN).request("/servers/srv-a", send("PATCH", { host: "10.0.0.9" }));
-    await expectPrivateHost(host, "host");
-    expect(mServer.update).not.toHaveBeenCalled();
+  describe("PATCH on a listed id is locked for non-admins", () => {
+    const patch = (actor: { userId: string | null; isAdmin: boolean }, body: unknown) =>
+      appFor(actor).request("/servers/srv-a", send("PATCH", body));
+
+    async function expectLocked(res: Response) {
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toBe("trusted_server_locked");
+      expect(mServer.update).not.toHaveBeenCalled();
+    }
+
+    beforeEach(() => {
+      config.TRUSTED_RELAY_SERVER_IDS.push("srv-a");
+      mServer.findUnique.mockResolvedValue(internalRelay());
+      mServer.update.mockResolvedValue(internalRelay());
+    });
+
+    it("relayUrl to a public value is refused with 403", async () => {
+      await expectLocked(await patch(NON_ADMIN, { relayUrl: "https://relay.example.com" }));
+    });
+
+    it("relayUrl and host to private values are refused with 403 too (the lock comes first)", async () => {
+      await expectLocked(await patch(NON_ADMIN, { relayUrl: "http://10.9.9.9:8222" }));
+      await expectLocked(await patch(NON_ADMIN, { host: "10.0.0.9" }));
+    });
+
+    it("host to a public value is refused with 403", async () => {
+      await expectLocked(await patch(NON_ADMIN, { host: "203.0.113.99" }));
+    });
+
+    it("name only is allowed (200)", async () => {
+      const res = await patch(NON_ADMIN, { name: "renamed" });
+      expect(res.status).toBe(200);
+      expect(mServer.update).toHaveBeenCalledTimes(1);
+    });
+
+    it("resending the stored host and relayUrl unchanged is allowed (200)", async () => {
+      const stored = serverRow();
+      mServer.findUnique.mockResolvedValue(stored);
+      const res = await patch(NON_ADMIN, { host: stored.host, relayUrl: stored.relayUrl });
+      expect(res.status).toBe(200);
+    });
+
+    it("resending a stored private relayUrl is still a checked write (400 private_host)", async () => {
+      const res = await patch(NON_ADMIN, { relayUrl: internalRelay().relayUrl });
+      await expectPrivateHost(res, "relayUrl");
+      expect(mServer.update).not.toHaveBeenCalled();
+    });
+
+    it("an admin may still change relayUrl on a listed id", async () => {
+      mServer.findUnique.mockResolvedValue(serverRow({ userId: null, relayUrl: "http://10.0.0.5:8222" }));
+      const res = await patch(ADMIN, { relayUrl: "https://relay.example.com" });
+      expect(res.status).toBe(200);
+      expect(mServer.update).toHaveBeenCalledTimes(1);
+    });
+
+    it("an id that is not listed keeps the unchanged PATCH behaviour", async () => {
+      config.TRUSTED_RELAY_SERVER_IDS.length = 0;
+      const ok = await patch(NON_ADMIN, { relayUrl: "https://relay.example.com" });
+      expect(ok.status).toBe(200);
+      const denied = await patch(NON_ADMIN, { relayUrl: "http://10.9.9.9:8222" });
+      await expectPrivateHost(denied, "relayUrl");
+    });
   });
 
   it("POST: a new server with a private relayUrl is rejected even when ids are listed", async () => {

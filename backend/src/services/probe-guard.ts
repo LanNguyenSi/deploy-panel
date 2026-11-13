@@ -181,6 +181,11 @@ export type ServerTargetCheck =
       reason: "literal" | "resolved_private" | "unparsable";
     };
 
+/** True when the operator listed this server id in `TRUSTED_RELAY_SERVER_IDS`. */
+export function isTrustedRelayServer(serverId: string): boolean {
+  return config.TRUSTED_RELAY_SERVER_IDS.includes(serverId);
+}
+
 /**
  * Single enforcement point for "may this actor make the panel connect to
  * this server's SSH host or relay URL". Used at registration (POST/PATCH
@@ -200,8 +205,13 @@ export type ServerTargetCheck =
  * from. A row whose id is listed in `TRUSTED_RELAY_SERVER_IDS` skips the
  * check, because the operator chose it as a known-good relay (for example one
  * on the panel's own Docker network). Pass it only at use sites; write paths
- * (registration, PATCH, installer output) pass nothing, so a trusted id cannot
- * be repointed at another internal target through the API.
+ * (registration, PATCH, installer output) pass nothing.
+ *
+ * What this guarantees, and what it does not: the stored host and relayUrl of
+ * a listed row are pinned for non-admins (PATCH refuses to change them and a
+ * re-install keeps the stored relayUrl), so the row keeps pointing where the
+ * operator set it. The name inside that pinned relayUrl is not re-resolved
+ * here: its DNS is trusted as the operator configured it.
  *
  * TOCTOU: the check resolves the name itself, and the later SSH/fetch
  * resolves it again, so a record that flips between the two is not
@@ -214,7 +224,7 @@ export async function assertServerTargetsAllowed(
   storedServerId?: string,
 ): Promise<ServerTargetCheck> {
   if (actor.isAdmin) return { ok: true };
-  if (storedServerId && config.TRUSTED_RELAY_SERVER_IDS.includes(storedServerId)) {
+  if (storedServerId && isTrustedRelayServer(storedServerId)) {
     return { ok: true };
   }
 

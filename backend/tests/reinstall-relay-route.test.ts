@@ -39,6 +39,7 @@ vi.mock("../src/config/index.js", () => ({
 }));
 
 import { prisma } from "../src/lib/prisma.js";
+import { config } from "../src/config/index.js";
 import { serversRouter } from "../src/routes/servers.js";
 import { executeSshCommand } from "../src/services/ssh-executor.js";
 import { Hono } from "hono";
@@ -503,5 +504,80 @@ describe("POST /servers/:id/install-relay (re-install)", () => {
     // route because re-install has no expectedHostKeySha256 field —
     // it pulls from DB.)
     expect(true).toBe(true);
+  });
+});
+
+describe("POST /servers/:id/install-relay on a server listed in TRUSTED_RELAY_SERVER_IDS", () => {
+  const STORED = "http://agent-relay:8222";
+  const row = () => ({
+    id: "srv-a",
+    userId: "user-a",
+    name: "a",
+    host: "203.0.113.10",
+    relayUrl: STORED,
+    relayToken: "tok",
+    hostKeySha256: "fp==",
+    relayMode: "greenfield",
+    relayDir: null,
+    relayComposeFile: null,
+    status: "online",
+  });
+  const output = (url: string) => `\n  Mode:  greenfield\n  URL:   ${url}\n  Token: tok\n`;
+  const NON_ADMIN = { userId: "user-a", isAdmin: false };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    config.TRUSTED_RELAY_SERVER_IDS.length = 0;
+    mServer.findUnique.mockResolvedValue(row());
+  });
+
+  it("keeps the stored relayUrl and reports it as pinned when the installer prints a public URL", async () => {
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-a");
+    mockSshOk({ stdout: output("https://203.0.113.20:8222") });
+    const res = await appFor(NON_ADMIN).request("/servers/srv-a/install-relay", asJson(validBody));
+    const events = await readSse(res);
+    const done = events.find((e) => e.event === "done");
+    expect(done?.data.relayUrl).toBe(STORED);
+    expect(done?.data.relayUrlPinned).toBe(true);
+    const data = vi.mocked(prisma.server.update).mock.calls[0][0].data as Record<string, unknown>;
+    expect("relayUrl" in data).toBe(false);
+    expect(data.status).toBe("online");
+  });
+
+  it("refuses an installer-printed private URL (the installer-output check is not exempted) and stores nothing", async () => {
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-a");
+    mockSshOk({ stdout: output("http://10.0.0.5:8222") });
+    const res = await appFor(NON_ADMIN).request("/servers/srv-a/install-relay", asJson(validBody));
+    const events = await readSse(res);
+    expect(events.find((e) => e.event === "error")?.data.kind).toBe("private_host");
+    expect(events.some((e) => e.event === "done")).toBe(false);
+    expect(prisma.server.update).not.toHaveBeenCalled();
+  });
+
+  it("an unlisted id still stores the installer-printed relayUrl for a non-admin", async () => {
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-other");
+    mServer.findUnique.mockResolvedValue({ ...row(), relayUrl: "https://203.0.113.30:8222" });
+    mockSshOk({ stdout: output("https://203.0.113.20:8222") });
+    const res = await appFor(NON_ADMIN).request("/servers/srv-a/install-relay", asJson(validBody));
+    const events = await readSse(res);
+    expect(events.find((e) => e.event === "done")?.data.relayUrl).toBe("https://203.0.113.20:8222");
+    const data = vi.mocked(prisma.server.update).mock.calls[0][0].data as Record<string, unknown>;
+    expect(data.relayUrl).toBe("https://203.0.113.20:8222");
+  });
+
+  it("an admin re-installing a listed id still stores the installer-printed relayUrl", async () => {
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-a");
+    mServer.findUnique.mockResolvedValue({ ...row(), userId: null });
+    mockSshOk({ stdout: output("http://10.0.0.5:8222") });
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-a/install-relay",
+      asJson(validBody),
+    );
+    const events = await readSse(res);
+    const done = events.find((e) => e.event === "done");
+    expect(done?.data.relayUrl).toBe("http://10.0.0.5:8222");
+    expect(done?.data.relayUrlPinned).toBeUndefined();
+    const data = vi.mocked(prisma.server.update).mock.calls[0][0].data as Record<string, unknown>;
+    expect(data.relayUrl).toBe("http://10.0.0.5:8222");
   });
 });
