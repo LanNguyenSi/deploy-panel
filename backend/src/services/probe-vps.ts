@@ -51,6 +51,8 @@ export interface ProbeVpsOptions {
   auth: SshAuth;
   timeoutMs?: number;
   acceptAnyHostKey?: boolean;
+  /** Resolve and classify the host at connect time; see `guardTarget` in ssh-executor.ts. */
+  guardTarget?: boolean;
 }
 
 /**
@@ -255,6 +257,7 @@ export async function probeVps(opts: ProbeVpsOptions): Promise<ProbeVpsOutcome> 
   let stdoutBuffer = "";
   let hostKeySha256: string | undefined;
   await executeSshCommand({
+    guardTarget: opts.guardTarget,
     host: opts.host,
     port: opts.port,
     user: opts.user,

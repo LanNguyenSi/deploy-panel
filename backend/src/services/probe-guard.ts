@@ -213,10 +213,10 @@ export function isTrustedRelayServer(serverId: string): boolean {
  * operator set it. The name inside that pinned relayUrl is not re-resolved
  * here: its DNS is trusted as the operator configured it.
  *
- * TOCTOU: the check resolves the name itself, and the later SSH/fetch
- * resolves it again, so a record that flips between the two is not
- * covered. See `assertHostAllowedForNonAdmin` for the DNS-failure
- * pass-through.
+ * TOCTOU: this check resolves the name itself, and the connection then
+ * resolves it again. The connection re-checks at connect time through
+ * lib/connect-guard.ts, which also refuses a failed lookup that
+ * `assertHostAllowedForNonAdmin` lets pass.
  */
 export async function assertServerTargetsAllowed(
   actor: { isAdmin: boolean },

@@ -109,6 +109,8 @@ describe("POST /servers/probe-vps", () => {
     );
     expect(res.status).toBe(200);
     expect(probeVps).toHaveBeenCalledOnce();
+    // a non-admin's host is resolved and classified again inside the SSH connection
+    expect(vi.mocked(probeVps).mock.calls[0][0].guardTarget).toBe(true);
   });
 
   it("non-admin cannot probe a private RFC1918 host", async () => {
@@ -147,6 +149,7 @@ describe("POST /servers/probe-vps", () => {
     );
     expect(res.status).toBe(200);
     expect(probeVps).toHaveBeenCalledOnce();
+    expect(vi.mocked(probeVps).mock.calls[0][0].guardTarget).toBe(false);
   });
 
   it("non-admin gets 429 after exceeding the per-actor probe rate limit", async () => {

@@ -22,6 +22,7 @@
 
 import { normalizeRevision } from "../lib/ghcr.js";
 import { relayFetch } from "../lib/relay-fetch.js";
+import { connectGuardRequired } from "../lib/connect-guard.js";
 
 export type RelayRecordOutcome =
   | { kind: "none" }
@@ -34,7 +35,9 @@ export type RelayRecordOutcome =
     };
 
 export interface ReadRecordOpts {
-  server: { relayUrl?: string | null; relayToken?: string | null };
+  server: { id?: string; userId?: string | null; relayUrl?: string | null; relayToken?: string | null };
+  /** Connect-time guard; defaults to the row's own rule. Callers with an actor pass `connectGuardRequired(server, actor)`. */
+  guarded?: boolean;
   /** Revision the relay reported before the trigger, if known. */
   previousRevision: string | null;
   /** Revision the panel expects after the update, if known. */
@@ -72,7 +75,7 @@ export async function readRelaySelfUpdateOutcome(
     const res = await relayFetch(`${server.relayUrl}/api/self-update`, {
       headers,
       signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),
-    });
+    }, { guarded: opts.guarded ?? connectGuardRequired(server) });
     if (!res.ok) return { kind: "none" };
     const body = (await res.json()) as {
       revision?: unknown;

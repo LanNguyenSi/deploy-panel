@@ -14,6 +14,7 @@ import {
   type ProbeFailureStatus,
 } from "../services/server-status.js";
 import { relayFetch } from "./relay-fetch.js";
+import { connectGuardRequired } from "./connect-guard.js";
 
 export const GHCR_TOKEN_URL =
   "https://ghcr.io/token?scope=repository:lannguyensi/agent-relay:pull";
@@ -220,8 +221,10 @@ export interface RelayHealthProbe {
  * build revision. Never throws.
  */
 export async function fetchRelayHealth(
-  server: { relayUrl?: string | null; relayToken?: string | null },
+  server: { id?: string; userId?: string | null; relayUrl?: string | null; relayToken?: string | null },
   timeoutMs = 5000,
+  /** Connect-time guard; defaults to the row's own rule (callers with an actor pass `connectGuardRequired(server, actor)`). */
+  guarded: boolean = connectGuardRequired(server),
 ): Promise<RelayHealthProbe> {
   if (!server.relayUrl) {
     return { online: false, status: null, version: null, revision: null, data: null, failureStatus: "no-relay" };
@@ -236,7 +239,7 @@ export async function fetchRelayHealth(
     const response = await relayFetch(`${server.relayUrl}/health`, {
       headers,
       signal: AbortSignal.timeout(timeoutMs),
-    });
+    }, { guarded });
 
     if (!response.ok) {
       return {
@@ -287,9 +290,11 @@ export interface ServerRelayStatus {
  * server by reading its `/health` and the cached GHCR `:latest` revision.
  */
 export async function getServerRelayStatus(server: {
+  id?: string;
+  userId?: string | null;
   relayUrl?: string | null;
   relayToken?: string | null;
-}): Promise<ServerRelayStatus> {
+}, guarded: boolean = connectGuardRequired(server)): Promise<ServerRelayStatus> {
   if (!server.relayUrl) {
     return {
       relayRevision: null,
@@ -300,7 +305,7 @@ export async function getServerRelayStatus(server: {
   }
 
   const [health, latestRevision] = await Promise.all([
-    fetchRelayHealth(server),
+    fetchRelayHealth(server, undefined, guarded),
     getLatestRelayRevision(),
   ]);
 

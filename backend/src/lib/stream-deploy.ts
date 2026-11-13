@@ -1,4 +1,5 @@
 import { prisma } from "./prisma.js";
+import { guardedFetch } from "./guarded-fetch.js";
 import { hasRollbackOrFailedStep, isBuildCachePruneStep, recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "./deploy-recovery.js";
 import { verifyDeployHealth } from "./post-deploy-gate.js";
 import { provisionAndCheckAppSecrets } from "./provision-secrets.js";
@@ -244,6 +245,11 @@ export async function streamDeploy(opts: {
   timeouts?: { firstByteMs?: number; idleMs?: number };
   /** App status before the dispatch set it to `deploying`; restored if the deploy is blocked by preflight. */
   previousStatus?: string;
+  /**
+   * Resolve the relay host inside the connection and refuse private, loopback
+   * or reserved addresses. Callers set it from `connectGuardRequired(serverRow)`.
+   */
+  connectGuard?: boolean;
 }) {
   const { serverId, deployId, appId, appName, relayUrl, relayToken, body, previousStatus } = opts;
   const firstByteMs = opts.timeouts?.firstByteMs ?? STREAM_FIRST_BYTE_TIMEOUT_MS;
@@ -332,7 +338,8 @@ export async function streamDeploy(opts: {
     };
     armIdleTimer(firstByteMs);
 
-    const res = await fetch(`${relayUrl}/api/apps/${encodeURIComponent(appName)}/deploy?stream=true`, {
+    const deployUrl = `${relayUrl}/api/apps/${encodeURIComponent(appName)}/deploy?stream=true`;
+    const deployInit: RequestInit = {
       method: "POST",
       headers,
       body: JSON.stringify(body),
@@ -341,7 +348,10 @@ export async function streamDeploy(opts: {
       // non-admin target guard never saw; a 3xx falls into the generic
       // "Relay returned <status>" error below.
       redirect: "manual",
-    });
+    };
+    // A guarded server connects through the checking lookup (it never follows
+    // a redirect either); everyone else keeps the plain fetch.
+    const res = opts.connectGuard ? await guardedFetch(deployUrl, deployInit) : await fetch(deployUrl, deployInit);
     armIdleTimer(firstByteMs);
 
     // A 4xx here means the relay received and definitively rejected the

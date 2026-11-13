@@ -5,6 +5,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 
+// These tests assert route behaviour against a mocked global fetch; the
+// connect-guarded transport (lib/guarded-fetch.ts) is covered in
+// connect-guard.test.ts, so here it forwards to the same fetch.
+vi.mock("../src/lib/guarded-fetch.js", () => ({
+  guardedFetch: vi.fn((url: string, init?: RequestInit) => globalThis.fetch(url, init)),
+}));
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     server: {
@@ -200,6 +207,15 @@ describe("the same rows for an admin, and public rows for a non-admin", () => {
     const res = await appFor(NON_ADMIN).request("/v1/deploy", json("POST", { server: "vps-a", app: "myapp" }));
     expect(res.status).toBe(202);
     expect(streamDeployMock).toHaveBeenCalledTimes(1);
+    expect(streamDeployMock.mock.calls[0][0]).toMatchObject({ connectGuard: true });
+  });
+
+  it("v1 POST deploy for an admin, and for a listed id, does not ask for the connect-time guard", async () => {
+    await appFor(ADMIN).request("/v1/deploy", json("POST", { server: "vps-a", app: "myapp" }));
+    expect(streamDeployMock.mock.calls.at(-1)![0]).toMatchObject({ connectGuard: false });
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-a");
+    await appFor(NON_ADMIN).request("/v1/deploy", json("POST", { server: "vps-a", app: "myapp" }));
+    expect(streamDeployMock.mock.calls.at(-1)![0]).toMatchObject({ connectGuard: false });
   });
 });
 

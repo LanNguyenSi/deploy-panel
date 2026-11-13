@@ -1,4 +1,5 @@
 import { prisma } from "./prisma.js";
+import { connectGuardRequired } from "./connect-guard.js";
 import { relayFetch } from "./relay-fetch.js";
 
 export interface RelayRequestOptions {
@@ -10,10 +11,12 @@ export interface RelayRequestOptions {
   headers?: Record<string, string>;
   /** Request timeout in ms; defaults to 5 minutes (deploys can take a while). */
   timeoutMs?: number;
+  /** The request actor, when there is one; an admin is never connect-guarded. See `connectGuardRequired`. */
+  actor?: { isAdmin: boolean };
 }
 
 export async function relayRequest<T>(options: RelayRequestOptions): Promise<T> {
-  const { serverId, path, method = "GET", body, headers: extraHeaders, timeoutMs = 300_000 } = options;
+  const { serverId, path, method = "GET", body, headers: extraHeaders, timeoutMs = 300_000, actor } = options;
 
   const server = await prisma.server.findUnique({ where: { id: serverId } });
   if (!server) throw RelayError.local("Server not found", 404);
@@ -32,7 +35,7 @@ export async function relayRequest<T>(options: RelayRequestOptions): Promise<T> 
     headers,
     body: body ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(timeoutMs),
-  });
+  }, { guarded: connectGuardRequired(server, actor) });
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");

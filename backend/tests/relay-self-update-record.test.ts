@@ -7,6 +7,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 
+// These tests assert route behaviour against a mocked global fetch; the
+// connect-guarded transport (lib/guarded-fetch.ts) is covered in
+// connect-guard.test.ts, so here it forwards to the same fetch.
+vi.mock("../src/lib/guarded-fetch.js", () => ({
+  guardedFetch: vi.fn((url: string, init?: RequestInit) => globalThis.fetch(url, init)),
+}));
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     server: {

@@ -14,6 +14,7 @@
  */
 import { createHash } from "node:crypto";
 import { Client, type ConnectConfig } from "ssh2";
+import { ConnectDeniedError, resolveCheckedAddresses } from "../lib/connect-guard.js";
 
 export type SshAuth =
   | { kind: "password"; password: string }
@@ -59,6 +60,16 @@ export interface ExecuteSshCommandOptions {
    * otherwise ssh2's built-in known_hosts enforcement applies.
    */
   expectedHostKeySha256?: string;
+  /**
+   * Resolve `host` once, refuse a private, loopback or reserved address (a
+   * lookup error is a refusal too), and connect ssh2 to the checked IP
+   * literal, so a DNS record that flips after the check is never dialed. The
+   * refusal rejects with `SshError` `connect_failed` before any connection is
+   * opened. Callers set it for a non-admin actor or a server row with an
+   * owner (`connectGuardRequiredForActor` / `connectGuardRequired` in
+   * lib/connect-guard.ts).
+   */
+  guardTarget?: boolean;
 }
 
 export interface ExecuteSshCommandResult {
@@ -364,13 +375,32 @@ export async function executeSshCommand(
       settle("reject", classifyConnectionError(err, cfg._hostKeyMismatch ?? false));
     });
 
-    try {
-      client.connect(config);
-    } catch (err) {
-      settle(
-        "reject",
-        new SshError(`connect_failed: ${(err as Error).message}`, "connect_failed"),
-      );
+    const connect = () => {
+      if (settled) return;
+      try {
+        client.connect(config);
+      } catch (err) {
+        settle(
+          "reject",
+          new SshError(`connect_failed: ${(err as Error).message}`, "connect_failed"),
+        );
+      }
+    };
+
+    if (!opts.guardTarget) {
+      connect();
+      return;
     }
+    // The watchdog above already covers the lookup.
+    resolveCheckedAddresses(opts.host).then(
+      (addresses) => {
+        config.host = addresses[0].address;
+        connect();
+      },
+      (err: unknown) => {
+        const message = err instanceof ConnectDeniedError ? err.message : (err as Error).message;
+        settle("reject", new SshError(`connect failed: ${message}`, "connect_failed"));
+      },
+    );
   });
 }

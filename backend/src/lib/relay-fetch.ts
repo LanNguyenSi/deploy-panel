@@ -10,11 +10,28 @@
  * every caller already treats a non-2xx answer as a relay error, and nothing
  * the redirecting host sent is passed on.
  */
+import { guardedFetch } from "./guarded-fetch.js";
+
 export const RELAY_REDIRECT_MESSAGE =
   "the relay answered with a redirect, which the panel does not follow";
 
-export async function relayFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  const res = await fetch(url, { ...init, redirect: "manual" });
+export interface RelayFetchOptions {
+  /**
+   * Resolve the host inside the connection and refuse private, loopback or
+   * reserved addresses (a lookup error is a refusal too). Set it from
+   * `connectGuardRequired(serverRow)`; see lib/connect-guard.ts.
+   */
+  guarded?: boolean;
+}
+
+export async function relayFetch(
+  url: string,
+  init: RequestInit = {},
+  options: RelayFetchOptions = {},
+): Promise<Response> {
+  const res = options.guarded
+    ? await guardedFetch(url, init)
+    : await fetch(url, { ...init, redirect: "manual" });
   if (res.status >= 300 && res.status < 400) {
     await res.body?.cancel().catch(() => undefined);
     return new Response(RELAY_REDIRECT_MESSAGE, {

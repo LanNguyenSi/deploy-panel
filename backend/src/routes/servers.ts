@@ -31,6 +31,7 @@ import {
 } from "../services/probe-guard.js";
 import { denyPrivateServerTargets } from "../lib/target-guard.js";
 import { relayFetch } from "../lib/relay-fetch.js";
+import { connectGuardRequired, connectGuardRequiredForActor } from "../lib/connect-guard.js";
 import {
   computeRelayOutdated,
   fetchRelayHealth,
@@ -221,7 +222,7 @@ serversRouter.post("/:id/test", async (c) => {
     const response = await relayFetch(`${server.relayUrl}/health`, {
       headers,
       signal: AbortSignal.timeout(5000),
-    });
+    }, { guarded: connectGuardRequired(server, actor) });
 
     if (response.ok) {
       const data = await response.json();
@@ -297,7 +298,7 @@ serversRouter.get("/:id/system", async (c) => {
     const res = await relayFetch(`${server.relayUrl}/api/system`, {
       headers,
       signal: AbortSignal.timeout(5000),
-    });
+    }, { guarded: connectGuardRequired(server, actor) });
 
     if (!res.ok) return c.json({ error: "relay_error", status: res.status }, 502);
     return c.json(await res.json());
@@ -500,6 +501,7 @@ serversRouter.post("/probe-vps", async (c) => {
 
   try {
     const outcome = await probeVps({
+      guardTarget: connectGuardRequiredForActor(actor),
       host: input.host,
       port: input.sshPort,
       user: input.sshUser,
@@ -666,6 +668,7 @@ serversRouter.post("/install-relay", async (c) => {
       });
 
       await executeSshCommand({
+        guardTarget: connectGuardRequiredForActor(actor),
         host: input.host,
         port: input.sshPort,
         user: input.sshUser,
@@ -939,6 +942,7 @@ serversRouter.post("/:id/install-relay", async (c) => {
       let observedHostKeySha256: string | undefined;
 
       await executeSshCommand({
+        guardTarget: connectGuardRequired(server, actor),
         host: server.host,
         port: input.sshPort,
         user: input.sshUser,
@@ -1355,6 +1359,7 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
         effectiveComposeFile,
       );
       const inspectResult = await executeSshCommand({
+        guardTarget: connectGuardRequired(server, actor),
         host: server.host,
         port: input.sshPort,
         user: input.sshUser,
@@ -1409,6 +1414,7 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
       }
 
       const result = await executeSshCommand({
+        guardTarget: connectGuardRequired(server, actor),
         host: server.host,
         port: input.sshPort,
         user: input.sshUser,
@@ -1486,7 +1492,7 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
             const response = await relayFetch(`${server.relayUrl}/health`, {
               headers,
               signal: AbortSignal.timeout(5000),
-            });
+            }, { guarded: connectGuardRequired(server, actor) });
             if (response.ok) {
               healthOk = true;
               break;
@@ -1583,7 +1589,7 @@ serversRouter.get("/:id/relay-status", async (c) => {
   const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl }, server.id);
   if (denied) return denied;
 
-  const status = await getServerRelayStatus(server);
+  const status = await getServerRelayStatus(server, connectGuardRequired(server, actor));
   return c.json(status);
 });
 
@@ -1731,7 +1737,7 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
   }
 
   try {
-    const previousProbe = await fetchRelayHealth(server, 5000);
+    const previousProbe = await fetchRelayHealth(server, 5000, connectGuardRequired(server, actor));
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
     };
@@ -1746,7 +1752,7 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
         headers,
         body: JSON.stringify(parsed.data.tag ? { tag: parsed.data.tag } : {}),
         signal: AbortSignal.timeout(60_000),
-      });
+      }, { guarded: connectGuardRequired(server, actor) });
     } catch (err) {
       // A timeout means the relay accepted the connection but is still busy
       // (it pulls the image before answering 202), so it is not offline.
@@ -1755,6 +1761,7 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
         // before reporting a bare timeout.
         const timeoutRecord = await readRelaySelfUpdateOutcome({
           server,
+          guarded: connectGuardRequired(server, actor),
           previousRevision: previousProbe.revision,
           targetRevision: null,
           mode: "timeout",
@@ -1948,7 +1955,7 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
 
     for (const delay of pollDelays) {
       if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-      const probe = await fetchRelayHealth(server, 5000);
+      const probe = await fetchRelayHealth(server, 5000, connectGuardRequired(server, actor));
       lastProbe = probe;
       if (!probe.online) continue;
 
@@ -1984,6 +1991,7 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
       // and logs). Only reached when no verified revision was seen.
       const windowRecord = await readRelaySelfUpdateOutcome({
         server,
+        guarded: connectGuardRequired(server, actor),
         previousRevision,
         targetRevision,
         mode: "window",
