@@ -1,4 +1,4 @@
-import { relayRequest, RelayError } from "./relay.js";
+import { relayRequest, RelayError, envUnreadableRelayMessage } from "./relay.js";
 import { listAppSecretKeys } from "./app-secrets.js";
 
 /**
@@ -64,11 +64,20 @@ export async function evaluateRequiredEnv(opts: {
       if (!resolved.has(entry.key)) resolved.set(entry.key, entry.value);
     }
   } catch (err) {
+    if (!(err instanceof RelayError)) throw err;
+    // A relay 409 says the app's .env file is unreadable on the relay (e.g.
+    // a symlink), so nothing could be read: claim neither "resolved" nor
+    // "missing" for any key. Fail the check with the relay's message;
+    // `missing` stays empty because it lists keys CONFIRMED to resolve
+    // empty, and nothing here was confirmed.
+    const unreadable = envUnreadableRelayMessage(err);
+    if (unreadable) {
+      return { requiredKeys, missing: [], check: { name: "required-env", passed: false, message: unreadable } };
+    }
     // Relay unreachable / app not yet deployed / no .env yet — degrade to
     // "resolved from panel secrets only" rather than throwing. The relay's
     // own preflight check already surfaces connectivity failures; this gate
     // only adds the required-key signal on top.
-    if (!(err instanceof RelayError)) throw err;
   }
 
   const missing = computeMissingRequiredKeys(requiredKeys, resolved);

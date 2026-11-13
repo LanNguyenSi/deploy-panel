@@ -1,7 +1,8 @@
 import { prisma } from "./prisma.js";
 import { hasRollbackOrFailedStep, isBuildCachePruneStep, recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "./deploy-recovery.js";
 import { verifyDeployHealth } from "./post-deploy-gate.js";
-import { provisionAndCheckAppSecrets } from "./provision-secrets.js";
+import { provisionAndCheckAppSecrets, type ProvisionResult } from "./provision-secrets.js";
+import { envUnreadableRelayMessage } from "./relay.js";
 import {
   CONFLICT_STEP_KIND,
   PREFLIGHT_CHECK_KIND,
@@ -266,16 +267,42 @@ export async function streamDeploy(opts: {
     // runs, and check whether every app-declared required env key resolves.
     // See lib/provision-secrets.ts — this is what makes a stored secret
     // survive `git clean -fdx` on the VPS instead of depending on a
-    // hand-written, untracked .env. A relay round-trip failure here (relay
-    // unreachable, etc.) falls through to the existing catch block below,
-    // which already routes through recoverBrokenDeploy.
+    // hand-written, untracked .env. A relay 409 here means the relay cannot
+    // read the app's .env file at all (e.g. it is a symlink): nothing ran
+    // and nothing can be provisioned or checked, so the deploy ends blocked
+    // with the relay's message, like the missing-keys branch below. Every
+    // other round-trip failure (relay unreachable, 5xx, network error)
+    // falls through to the existing catch block below, which already routes
+    // through recoverBrokenDeploy.
     const appMeta = await prisma.app.findUnique({
       where: { id: appId },
       select: { requiredEnvKeys: true },
     });
     const requiredKeys = appMeta?.requiredEnvKeys ?? [];
 
-    const provision = await provisionAndCheckAppSecrets({ serverId, appId, appName, requiredKeys });
+    let provision: ProvisionResult;
+    try {
+      provision = await provisionAndCheckAppSecrets({ serverId, appId, appName, requiredKeys });
+    } catch (err) {
+      const unreadable = envUnreadableRelayMessage(err);
+      if (!unreadable) throw err;
+      // The panel's own preflight refused the deploy: nothing ran, so the
+      // app keeps its previous status (same rule as a relay-blocked deploy)
+      // and the step carries the preflight-check marker. This is NOT a lost
+      // connection: recoverBrokenDeploy must not run (the throw above keeps
+      // every other error on that path).
+      steps.push({ name: "env-preflight", kind: PREFLIGHT_CHECK_KIND, status: "failure", durationMs: 0, message: unreadable, output: unreadable });
+      console.log(`[stream-deploy] ${appName}: blocked before deploy: ${unreadable}`);
+      await finalizeBlockedDeploy({
+        deployId,
+        appId,
+        previousStatus,
+        steps,
+        duration: Date.now() - startedAt,
+        keepAppStatus: previousStatus === "deploying",
+      });
+      return;
+    }
     if (provision.provisionedKeys.length > 0) {
       steps.push({
         name: "provision-secrets",
