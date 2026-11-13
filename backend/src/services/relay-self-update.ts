@@ -35,7 +35,7 @@ export type RelayRecordOutcome =
     };
 
 export interface ReadRecordOpts {
-  server: { id?: string; userId?: string | null; relayUrl?: string | null; relayToken?: string | null };
+  server: { id: string; userId: string | null; relayUrl?: string | null; relayToken?: string | null };
   /** Connect-time guard; defaults to the row's own rule. Callers with an actor pass `connectGuardRequired(server, actor)`. */
   guarded?: boolean;
   /** Revision the relay reported before the trigger, if known. */

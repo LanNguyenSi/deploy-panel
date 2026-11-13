@@ -49,6 +49,10 @@ import { recoverBrokenDeploy } from "../src/lib/deploy-recovery.js";
 import { assertServerTargetsAllowed } from "../src/services/probe-guard.js";
 import { executeSshCommand, SshError } from "../src/services/ssh-executor.js";
 
+// A refused connection reaches callers the way undici reports one, so the shared
+// probe classifier maps it to `offline`.
+const DENIED = { name: "TypeError", message: "fetch failed", cause: { code: "ECONNDENIED" } };
+
 type Answer = { address: string; family: 4 | 6 }[] | Error;
 
 /** Stub resolver: answers come from `answers` in order, the last one repeats. */
@@ -120,12 +124,9 @@ describe("who is guarded", () => {
     expect(connectGuardRequired({ id: "srv-owned", userId: "u" }, { isAdmin: false })).toBe(true);
   });
 
-  it("actor variant: admin never, non-admin unless the stored row is listed", () => {
+  it("actor variant (no stored row): admin never, non-admin always", () => {
     expect(connectGuardRequiredForActor({ isAdmin: true })).toBe(false);
-    expect(connectGuardRequiredForActor({ isAdmin: true }, "srv-owned")).toBe(false);
     expect(connectGuardRequiredForActor({ isAdmin: false })).toBe(true);
-    expect(connectGuardRequiredForActor({ isAdmin: false }, "srv-owned")).toBe(true);
-    expect(connectGuardRequiredForActor({ isAdmin: false }, "srv-trusted")).toBe(false);
   });
 });
 
@@ -186,7 +187,7 @@ describe("relayRequest for a server with an owner", () => {
     expect(check).toEqual({ ok: true });
     expect(stub.calls).toHaveLength(1);
 
-    await expect(relayRequest({ serverId: "srv-owned", path: "/health" })).rejects.toMatchObject({ code: "ECONNDENIED" });
+    await expect(relayRequest({ serverId: "srv-owned", path: "/health" })).rejects.toMatchObject(DENIED);
     expect(stub.calls).toHaveLength(2);
     expect(hits).toBe(0);
   });
@@ -194,17 +195,17 @@ describe("relayRequest for a server with an owner", () => {
   it("refuses when the lookup fails", async () => {
     _setConnectResolver(stubResolver([Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" })]).fn);
     SERVER_ROW.current = row({ relayUrl: `http://relay.down.test:${relayUrlBase}` });
-    await expect(relayRequest({ serverId: "srv-owned", path: "/health" })).rejects.toMatchObject({ code: "ECONNDENIED" });
+    await expect(relayRequest({ serverId: "srv-owned", path: "/health" })).rejects.toMatchObject(DENIED);
     expect(hits).toBe(0);
   });
 
   it("refuses a private IP literal and the name localhost", async () => {
     SERVER_ROW.current = row({ relayUrl: `http://127.0.0.1:${relayUrlBase}` });
-    await expect(relayRequest({ serverId: "srv-owned", path: "/health" })).rejects.toMatchObject({ code: "ECONNDENIED" });
+    await expect(relayRequest({ serverId: "srv-owned", path: "/health" })).rejects.toMatchObject(DENIED);
     SERVER_ROW.current = row({ relayUrl: `http://localhost:${relayUrlBase}` });
-    await expect(relayRequest({ serverId: "srv-owned", path: "/health" })).rejects.toMatchObject({ code: "ECONNDENIED" });
+    await expect(relayRequest({ serverId: "srv-owned", path: "/health" })).rejects.toMatchObject(DENIED);
     SERVER_ROW.current = row({ relayUrl: `http://[::1]:${relayUrlBase}` });
-    await expect(relayRequest({ serverId: "srv-owned", path: "/health" })).rejects.toMatchObject({ code: "ECONNDENIED" });
+    await expect(relayRequest({ serverId: "srv-owned", path: "/health" })).rejects.toMatchObject(DENIED);
     expect(hits).toBe(0);
   });
 
@@ -222,8 +223,8 @@ describe("relayRequest for a server with an owner", () => {
     expect(hits).toBe(1);
     await expect(
       relayRequest({ serverId: "srv-owned", path: "/health", actor: { isAdmin: false } }),
-    ).rejects.toMatchObject({ code: "ECONNDENIED" });
-    await expect(relayRequest({ serverId: "srv-owned", path: "/health" })).rejects.toMatchObject({ code: "ECONNDENIED" });
+    ).rejects.toMatchObject(DENIED);
+    await expect(relayRequest({ serverId: "srv-owned", path: "/health" })).rejects.toMatchObject(DENIED);
     expect(hits).toBe(1);
   });
 
@@ -241,7 +242,7 @@ describe("relayFetch option", () => {
   it("guarded refuses a private target, unguarded (admin) connects", async () => {
     await expect(
       relayFetch(`http://127.0.0.1:${relayUrlBase}/health`, {}, { guarded: true }),
-    ).rejects.toMatchObject({ code: "ECONNDENIED" });
+    ).rejects.toMatchObject(DENIED);
     expect(hits).toBe(0);
     const res = await relayFetch(`http://127.0.0.1:${relayUrlBase}/health`, {}, { guarded: false });
     expect(res.status).toBe(200);

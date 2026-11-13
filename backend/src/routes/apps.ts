@@ -473,6 +473,7 @@ appsRouter.get("/:name/preflight", async (c) => {
   try {
     const result = await relayRequest<{ passed?: boolean; checks?: Array<{ name: string; passed: boolean; message: string }> }>({
       serverId,
+      actor: getActorContext(c),
       path: `/api/apps/${name}/preflight`,
     });
 

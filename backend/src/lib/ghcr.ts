@@ -221,7 +221,7 @@ export interface RelayHealthProbe {
  * build revision. Never throws.
  */
 export async function fetchRelayHealth(
-  server: { id?: string; userId?: string | null; relayUrl?: string | null; relayToken?: string | null },
+  server: { id: string; userId: string | null; relayUrl?: string | null; relayToken?: string | null },
   timeoutMs = 5000,
   /** Connect-time guard; defaults to the row's own rule (callers with an actor pass `connectGuardRequired(server, actor)`). */
   guarded: boolean = connectGuardRequired(server),
@@ -290,8 +290,8 @@ export interface ServerRelayStatus {
  * server by reading its `/health` and the cached GHCR `:latest` revision.
  */
 export async function getServerRelayStatus(server: {
-  id?: string;
-  userId?: string | null;
+  id: string;
+  userId: string | null;
   relayUrl?: string | null;
   relayToken?: string | null;
 }, guarded: boolean = connectGuardRequired(server)): Promise<ServerRelayStatus> {

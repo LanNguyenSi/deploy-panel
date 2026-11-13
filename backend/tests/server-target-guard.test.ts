@@ -854,6 +854,18 @@ describe("connect-time guard flags on the per-id routes", () => {
     expect(relayCalls.length).toBe(vi.mocked(guardedFetch).mock.calls.length);
   });
 
+  it("test: a connection the guard refuses is an offline relay (status written), not a 500", async () => {
+    mServer.findUnique.mockResolvedValue(serverRow());
+    const denied = Object.assign(new Error("lookup failed: ENOTFOUND"), { code: "ECONNDENIED" });
+    vi.mocked(guardedFetch).mockRejectedValueOnce(new TypeError("fetch failed", { cause: denied }));
+    const res = await appFor(NON_ADMIN).request("/servers/srv-a/test", send("POST", {}));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: "offline", message: "fetch failed" });
+    expect(mServer.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "offline" }) }),
+    );
+  });
+
   it.each(fetchRoutes)("%s: an admin on the same owned row keeps the plain fetch", async (_n, method, path) => {
     mServer.findUnique.mockResolvedValue(serverRow());
     const res = await appFor(ADMIN).request(path, send(method, method === "POST" ? {} : undefined));

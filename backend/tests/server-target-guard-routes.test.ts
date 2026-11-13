@@ -232,6 +232,58 @@ describe("the same rows for an admin, and public rows for a non-admin", () => {
     expect(guardedFetch).not.toHaveBeenCalled();
   });
 
+  // Every relayRequest of a route that has an actor must carry it: with the
+  // actor dropped, the owner of the row decides and an admin would be held to
+  // the connect-time check on a private target. An admin on an owned row must
+  // therefore reach the relay through the plain fetch on every one of these.
+  const adminRoutes: Array<[string, string, string, unknown?]> = [
+    ["apps rollback", "POST", "/servers/srv-a/apps/myapp/rollback", {}],
+    ["apps logs", "GET", "/servers/srv-a/apps/myapp/logs"],
+    ["apps env write (read and write)", "PUT", "/servers/srv-a/apps/myapp/env", { entries: [{ key: "A", value: "b" }] }],
+    ["apps preflight", "GET", "/servers/srv-a/apps/myapp/preflight"],
+    ["sync (list and app detail)", "POST", "/servers/srv-a/sync", {}],
+    ["v1 rollback", "POST", "/v1/rollback", { server: "vps-a", app: "myapp" }],
+    ["v1 preflight", "POST", "/v1/preflight", { server: "vps-a", app: "myapp" }],
+  ];
+
+  it.each(adminRoutes)("%s: an admin on an owned row never uses the guarded transport", async (_l, method, path, body) => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({ entries: [], lines: [], apps: [{ name: "myapp", configured: true }], app: { containers: "c" }, success: true }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    const res = await appFor(ADMIN).request(path, json(method, body));
+    await res.text();
+    // v1 rollback answers 202 and calls the relay afterwards
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(0);
+    // The rollback routes go on to the post-deploy health gate, which runs
+    // without an actor and so follows the row owner (documented); only the
+    // rollback request itself carries the actor.
+    const guarded = vi.mocked(guardedFetch).mock.calls.map((c) => String(c[0]));
+    expect(path.endsWith("rollback") ? guarded.filter((u) => u.endsWith("/rollback")) : guarded).toEqual([]);
+  });
+
+  it.each(adminRoutes)("%s: the same call for the non-admin owner uses the guarded transport", async (_l, method, path, body) => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({ entries: [], lines: [], apps: [{ name: "myapp", configured: true }], app: { containers: "c" }, success: true }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    const res = await appFor(NON_ADMIN).request(path, json(method, body));
+    await res.text();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    const relayCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes("relay.example.com"));
+    expect(relayCalls.length).toBeGreaterThan(0);
+    expect(vi.mocked(guardedFetch).mock.calls.length).toBe(relayCalls.length);
+  });
+
   it("v1 POST deploy hands a public relayUrl to streamDeploy for a non-admin", async () => {
     const res = await appFor(NON_ADMIN).request("/v1/deploy", json("POST", { server: "vps-a", app: "myapp" }));
     expect(res.status).toBe(202);

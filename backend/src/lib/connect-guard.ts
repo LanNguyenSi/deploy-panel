@@ -10,8 +10,9 @@
  *  - HTTP to a relay goes through `guardedFetch` (lib/guarded-fetch.ts), which
  *    hands `guardedLookup` to `node:http(s)`. The address the socket connects
  *    to is the one this lookup returned and classified.
- *  - SSH resolves once with `resolveCheckedAddresses` and connects ssh2 to the
- *    checked IP literal, so there is no second resolution to flip.
+ *  - SSH connects ssh2 over a `net` socket that uses the same `guardedLookup`
+ *    (ssh2 takes a socket through its `sock` option), so the name is resolved
+ *    once, by the connection itself, and Node's address fallback works.
  *
  * The classifier is the same one the pre-check uses
  * (`isPrivateOrLoopbackHost`): every address a name resolves to must pass, and
@@ -67,7 +68,7 @@ export function _setConnectResolver(fn: Resolver | null): void {
  * (scheduler, startup sweep, library helpers) is decided by the row alone.
  */
 export function connectGuardRequired(
-  row: { id?: string | null; userId?: string | null } | null | undefined,
+  row: { id: string; userId: string | null } | null | undefined,
   actor?: { isAdmin: boolean } | null,
 ): boolean {
   if (actor?.isAdmin) return false;
@@ -77,20 +78,29 @@ export function connectGuardRequired(
 }
 
 /**
- * Same decision for a caller that has an actor and maybe a stored row id (the
- * SSH routes): admins are never guarded, a listed stored row is exempt.
+ * Same decision for a caller that has an actor and no stored row (probe and
+ * first install of a host the panel does not know yet): admins are never
+ * guarded.
  */
-export function connectGuardRequiredForActor(
-  actor: { isAdmin: boolean },
-  storedServerId?: string,
-): boolean {
-  if (actor.isAdmin) return false;
-  if (storedServerId && isTrustedRelayServer(storedServerId)) return false;
-  return true;
+export function connectGuardRequiredForActor(actor: { isAdmin: boolean }): boolean {
+  return !actor.isAdmin;
 }
 
 function bareHost(hostname: string): string {
   return hostname.replace(/^\[|\]$/g, "").replace(/%.*$/, "");
+}
+
+/**
+ * Throw `ConnectDeniedError` when `hostname` is an IP literal in a private,
+ * loopback, link-local or reserved range. Node never calls a `lookup` function
+ * for a literal, so a transport that hands `guardedLookup` to a socket must
+ * call this for literals itself. A name passes (the lookup handles it).
+ */
+export function assertLiteralAllowed(hostname: string): void {
+  const host = bareHost(hostname);
+  if (isIP(host) && isPrivateOrLoopbackHost(host)) {
+    throw new ConnectDeniedError("literal", "target is a private or loopback address");
+  }
 }
 
 /**
@@ -106,9 +116,7 @@ export async function resolveCheckedAddresses(
 ): Promise<LookupAddress[]> {
   const host = bareHost(hostname);
   if (isIP(host)) {
-    if (isPrivateOrLoopbackHost(host)) {
-      throw new ConnectDeniedError("literal", "target is a private or loopback address");
-    }
+    assertLiteralAllowed(host);
     const literalFamily = isIP(host) as 4 | 6;
     if (family && family !== literalFamily) {
       throw new ConnectDeniedError("lookup_failed", "target address family not allowed");

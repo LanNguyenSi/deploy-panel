@@ -14,23 +14,51 @@
  * bodies must be a string or bytes, and response bodies are not decompressed
  * (the request sends no `Accept-Encoding`). An IP-literal host never reaches a
  * lookup function (Node skips it), so it is classified here before connecting.
+ *
+ * Errors follow undici so the shared probe classifier keeps working: a
+ * transport failure (refused, denied, DNS, TLS, parse, connect timeout) is a
+ * `TypeError("fetch failed")` with the real error as `cause`; the reason of an
+ * aborted signal is passed through unchanged. Like undici, the connection
+ * attempt gives up after 10 seconds (cause code `ETIMEDOUT`).
  */
 import http from "node:http";
 import https from "node:https";
 import { isIP } from "node:net";
 import { Readable } from "node:stream";
-import { guardedLookup, resolveCheckedAddresses } from "./connect-guard.js";
+import { assertLiteralAllowed, guardedLookup } from "./connect-guard.js";
 
 const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
 
-export async function guardedFetch(url: string, init: RequestInit = {}): Promise<Response> {
+/** How long the TCP (and TLS) handshake may take; undici's default is the same. */
+export const CONNECT_TIMEOUT_MS = 10_000;
+
+export interface GuardedFetchOptions {
+  /** Test hook; defaults to `CONNECT_TIMEOUT_MS`. */
+  connectTimeoutMs?: number;
+}
+
+function fetchFailed(cause: unknown): TypeError {
+  return new TypeError("fetch failed", { cause });
+}
+
+export async function guardedFetch(
+  url: string,
+  init: RequestInit = {},
+  options: GuardedFetchOptions = {},
+): Promise<Response> {
   const target = new URL(url);
   if (target.protocol !== "http:" && target.protocol !== "https:") {
     throw new TypeError(`unsupported protocol ${target.protocol}`);
   }
   const host = target.hostname.replace(/^\[|\]$/g, "");
   // Node does not call `lookup` for an IP literal, so classify it here.
-  if (isIP(host)) await resolveCheckedAddresses(host);
+  if (isIP(host)) {
+    try {
+      assertLiteralAllowed(host);
+    } catch (err) {
+      throw fetchFailed(err);
+    }
+  }
 
   const body = init.body;
   let payload: string | Uint8Array | undefined;
@@ -49,13 +77,22 @@ export async function guardedFetch(url: string, init: RequestInit = {}): Promise
   const signal = init.signal ?? undefined;
   if (signal?.aborted) throw signal.reason ?? new DOMException("aborted", "AbortError");
 
+  const connectTimeoutMs = options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
+
   return new Promise<Response>((resolve, reject) => {
-    const transport = target.protocol === "https:" ? https : http;
+    const secure = target.protocol === "https:";
+    const transport = secure ? https : http;
     let incoming: http.IncomingMessage | undefined;
     let done = false;
+    let connectTimer: ReturnType<typeof setTimeout> | undefined;
 
+    const clearConnectTimer = () => {
+      if (connectTimer) clearTimeout(connectTimer);
+      connectTimer = undefined;
+    };
     const onAbort = () => {
       const reason = signal?.reason ?? new DOMException("aborted", "AbortError");
+      clearConnectTimer();
       req.destroy(reason instanceof Error ? reason : new Error(String(reason)));
       incoming?.destroy(reason instanceof Error ? reason : new Error(String(reason)));
       if (!done) {
@@ -63,7 +100,10 @@ export async function guardedFetch(url: string, init: RequestInit = {}): Promise
         reject(reason);
       }
     };
-    const cleanup = () => signal?.removeEventListener("abort", onAbort);
+    const cleanup = () => {
+      clearConnectTimer();
+      signal?.removeEventListener("abort", onAbort);
+    };
 
     const req = transport.request(
       target,
@@ -76,6 +116,7 @@ export async function guardedFetch(url: string, init: RequestInit = {}): Promise
         lookup: guardedLookup,
       },
       (res) => {
+        clearConnectTimer();
         incoming = res;
         const status = res.statusCode ?? 0;
         const responseHeaders = new Headers();
@@ -98,7 +139,7 @@ export async function guardedFetch(url: string, init: RequestInit = {}): Promise
           res.destroy();
           cleanup();
           done = true;
-          reject(err);
+          reject(fetchFailed(err));
           return;
         }
         done = true;
@@ -106,11 +147,26 @@ export async function guardedFetch(url: string, init: RequestInit = {}): Promise
       },
     );
 
+    // The connect timer runs from the start of the request until the socket is
+    // connected (and, for https, the handshake finished), so a name that
+    // resolves but a host that never answers cannot hang the request.
+    req.once("socket", (socket) => {
+      if (socket.connecting || secure) socket.once(secure ? "secureConnect" : "connect", clearConnectTimer);
+      else clearConnectTimer();
+    });
+    connectTimer = setTimeout(() => {
+      connectTimer = undefined;
+      req.destroy(Object.assign(new Error("connect timeout"), { code: "ETIMEDOUT" }));
+    }, connectTimeoutMs);
+    connectTimer.unref();
+
     req.once("error", (err) => {
       cleanup();
       if (!done) {
         done = true;
-        reject(err);
+        // An abort already rejected with the signal's reason; anything else is
+        // a transport failure.
+        reject(signal?.aborted ? (signal.reason ?? err) : fetchFailed(err));
       }
     });
     signal?.addEventListener("abort", onAbort, { once: true });
