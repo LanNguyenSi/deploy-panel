@@ -178,7 +178,7 @@ serversRouter.post("/:id/test", async (c) => {
   const server = await findOwnedServer(actor, c.req.param("id"));
   if (!server) return c.json({ error: "not_found" }, 404);
 
-  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl });
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl }, server.id);
   if (denied) return denied;
 
   if (!server.relayUrl) {
@@ -267,7 +267,7 @@ serversRouter.get("/:id/system", async (c) => {
   if (!server) return c.json({ error: "not_found" }, 404);
   if (!server.relayUrl) return c.json({ error: "no_relay" }, 400);
 
-  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl });
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl }, server.id);
   if (denied) return denied;
 
   try {
@@ -813,7 +813,7 @@ serversRouter.post("/:id/install-relay", async (c) => {
 
   // SSH-only route: the host is the target. The row may predate the
   // registration check, so re-check here before any SSH.
-  const denied = await denyPrivateServerTargets(c, actor, { host: server.host });
+  const denied = await denyPrivateServerTargets(c, actor, { host: server.host }, server.id);
   if (denied) return denied;
 
   let body: unknown;
@@ -1211,10 +1211,12 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
 
   // SSH to the host, then a health fetch of the relay URL: both targets.
   // Checked once up front, before the SSE stream and any SSH.
-  const denied = await denyPrivateServerTargets(c, actor, {
-    host: server.host,
-    relayUrl: server.relayUrl,
-  });
+  const denied = await denyPrivateServerTargets(
+    c,
+    actor,
+    { host: server.host, relayUrl: server.relayUrl },
+    server.id,
+  );
   if (denied) return denied;
 
   let body: unknown;
@@ -1550,7 +1552,7 @@ serversRouter.get("/:id/relay-status", async (c) => {
   const server = await findOwnedServer(actor, c.req.param("id"));
   if (!server) return c.json({ error: "not_found" }, 404);
 
-  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl });
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl }, server.id);
   if (denied) return denied;
 
   const status = await getServerRelayStatus(server);
@@ -1579,7 +1581,7 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
     );
   }
 
-  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl });
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl }, server.id);
   if (denied) return denied;
 
   let rawBody: unknown = {};

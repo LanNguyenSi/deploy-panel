@@ -7,14 +7,17 @@ import { assertServerTargetsAllowed } from "../services/probe-guard.js";
  * host or relay URL. Returns the 400 `private_host` response when the actor
  * is a non-admin and a passed target is private/loopback (literal or
  * resolved); returns null when the route may continue. Admins always pass.
- * Pass only the targets the route actually connects to.
+ * Pass only the targets the route actually connects to. At use sites pass
+ * `storedServerId` (the row's id) so a server listed in
+ * `TRUSTED_RELAY_SERVER_IDS` is exempt; on write paths leave it out.
  */
 export async function denyPrivateServerTargets(
   c: Context,
   actor: ActorContext,
   targets: { host?: string | null; relayUrl?: string | null },
+  storedServerId?: string,
 ): Promise<Response | null> {
-  const check = await assertServerTargetsAllowed(actor, targets);
+  const check = await assertServerTargetsAllowed(actor, targets, storedServerId);
   if (check.ok) return null;
   if (check.reason === "unparsable") {
     return c.json(

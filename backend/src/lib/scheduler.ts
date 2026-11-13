@@ -105,6 +105,7 @@ export async function checkScheduled() {
       const check = await assertServerTargetsAllowed(
         { isAdmin: false },
         { relayUrl: entry.server.relayUrl },
+        entry.server.id,
       );
       if (!check.ok) {
         const reason =

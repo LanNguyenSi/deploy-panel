@@ -18,6 +18,12 @@ vi.mock("node:dns", () => ({
 
 vi.mock("../src/lib/stream-deploy.js", () => ({ streamDeploy: vi.fn() }));
 
+const trusted = vi.hoisted(() => [] as string[]);
+vi.mock("../src/config/index.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/config/index.js")>();
+  return { ...actual, config: { ...actual.config, TRUSTED_RELAY_SERVER_IDS: trusted } };
+});
+
 import { prisma } from "../src/lib/prisma.js";
 import { streamDeploy } from "../src/lib/stream-deploy.js";
 import { checkScheduled } from "../src/lib/scheduler.js";
@@ -54,6 +60,7 @@ function entry(server: Record<string, unknown>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  trusted.length = 0;
   vi.stubGlobal("fetch", fetchMock);
   lookupMock.mockReset();
   lookupMock.mockResolvedValue([{ address: "203.0.113.4", family: 4 }]);
@@ -126,5 +133,30 @@ describe("checkScheduled: relayUrl host check for non-admin owned servers", () =
     ]);
     await checkScheduled();
     expect(mStream).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("checkScheduled: TRUSTED_RELAY_SERVER_IDS", () => {
+  it("proceeds to streamDeploy for a listed server whose relayUrl is private", async () => {
+    trusted.push("srv-a");
+    mScheduled.findMany.mockResolvedValue([
+      entry({ userId: "user-a", relayUrl: "http://agent-relay:8222" }),
+    ]);
+    lookupMock.mockResolvedValue([{ address: "172.18.0.5", family: 4 }]);
+    await checkScheduled();
+    expect(mStream).toHaveBeenCalledTimes(1);
+    expect(mStream.mock.calls[0][0].relayUrl).toBe("http://agent-relay:8222");
+    expect(mDeploy.update.mock.calls.some((c) => c[0].data.status === "failed")).toBe(false);
+  });
+
+  it("still fails the deploy when only another id is listed", async () => {
+    trusted.push("srv-other");
+    mScheduled.findMany.mockResolvedValue([
+      entry({ userId: "user-a", relayUrl: "http://agent-relay:8222" }),
+    ]);
+    lookupMock.mockResolvedValue([{ address: "172.18.0.5", family: 4 }]);
+    await checkScheduled();
+    expect(mStream).not.toHaveBeenCalled();
+    expect(mDeploy.update.mock.calls.some((c) => c[0].data.status === "failed")).toBe(true);
   });
 });

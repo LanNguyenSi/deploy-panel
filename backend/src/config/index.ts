@@ -41,6 +41,20 @@ const configSchema = z.object({
   // Deliberately independent from SESSION_SECRET so routine session-secret
   // rotation doesn't brick every stored app secret.
   APP_SECRETS_KEY: z.string().min(16).optional(),
+  // Comma-separated server ids whose stored relayUrl/host a non-admin owner may
+  // make the panel connect to even when it resolves to a private address (a
+  // relay on the panel's own Docker network, reached as http://agent-relay:8222).
+  // Parsed to a trimmed list without empty entries; unset or empty = none.
+  // Applies only where a stored row is used, never when a target is written.
+  TRUSTED_RELAY_SERVER_IDS: z
+    .string()
+    .default("")
+    .transform((v) =>
+      v
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
 });
 
 const result = configSchema.safeParse(process.env);

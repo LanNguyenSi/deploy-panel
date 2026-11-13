@@ -84,6 +84,7 @@ vi.mock("../src/config/index.js", () => ({
     CORS_ORIGINS: "http://localhost:3000",
     FRONTEND_URL: "http://localhost:3000",
     PORT: 3001,
+    TRUSTED_RELAY_SERVER_IDS: [] as string[],
   },
 }));
 

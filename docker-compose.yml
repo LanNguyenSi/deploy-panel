@@ -71,6 +71,10 @@ services:
       # default here): the backend refuses to start with an empty list.
       # Empty = any verified GitHub user only in development and test.
       ALLOWED_GITHUB_LOGINS: ${ALLOWED_GITHUB_LOGINS:-}
+      # Server ids (comma-separated) whose stored private relayUrl a non-admin
+      # owner may use, e.g. a relay on this host's Docker network. Empty = none.
+      # Only list servers whose relayUrl you control (see docs/configuration.md).
+      TRUSTED_RELAY_SERVER_IDS: ${TRUSTED_RELAY_SERVER_IDS:-}
       # Optional native GitHub OAuth. Empty = disabled (routes 503, frontend
       # hides the button). Set both ID and secret to enable; BACKEND_URL must
       # then be the public backend origin so the callback URL resolves.

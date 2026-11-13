@@ -96,6 +96,20 @@ describe("docker-compose.prod.yml: fail-closed env wiring", () => {
   });
 });
 
+describe("TRUSTED_RELAY_SERVER_IDS reaches the backend container", () => {
+  it.each([
+    ["prod", prod],
+    ["dev", dev],
+  ])("%s compose forwards it with an empty default", (_name, file) => {
+    const env = file.services.backend.environment as Record<string, string>;
+    expect(env.TRUSTED_RELAY_SERVER_IDS).toBe("${TRUSTED_RELAY_SERVER_IDS:-}");
+  });
+
+  it(".env.example documents it as an optional commented entry", () => {
+    expect(envExampleText).toMatch(/^# TRUSTED_RELAY_SERVER_IDS=$/m);
+  });
+});
+
 describe("docker-compose.prod.yml: logging and memory limits", () => {
   it("prod defines exactly the db, backend and frontend services", () => {
     expect(prodServices).toEqual(["backend", "db", "frontend"]);

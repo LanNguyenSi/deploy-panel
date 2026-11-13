@@ -32,7 +32,7 @@ syncRouter.post("/:serverId/sync", async (c) => {
   if (!server) return c.json({ error: "not_found" }, 404);
   if (!server.relayUrl) return c.json({ error: "no_relay", message: "No relay configured" }, 400);
 
-  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl });
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl }, server.id);
   if (denied) return denied;
 
   try {

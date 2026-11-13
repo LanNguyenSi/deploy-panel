@@ -15,6 +15,7 @@ vi.mock("../src/lib/prisma.js", () => ({
     app: {
       findUnique: vi.fn().mockResolvedValue(null),
       findMany: vi.fn().mockResolvedValue([]),
+      upsert: vi.fn().mockResolvedValue({ id: "app-1", name: "myapp", status: "healthy" }),
       create: vi.fn(),
       update: vi.fn().mockResolvedValue({}),
     },
@@ -36,6 +37,7 @@ vi.mock("../src/config/index.js", () => ({
     CORS_ORIGINS: "http://localhost:3000",
     FRONTEND_URL: "http://localhost:3000",
     PORT: 3001,
+    TRUSTED_RELAY_SERVER_IDS: [] as string[],
   },
   allowedGitHubLogins: [],
 }));
@@ -46,6 +48,7 @@ vi.mock("../src/lib/stream-deploy.js", () => ({
 }));
 
 import { prisma } from "../src/lib/prisma.js";
+import { config } from "../src/config/index.js";
 import { appsRouter } from "../src/routes/apps.js";
 import { syncRouter } from "../src/routes/sync.js";
 import { v1Router } from "../src/routes/v1.js";
@@ -96,6 +99,7 @@ const fetchMock = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
+  config.TRUSTED_RELAY_SERVER_IDS.length = 0;
   lookupMock.mockReset();
   lookupMock.mockResolvedValue([{ address: "203.0.113.4", family: 4 }]);
   fetchMock.mockReset();
@@ -196,5 +200,51 @@ describe("the same rows for an admin, and public rows for a non-admin", () => {
     const res = await appFor(NON_ADMIN).request("/v1/deploy", json("POST", { server: "vps-a", app: "myapp" }));
     expect(res.status).toBe(202);
     expect(streamDeployMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("TRUSTED_RELAY_SERVER_IDS exempts a listed server's stored private relayUrl", () => {
+  function usePrivateRow() {
+    mServer.findUnique.mockResolvedValue(row({ relayUrl: INTERNAL }));
+    mServer.findFirst.mockResolvedValue(row({ relayUrl: INTERNAL }));
+  }
+
+  it.each(routes)("%s: an id that is not listed is still rejected", async (_label, method, path, body) => {
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-other");
+    usePrivateRow();
+    const res = await appFor(NON_ADMIN).request(path, json(method, body));
+    await expectDenied(res);
+  });
+
+  it.each(routes)("%s: a listed id proceeds to the relay", async (_label, method, path, body) => {
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-other", "srv-a");
+    usePrivateRow();
+    const res = await appFor(NON_ADMIN).request(path, json(method, body));
+    await res.text();
+    expect(fetchMock.mock.calls.length + streamDeployMock.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it("the apps middleware lists apps (200) for a listed id on a private relayUrl", async () => {
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-a");
+    usePrivateRow();
+    const res = await appFor(NON_ADMIN).request("/servers/srv-a/apps");
+    expect(res.status).toBe(200);
+  });
+
+  it("the apps list is refused for the same row when the id is not listed", async () => {
+    usePrivateRow();
+    const res = await appFor(NON_ADMIN).request("/servers/srv-a/apps");
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("private_host");
+  });
+
+  it("a listed id with a hostname that resolves private is exempt too", async () => {
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-a");
+    mServer.findUnique.mockResolvedValue(row({ relayUrl: "http://agent-relay:8222" }));
+    lookupMock.mockResolvedValue([{ address: "172.18.0.5", family: 4 }]);
+    const res = await appFor(NON_ADMIN).request("/servers/srv-a/sync", json("POST", {}));
+    await res.text();
+    expect(fetchMock).toHaveBeenCalled();
+    expect(String(fetchMock.mock.calls[0][0])).toContain("agent-relay:8222");
   });
 });

@@ -19,6 +19,7 @@
  */
 import { promises as dns } from "node:dns";
 import { BlockList, isIPv4, isIPv6 } from "node:net";
+import { config } from "../config/index.js";
 // Ranges a non-admin may never reach. Kept in `net.BlockList` objects so the
 // membership test is done on parsed addresses, not on string prefixes.
 const BLOCKED_V4: ReadonlyArray<readonly [string, number]> = [
@@ -195,6 +196,13 @@ export type ServerTargetCheck =
  * that does not parse is denied (fail closed) because the fetch would
  * fail on it anyway.
  *
+ * `storedServerId` is the id of the stored server row the targets were read
+ * from. A row whose id is listed in `TRUSTED_RELAY_SERVER_IDS` skips the
+ * check, because the operator chose it as a known-good relay (for example one
+ * on the panel's own Docker network). Pass it only at use sites; write paths
+ * (registration, PATCH, installer output) pass nothing, so a trusted id cannot
+ * be repointed at another internal target through the API.
+ *
  * TOCTOU: the check resolves the name itself, and the later SSH/fetch
  * resolves it again, so a record that flips between the two is not
  * covered. See `assertHostAllowedForNonAdmin` for the DNS-failure
@@ -203,8 +211,12 @@ export type ServerTargetCheck =
 export async function assertServerTargetsAllowed(
   actor: { isAdmin: boolean },
   targets: { host?: string | null; relayUrl?: string | null },
+  storedServerId?: string,
 ): Promise<ServerTargetCheck> {
   if (actor.isAdmin) return { ok: true };
+  if (storedServerId && config.TRUSTED_RELAY_SERVER_IDS.includes(storedServerId)) {
+    return { ok: true };
+  }
 
   if (targets.host) {
     const hostCheck = await assertHostAllowedForNonAdmin(targets.host);
