@@ -58,6 +58,7 @@ import { prisma } from "../src/lib/prisma.js";
 import { config } from "../src/config/index.js";
 import { appsRouter } from "../src/routes/apps.js";
 import { syncRouter } from "../src/routes/sync.js";
+import { guardedFetch } from "../src/lib/guarded-fetch.js";
 import { v1Router } from "../src/routes/v1.js";
 
 const mServer = prisma.server as unknown as {
@@ -201,6 +202,34 @@ describe("the same rows for an admin, and public rows for a non-admin", () => {
     await res.text();
     expect(fetchMock).toHaveBeenCalled();
     expect(String(fetchMock.mock.calls[0][0])).toContain("relay.example.com");
+  });
+
+  it.each([
+    ["apps GET env", "GET", "/servers/srv-a/apps/myapp/env"],
+    ["v1 GET logs", "GET", "/v1/logs?server=vps-a&app=myapp"],
+    ["sync POST", "POST", "/servers/srv-a/sync"],
+  ] as Array<[string, string, string]>)("%s: the relay of an owned row goes through the guarded transport for a non-admin, not for an admin", async (_l, method, path) => {
+    await (await appFor(NON_ADMIN).request(path, json(method, method === "POST" ? {} : undefined))).text();
+    expect(guardedFetch).toHaveBeenCalled();
+    expect(String(vi.mocked(guardedFetch).mock.calls[0][0])).toContain("relay.example.com");
+
+    vi.mocked(guardedFetch).mockClear();
+    fetchMock.mockClear();
+    await (await appFor(ADMIN).request(path, json(method, method === "POST" ? {} : undefined))).text();
+    expect(fetchMock).toHaveBeenCalled();
+    expect(guardedFetch).not.toHaveBeenCalled();
+  });
+
+  it("apps GET upstream: the relay listing of an owned row is guarded for a non-admin, not for an admin", async () => {
+    const findMany = (prisma.app as unknown as { findMany: ReturnType<typeof vi.fn> }).findMany;
+    findMany.mockResolvedValueOnce([{ name: "myapp" }]);
+    await (await appFor(NON_ADMIN).request("/servers/srv-a/apps/upstream")).text();
+    expect(guardedFetch).toHaveBeenCalledTimes(1);
+
+    vi.mocked(guardedFetch).mockClear();
+    findMany.mockResolvedValueOnce([{ name: "myapp" }]);
+    await (await appFor(ADMIN).request("/servers/srv-a/apps/upstream")).text();
+    expect(guardedFetch).not.toHaveBeenCalled();
   });
 
   it("v1 POST deploy hands a public relayUrl to streamDeploy for a non-admin", async () => {

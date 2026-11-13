@@ -259,9 +259,9 @@ describe("streamDeploy", () => {
     body: {},
   };
 
-  it("with connectGuard it never reaches a relay that resolves private and takes the connection-lost path", async () => {
-    _setConnectResolver(stubResolver([PRIVATE]).fn);
-    await streamDeploy({ ...base, relayUrl: `http://relay.flip.test:${relayUrlBase}`, connectGuard: true });
+  it("with connectGuard it never reaches a relay on a private name and takes the connection-lost path", async () => {
+    // `localhost` resolves on this machine, so only the guard keeps it from the listener
+    await streamDeploy({ ...base, relayUrl: `http://localhost:${relayUrlBase}`, connectGuard: true });
     expect(hits).toBe(0);
     expect(recoverBrokenDeploy).toHaveBeenCalledTimes(1);
   });
