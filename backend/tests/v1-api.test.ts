@@ -382,6 +382,168 @@ describe("v1 GET /deploys — ownership filtering", () => {
   });
 });
 
+// GET /deploys?app=<name>: filters by the related App's NAME (app_id stays
+// the id filter). App.name is unique per server, not globally (schema.prisma),
+// so without server_id several same-named apps on different servers all
+// match; with server_id the match is that server's app of that name.
+describe("v1 GET /deploys - app name filter", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function deployRows(spec: Array<{ id: string; appName: string; serverId: string; serverUserId: string }>) {
+    return spec.map((s) => ({
+      id: s.id,
+      serverId: s.serverId,
+      appId: `app-${s.serverId}-${s.appName}`,
+      status: "success",
+      commitBefore: null,
+      commitAfter: null,
+      duration: null,
+      log: null,
+      triggeredBy: "panel",
+      createdAt: new Date(),
+      app: { name: s.appName },
+      server: { name: s.serverId },
+      _serverUserId: s.serverUserId,
+    }));
+  }
+
+  // findMany/count pair honouring the where parts these tests pin:
+  // serverId, appId, app.name and the server.userId ownership scope.
+  function mockDeployQuery(rows: ReturnType<typeof deployRows>) {
+    const match = (args: any) => {
+      const where = args?.where ?? {};
+      return rows.filter((r) =>
+        (where.serverId === undefined || r.serverId === where.serverId) &&
+        (where.appId === undefined || r.appId === where.appId) &&
+        (where.app === undefined || r.app.name === where.app.name) &&
+        (where.server === undefined || r._serverUserId === where.server.userId),
+      );
+    };
+    mDeploy.findMany.mockImplementation((args: any) => Promise.resolve(match(args)));
+    mDeploy.count.mockImplementation((args: any) => Promise.resolve(match(args).length));
+  }
+
+  it("?app=<name> with two apps on one server: only the named app's deploys come back", async () => {
+    mockDeployQuery(deployRows([
+      { id: "d1", appName: "alpha", serverId: "srv-a", serverUserId: "user-a" },
+      { id: "d2", appName: "beta", serverId: "srv-a", serverUserId: "user-a" },
+      { id: "d3", appName: "alpha", serverId: "srv-a", serverUserId: "user-a" },
+    ]));
+
+    const res = await appFor({ userId: null, isAdmin: true }).request("/deploys?app=alpha");
+    const body = (await res.json()) as { deploys: Array<{ id: string; app: string }>; total: number };
+
+    expect(res.status).toBe(200);
+    expect(body.deploys.map((d) => d.id)).toEqual(["d1", "d3"]);
+    expect(body.deploys.every((d) => d.app === "alpha")).toBe(true);
+    expect(body.total).toBe(2);
+    const where = mDeploy.findMany.mock.calls[0][0].where;
+    expect(where.app).toEqual({ name: "alpha" });
+    expect(where.appId).toBeUndefined();
+  });
+
+  it("same name on two servers, no server_id: matches across servers (documented cross-server behaviour)", async () => {
+    mockDeployQuery(deployRows([
+      { id: "d1", appName: "alpha", serverId: "srv-a", serverUserId: "user-a" },
+      { id: "d2", appName: "alpha", serverId: "srv-b", serverUserId: "user-a" },
+    ]));
+
+    const res = await appFor({ userId: null, isAdmin: true }).request("/deploys?app=alpha");
+    const body = (await res.json()) as { deploys: Array<{ id: string }>; total: number };
+
+    expect(res.status).toBe(200);
+    expect(body.deploys.map((d) => d.id)).toEqual(["d1", "d2"]);
+    expect(body.total).toBe(2);
+    const where = mDeploy.findMany.mock.calls[0][0].where;
+    expect(where.app).toEqual({ name: "alpha" });
+    expect(where.serverId).toBeUndefined();
+  });
+
+  it("same name on two servers, with server_id: only that server's deploys", async () => {
+    mockDeployQuery(deployRows([
+      { id: "d1", appName: "alpha", serverId: "srv-a", serverUserId: "user-a" },
+      { id: "d2", appName: "alpha", serverId: "srv-b", serverUserId: "user-a" },
+    ]));
+    mServer.findFirst.mockResolvedValue(ownedServer);
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploys?app=alpha&server_id=srv-a");
+    const body = (await res.json()) as { deploys: Array<{ id: string }>; total: number };
+
+    expect(res.status).toBe(200);
+    expect(body.deploys.map((d) => d.id)).toEqual(["d1"]);
+    expect(body.total).toBe(1);
+    const where = mDeploy.findMany.mock.calls[0][0].where;
+    expect(where.app).toEqual({ name: "alpha" });
+    expect(where.serverId).toBe("srv-a");
+  });
+
+  it("app + app_id together: 400 bad_request, no query issued", async () => {
+    const res = await appFor({ userId: null, isAdmin: true }).request("/deploys?app=alpha&app_id=app-a");
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("bad_request");
+    expect(mDeploy.findMany).not.toHaveBeenCalled();
+    expect(mDeploy.count).not.toHaveBeenCalled();
+  });
+
+  it("app that violates APP_NAME_PATTERN: 400 bad_request, no query issued", async () => {
+    const res = await appFor({ userId: null, isAdmin: true }).request("/deploys?app=../etc");
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("bad_request");
+    expect(mDeploy.findMany).not.toHaveBeenCalled();
+  });
+
+  it("non-admin with app: the server ownership scope still applies (only own servers' deploys)", async () => {
+    mockDeployQuery(deployRows([
+      { id: "d1", appName: "alpha", serverId: "srv-a", serverUserId: "user-a" },
+      { id: "d2", appName: "alpha", serverId: "srv-b", serverUserId: "user-b" },
+    ]));
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploys?app=alpha");
+    const body = (await res.json()) as { deploys: Array<{ id: string }>; total: number };
+
+    expect(res.status).toBe(200);
+    expect(body.deploys.map((d) => d.id)).toEqual(["d1"]);
+    expect(body.total).toBe(1);
+    const where = mDeploy.findMany.mock.calls[0][0].where;
+    expect(where.server).toEqual({ userId: "user-a" });
+    expect(where.app).toEqual({ name: "alpha" });
+  });
+
+  it("non-admin WITHOUT userId plus app: __no_access__ scope still applies", async () => {
+    mockDeployQuery(deployRows([
+      { id: "d1", appName: "alpha", serverId: "srv-a", serverUserId: "user-a" },
+    ]));
+
+    const res = await appFor({ userId: null, isAdmin: false }).request("/deploys?app=alpha");
+    const body = (await res.json()) as { deploys: Array<{ id: string }>; total: number };
+
+    expect(res.status).toBe(200);
+    expect(body.deploys).toEqual([]);
+    expect(body.total).toBe(0);
+    expect(mDeploy.findMany.mock.calls[0][0].where.server).toEqual({ userId: "__no_access__" });
+  });
+
+  it("unknown query parameters are ignored, not an error", async () => {
+    mockDeployQuery(deployRows([
+      { id: "d1", appName: "alpha", serverId: "srv-a", serverUserId: "user-a" },
+    ]));
+
+    const res = await appFor({ userId: null, isAdmin: true }).request("/deploys?app=alpha&bogus=1&app_extra=x");
+    const body = (await res.json()) as { deploys: Array<{ id: string }> };
+
+    expect(res.status).toBe(200);
+    expect(body.deploys.map((d) => d.id)).toEqual(["d1"]);
+    const where = mDeploy.findMany.mock.calls[0][0].where;
+    expect(Object.keys(where).sort()).toEqual(["app"]);
+  });
+});
+
 // ── POST /deploy ──────────────────────────────────────────────────────────────
 
 describe("v1 POST /deploy — core flow and ownership", () => {
@@ -744,7 +906,7 @@ describe("v1 POST /rollback — owned server flow", () => {
     const res = await appFor({ userId: "user-a", isAdmin: false }).request("/rollback", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ server: "my-server", app: "my-app", to_commit: "abc123" }),
+      body: JSON.stringify({ server: "my-server", app: "my-app", to_commit: "abc1234" }),
     });
 
     expect(res.status).toBe(202);
@@ -759,6 +921,8 @@ describe("v1 POST /rollback — owned server flow", () => {
     const relayArg = vi.mocked(relayRequest).mock.calls[0][0];
     expect(relayArg.path).toBe("/api/apps/my-app/rollback");
     expect(relayArg.headers).toEqual({ "X-Deploy-Id": "rollback-1" });
+    // A valid abbreviated sha is forwarded to the relay unchanged.
+    expect(relayArg.body).toEqual({ to_commit: "abc1234" });
   });
 
   it("non-owned server: 404, no deploy created", async () => {
@@ -773,6 +937,76 @@ describe("v1 POST /rollback — owned server flow", () => {
     expect(res.status).toBe(404);
     expect(mDeploy.create).not.toHaveBeenCalled();
     expect(relayRequest).not.toHaveBeenCalled();
+  });
+});
+
+// A present but malformed to_commit (anything that is not 7-40 hex chars,
+// the empty string included: present-but-invalid, not "absent") answers
+// 400 bad_request before anything is stored or the relay is called. An
+// absent to_commit keeps the pre-existing behaviour (previous version).
+// Ref reachability stays the relay's job: a well-formed but unreachable
+// sha ends as a failed row with the relay's before_reset message (see the
+// RelayError describe block below).
+describe("v1 POST /rollback: to_commit validation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mServer.findFirst.mockResolvedValue(ownedServer);
+    mApp.findUnique.mockResolvedValue(appRecord);
+    mDeploy.create.mockResolvedValue({ id: "rollback-1", status: "running", serverId: "srv-a", appId: "app-a" });
+    mDeploy.update.mockResolvedValue({});
+  });
+
+  async function postRollback(body: Record<string, unknown>) {
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    return res;
+  }
+
+  it.each<unknown>(["", "abc123", "zzzzzzz", "HEAD~1", "a".repeat(41), "1234567; rm -rf", 1234567, ["abcdef1"], null])(
+    "present but malformed to_commit %j: 400 bad_request, nothing stored, relay not called",
+    async (to_commit) => {
+      const res = await postRollback({ server: "my-server", app: "my-app", to_commit });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string; message: string };
+      expect(body.error).toBe("bad_request");
+      expect(mDeploy.create).not.toHaveBeenCalled();
+      expect(relayRequest).not.toHaveBeenCalled();
+    },
+  );
+
+  it("valid abbreviated sha (7 hex chars) is accepted and forwarded to the relay unchanged", async () => {
+    vi.mocked(relayRequest).mockResolvedValue({ success: true, commitBefore: "abc1234", commitAfter: "1234567" });
+
+    const res = await postRollback({ server: "my-server", app: "my-app", to_commit: "abc1234" });
+
+    expect(res.status).toBe(202);
+    expect(relayRequest).toHaveBeenCalledOnce();
+    expect(vi.mocked(relayRequest).mock.calls[0][0].body).toEqual({ to_commit: "abc1234" });
+  });
+
+  it("valid full 40-hex-char sha is accepted", async () => {
+    vi.mocked(relayRequest).mockResolvedValue({ success: true });
+
+    const res = await postRollback({ server: "my-server", app: "my-app", to_commit: "a".repeat(40) });
+
+    expect(res.status).toBe(202);
+    expect(vi.mocked(relayRequest).mock.calls[0][0].body).toEqual({ to_commit: "a".repeat(40) });
+  });
+
+  it("to_commit absent: unchanged behaviour, the relay gets no to_commit value", async () => {
+    vi.mocked(relayRequest).mockResolvedValue({ success: true });
+
+    const res = await postRollback({ server: "my-server", app: "my-app" });
+
+    expect(res.status).toBe(202);
+    expect(mDeploy.create).toHaveBeenCalledOnce();
+    expect(relayRequest).toHaveBeenCalledOnce();
+    expect((vi.mocked(relayRequest).mock.calls[0][0].body as { to_commit?: string }).to_commit).toBeUndefined();
   });
 });
 
