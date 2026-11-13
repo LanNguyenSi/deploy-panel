@@ -18,7 +18,7 @@
     "@hono/node-server": "^2.1.8",
     "@hono/zod-validator": "^0.9.1",
     "@prisma/client": "^5.22.0",
-    "hono": "^4.13.7",
+    "hono": "^4.13.18",
     "prisma": "^5.22.0",
     "ssh2": "^1.17.0",
     "zod": "^4.6.7"
