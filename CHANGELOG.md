@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- The unauthenticated API endpoints no longer accept unbounded request bodies and `/api/auth/check` no longer compares credentials with `===`. Hono's `bodyLimit` now caps every `/api/*` request body at 1 MiB before any route reads it (over the limit: `413` with the app's `{ error, message }` envelope, `error: "payload_too_large"`; no route legitimately needs more: the largest documented bodies are the 500-entry app env replace, the 50-app bulk deploy and per-key secrets), the login token field is additionally capped at 1024 characters, and `/api/auth/check` compares the `panel_session` cookie value and the Bearer token against `PANEL_TOKEN` through the same constant-time `safeCompare` `/login` already used, now hashing both sides with SHA-256 so the buffers it compares always share a length (a wrong value with the same string length as the token but a different UTF-8 byte length, e.g. one holding a multi-byte character, used to throw inside `timingSafeEqual` and answer 500; the cookie comparison also no longer truncates at a second `=`, so `panel_session=<token>=x` is refused). Tests: `backend/tests/api-body-limit.test.ts` and `backend/tests/auth-check-constant-time.test.ts`.
+
 ### Added
 
 - The servers page can reopen the live log of a running deploy. Each deploying app's row now shows a `View progress` button next to its disabled Deploy button: it opens that app's deploy panel again even after another app's deploy moved the panel away, and after the panel was closed it shows a "deploy running" placeholder until that app's own poll chain writes its real log again. It never starts a deploy.

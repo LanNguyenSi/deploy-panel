@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { healthRouter } from "./routes/health.js";
@@ -12,6 +13,13 @@ import { scheduledRouter } from "./routes/scheduled.js";
 import { v1Router } from "./routes/v1.js";
 import { apiKeysRouter } from "./routes/api-keys.js";
 import { requireAuth, requirePanelAuth } from "./middleware/auth.js";
+
+// One cap for every /api/* request body. /api/auth/login and /api/auth/check
+// answer without authentication, so an uncapped body grows the heap. No
+// route legitimately needs more: the largest documented bodies are the app
+// env replace (ENV_MAX_ENTRIES = 500 entries in routes/apps.ts), the
+// bulk-deploy list (50 app names) and per-key secrets, all far under 1 MiB.
+export const MAX_API_REQUEST_BODY_BYTES = 1024 * 1024;
 
 export function createApp(corsOrigins: string) {
   const app = new Hono();
@@ -29,6 +37,15 @@ export function createApp(corsOrigins: string) {
     cors({
       origin: corsOrigins.split(",").map((s) => s.trim()),
       credentials: true,
+    }),
+  );
+
+  app.use(
+    "/api/*",
+    bodyLimit({
+      maxSize: MAX_API_REQUEST_BODY_BYTES,
+      onError: (c) =>
+        c.json({ error: "payload_too_large", message: "Request body exceeds 1 MiB" }, 413),
     }),
   );
 
