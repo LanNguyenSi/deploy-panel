@@ -291,7 +291,6 @@ export function assessTargetReachedWithEntry(
   return assessEntryOutcome(entry, head);
 }
 
-/** A full or abbreviated commit sha, the only explicit rollback target the check can compare. */
 /**
  * A full or abbreviated commit sha (7 to 40 hex characters). Shared with the
  * rollback routes, which reject any other `to_commit` with 400, so a rollback
