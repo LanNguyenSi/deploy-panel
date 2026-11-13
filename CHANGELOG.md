@@ -54,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - The examples in `action/README.md` now pin the composite action to a release tag instead of the moving `main` ref, and a new "Pinning and updates" section explains tag pins (or the tag's commit SHA for a stricter pin) and automatic bumps via Renovate's `github-actions` manager or Dependabot's `github-actions` ecosystem. The dashboard example in `README.md` now mirrors what the dashboard actually renders (the status panel line, the totals line, "Recent Deploys" rows with a time-ago stamp) and points to `/deploys` for commit ranges.
 
+### Security
+
+- **`@hono/node-server` 2.1.8** (GHSA-jpvv-r467-5p4w): `backend/package.json` now requires `^2.1.8` and both lockfiles (root and `mcp/`) resolve 2.1.8 (was 2.1.5), which answers a request path containing a raw backslash with 400 instead of treating the backslash as `/`.
+
 ## [0.8.0] - 2026-11-01
 
 ### Security
