@@ -230,6 +230,23 @@ describe("scheduled POST / — create", () => {
     expect(mScheduled.create).not.toHaveBeenCalled();
   });
 
+  // A non-string `app` must fail the presence check, not reach the name
+  // regex (which coerces 123 to "123" and accepts it) and then Prisma,
+  // which would 500 on a non-string appName.
+  it("non-string app (123): 400 bad_request, no server lookup or row created", async () => {
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: 123, scheduledFor: futureDate }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("bad_request");
+    expect(mServer.findFirst).not.toHaveBeenCalled();
+    expect(mScheduled.create).not.toHaveBeenCalled();
+  });
+
   it("valid app name containing a dot: creates the row", async () => {
     mServer.findFirst.mockResolvedValue(ownedServer);
     mScheduled.create.mockResolvedValue({

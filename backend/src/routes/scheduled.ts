@@ -32,7 +32,9 @@ scheduledRouter.post("/", async (c) => {
     server?: string; app?: string; scheduledFor?: string; force?: boolean;
   };
 
-  if (!server || !app || !scheduledFor) {
+  // The typeof arm matters: `app: 123` reaches isValidAppName, whose regex
+  // coerces it to "123" and passes, then Prisma, which 500s on a non-string.
+  if (!server || !app || typeof app !== "string" || !scheduledFor) {
     return c.json({ error: "bad_request", message: "server, app, and scheduledFor are required" }, 400);
   }
 

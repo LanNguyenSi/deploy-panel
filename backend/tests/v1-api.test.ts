@@ -455,6 +455,40 @@ describe("v1 POST /deploy — core flow and ownership", () => {
     expect(mDeploy.create).not.toHaveBeenCalled();
     expect(streamDeploy).not.toHaveBeenCalled();
   });
+
+  // Behaviour-level pin of the shared APP_NAME_PATTERN guard (the pattern
+  // lives in lib/app-name.ts): the v1 route accepts names with dots and
+  // rejects names starting with a dot or an underscore.
+  it("app name containing a dot (my.app): accepted, deploy proceeds", async () => {
+    mServer.findFirst.mockResolvedValue(ownedServer);
+    mApp.findUnique.mockResolvedValue({ ...appRecord, name: "my.app" });
+    mDeploy.create.mockResolvedValue({ id: "deploy-1", status: "running", serverId: "srv-a", appId: "app-a" });
+    mApp.update.mockResolvedValue({});
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: "my.app" }),
+    });
+
+    expect(res.status).toBe(202);
+    expect(mDeploy.create).toHaveBeenCalledOnce();
+    expect(streamDeploy).toHaveBeenCalledOnce();
+  });
+
+  it.each([".hidden", "_x"])("app name %j (leading dot or underscore): 400, no deploy/relay side effects", async (app) => {
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("bad_request");
+    expect(mDeploy.create).not.toHaveBeenCalled();
+    expect(streamDeploy).not.toHaveBeenCalled();
+  });
 });
 
 // ── GET /deploy/:id ───────────────────────────────────────────────────────────

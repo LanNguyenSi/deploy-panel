@@ -22,10 +22,13 @@ vi.mock("../src/lib/post-deploy-gate.js", () => ({
 
 import { streamDeploy } from "../src/lib/stream-deploy.js";
 
-// appName is interpolated into the relay deploy URL. `POST /api/scheduled`
-// and the v1 routes now validate names, but a ScheduledDeploy row stored
-// before that guard can carry anything, so streamDeploy must encode the
-// name itself rather than let it rewrite the URL path.
+// appName is interpolated into the relay deploy URL, so streamDeploy encodes
+// the name itself rather than let it rewrite the URL path. This encoding
+// protects this one call only: `..` and `.` pass through encodeURIComponent
+// unchanged, so traversal-style names are stopped upstream instead — the
+// scheduler guard cancels ScheduledDeploy rows stored before
+// `POST /api/scheduled` started validating names, and the v1 routes reject
+// them at the request.
 async function firstFetchUrl(appName: string): Promise<string> {
   const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
     ok: false,

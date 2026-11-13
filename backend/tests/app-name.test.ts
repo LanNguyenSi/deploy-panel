@@ -27,7 +27,7 @@ describe("routes/v1.ts consumes the shared app-name module", () => {
   const src = readFileSync(new URL("../src/routes/v1.ts", import.meta.url), "utf8");
 
   it("imports APP_NAME_PATTERN from lib/app-name.js", () => {
-    expect(src).toContain('import { APP_NAME_PATTERN } from "../lib/app-name.js";');
+    expect(src).toMatch(/import\s*\{[^}]*\bAPP_NAME_PATTERN\b[^}]*\}\s*from\s*"\.\.\/lib\/app-name\.js"/);
   });
 
   it("no longer declares its own APP_NAME_PATTERN", () => {

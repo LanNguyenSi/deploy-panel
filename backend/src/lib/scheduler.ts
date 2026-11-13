@@ -2,6 +2,7 @@ import { prisma } from "./prisma.js";
 import { streamDeploy } from "./stream-deploy.js";
 import { recoverStuckDeploys } from "./startup.js";
 import { assertServerTargetsAllowed } from "../services/probe-guard.js";
+import { isValidAppName } from "./app-name.js";
 
 const CHECK_INTERVAL = 60_000; // 1 minute
 
@@ -48,6 +49,21 @@ export async function checkScheduled() {
   });
 
   for (const entry of due) {
+    // A ScheduledDeploy row stored before `POST /api/scheduled` started
+    // validating names can still carry a hostile app name (e.g. `../x`),
+    // which the upsert below would put straight into an app row path and
+    // streamDeploy into the relay URL. Cancel such an entry on sight: no
+    // App row, no Deploy row, no relay call. The raw name is only ever
+    // echoed into this log line, never trusted for anything else.
+    if (!isValidAppName(entry.appName)) {
+      await prisma.scheduledDeploy.update({
+        where: { id: entry.id },
+        data: { status: "cancelled" },
+      });
+      console.warn(`[scheduler] Cancelled scheduled deploy ${entry.id}: app name ${JSON.stringify(entry.appName)} is not a safe path segment`);
+      continue;
+    }
+
     console.log(`[scheduler] Triggering scheduled deploy: ${entry.appName} on ${entry.server.name}`);
 
     // Mark as triggered
