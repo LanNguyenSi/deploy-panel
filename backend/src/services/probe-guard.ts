@@ -101,6 +101,63 @@ export async function assertHostAllowedForNonAdmin(
   return { ok: true };
 }
 
+export type ServerTargetCheck =
+  | { ok: true }
+  | {
+      ok: false;
+      /** Which stored target the guard denied. */
+      field: "host" | "relayUrl";
+      reason: "literal" | "resolved_private";
+    };
+
+/**
+ * Single enforcement point for "may this actor make the panel connect to
+ * this server's SSH host or relay URL". Used at registration (POST/PATCH
+ * `/api/servers`) and again right before every SSH to `host` or fetch of
+ * `relayUrl` in the per-id routes, because rows created before the
+ * registration check existed, or a DNS change after creation, are not
+ * covered by the registration check alone.
+ *
+ * Admins are never filtered (no DNS lookup either). For non-admins only
+ * the targets the caller passes are checked, so an SSH-only route does
+ * not need a valid relay URL and a fetch-only route does not need a
+ * valid host. A `null`/`undefined`/empty target is skipped; a `relayUrl`
+ * that does not parse is denied (fail closed) because the fetch would
+ * fail on it anyway.
+ *
+ * TOCTOU: the check resolves the name itself, and the later SSH/fetch
+ * resolves it again, so a record that flips between the two is not
+ * covered. See `assertHostAllowedForNonAdmin` for the DNS-failure
+ * pass-through.
+ */
+export async function assertServerTargetsAllowed(
+  actor: { isAdmin: boolean },
+  targets: { host?: string | null; relayUrl?: string | null },
+): Promise<ServerTargetCheck> {
+  if (actor.isAdmin) return { ok: true };
+
+  if (targets.host) {
+    const hostCheck = await assertHostAllowedForNonAdmin(targets.host);
+    if (!hostCheck.ok) return { ok: false, field: "host", reason: hostCheck.reason };
+  }
+
+  if (targets.relayUrl) {
+    let hostname: string;
+    try {
+      hostname = new URL(targets.relayUrl).hostname;
+    } catch {
+      return { ok: false, field: "relayUrl", reason: "literal" };
+    }
+    // WHATWG URL keeps the brackets on IPv6 literals; DNS and the
+    // literal check want the bare address.
+    const bare = hostname.replace(/^\[|\]$/g, "");
+    const relayCheck = await assertHostAllowedForNonAdmin(bare);
+    if (!relayCheck.ok) return { ok: false, field: "relayUrl", reason: relayCheck.reason };
+  }
+
+  return { ok: true };
+}
+
 const PROBE_RATE_WINDOW_MS = 60_000;
 const PROBE_RATE_MAX = 5;
 const PROBE_PRUNE_EVERY = 100;

@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { validatedJson } from "../lib/validator.js";
@@ -6,6 +6,7 @@ import { urlV3 } from "../lib/zod-url.js";
 import { prisma } from "../lib/prisma.js";
 import { audit, getActor, getActorUserId } from "../lib/audit.js";
 import {
+  type ActorContext,
   findOwnedServer,
   getActorContext,
   serverOwnershipWhere,
@@ -23,7 +24,11 @@ import {
   readRelaySelfUpdateOutcome,
   type RelayRecordOutcome,
 } from "../services/relay-self-update.js";
-import { assertHostAllowedForNonAdmin, consumeProbeQuota } from "../services/probe-guard.js";
+import {
+  assertHostAllowedForNonAdmin,
+  assertServerTargetsAllowed,
+  consumeProbeQuota,
+} from "../services/probe-guard.js";
 import {
   computeRelayOutdated,
   fetchRelayHealth,
@@ -46,6 +51,34 @@ function sanitizeServer(server: any) {
 }
 
 export const serversRouter = new Hono();
+
+/**
+ * Non-admin target guard for the routes that store or use a server's SSH
+ * host or relay URL. Returns the 400 `private_host` response when the
+ * actor is a non-admin and a passed target is private/loopback (literal
+ * or resolved); returns null when the route may continue. Admins always
+ * pass. Pass only the targets the route actually connects to.
+ */
+async function denyPrivateServerTargets(
+  c: Context,
+  actor: ActorContext,
+  targets: { host?: string | null; relayUrl?: string | null },
+): Promise<Response | null> {
+  const check = await assertServerTargetsAllowed(actor, targets);
+  if (check.ok) return null;
+  const subject = check.field === "host" ? "host" : "relayUrl host";
+  return c.json(
+    {
+      error: "private_host",
+      field: check.field,
+      message:
+        check.reason === "literal"
+          ? `non-admin actors cannot use a private/loopback ${subject}`
+          : `${subject} resolves to a private/loopback address`,
+    },
+    400,
+  );
+}
 
 export const createServerSchema = z.object({
   name: z.string().min(1).max(100),
@@ -89,6 +122,12 @@ serversRouter.post("/", validatedJson(createServerSchema), async (c) => {
   const actor = getActorContext(c);
   const data = c.req.valid("json");
 
+  const denied = await denyPrivateServerTargets(c, actor, {
+    host: data.host,
+    relayUrl: data.relayUrl,
+  });
+  if (denied) return denied;
+
   const existing = await prisma.server.findUnique({ where: { host: data.host } });
   if (existing) {
     return c.json({ error: "conflict", message: "Server with this host already exists" }, 409);
@@ -116,6 +155,14 @@ serversRouter.patch("/:id", validatedJson(updateServerSchema), async (c) => {
   const owned = await findOwnedServer(actor, id);
   if (!owned) return c.json({ error: "not_found" }, 404);
   const data = c.req.valid("json");
+
+  // Only the fields this PATCH changes; rows that already hold a private
+  // target are caught at their use sites.
+  const denied = await denyPrivateServerTargets(c, actor, {
+    host: data.host,
+    relayUrl: data.relayUrl,
+  });
+  if (denied) return denied;
 
   try {
     const server = await prisma.server.update({ where: { id }, data });
@@ -146,6 +193,9 @@ serversRouter.post("/:id/test", async (c) => {
   const actor = getActorContext(c);
   const server = await findOwnedServer(actor, c.req.param("id"));
   if (!server) return c.json({ error: "not_found" }, 404);
+
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl });
+  if (denied) return denied;
 
   if (!server.relayUrl) {
     await setServerStatus({ serverId: server.id, status: "no-relay", source: "probe" });
@@ -232,6 +282,9 @@ serversRouter.get("/:id/system", async (c) => {
   const server = await findOwnedServer(actor, c.req.param("id"));
   if (!server) return c.json({ error: "not_found" }, 404);
   if (!server.relayUrl) return c.json({ error: "no_relay" }, 400);
+
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl });
+  if (denied) return denied;
 
   try {
     const headers: Record<string, string> = {};
@@ -658,6 +711,31 @@ serversRouter.post("/install-relay", async (c) => {
         return;
       }
 
+      // The relay URL comes from the installer's stdout, which a host the
+      // non-admin controls can set freely. Apply the registration check
+      // before it is persisted, or a public host could register an
+      // internal relay URL.
+      const relayCheck = await assertServerTargetsAllowed(actor, {
+        relayUrl: parsedOutput.value.relayUrl,
+      });
+      if (!relayCheck.ok) {
+        await audit(
+          "server.install-relay.failed",
+          input.host,
+          "private_host",
+          getActor(c),
+          getActorUserId(c),
+        );
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({
+            kind: "private_host",
+            message: "the installer reported a relay URL on a private/loopback address",
+          }),
+        });
+        return;
+      }
+
       // Token-parse succeeded — create the Server row now.
       // Persist the host-key fingerprint (captured by the wizard's
       // probe and echoed back as `expectedHostKeySha256`) so re-install
@@ -755,6 +833,11 @@ serversRouter.post("/:id/install-relay", async (c) => {
   const actor = getActorContext(c);
   const server = await findOwnedServer(actor, c.req.param("id"));
   if (!server) return c.json({ error: "not_found" }, 404);
+
+  // SSH-only route: the host is the target. The row may predate the
+  // registration check, so re-check here before any SSH.
+  const denied = await denyPrivateServerTargets(c, actor, { host: server.host });
+  if (denied) return denied;
 
   let body: unknown;
   try {
@@ -919,6 +1002,29 @@ serversRouter.post("/:id/install-relay", async (c) => {
           data: JSON.stringify({
             kind: parsedOutput.error.kind,
             message: parsedOutput.error.message,
+          }),
+        });
+        return;
+      }
+
+      // Same check as first install: the installer's relay URL is
+      // host-controlled output and must not reach the row unchecked.
+      const relayCheck = await assertServerTargetsAllowed(actor, {
+        relayUrl: parsedOutput.value.relayUrl,
+      });
+      if (!relayCheck.ok) {
+        await audit(
+          "server.reinstall-relay.failed",
+          `${server.name} (${server.host})`,
+          "private_host",
+          getActor(c),
+          getActorUserId(c),
+        );
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({
+            kind: "private_host",
+            message: "the installer reported a relay URL on a private/loopback address",
           }),
         });
         return;
@@ -1126,6 +1232,14 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
   const actor = getActorContext(c);
   const server = await findOwnedServer(actor, c.req.param("id"));
   if (!server) return c.json({ error: "not_found" }, 404);
+
+  // SSH to the host, then a health fetch of the relay URL: both targets.
+  // Checked once up front, before the SSE stream and any SSH.
+  const denied = await denyPrivateServerTargets(c, actor, {
+    host: server.host,
+    relayUrl: server.relayUrl,
+  });
+  if (denied) return denied;
 
   let body: unknown;
   try {
@@ -1460,6 +1574,9 @@ serversRouter.get("/:id/relay-status", async (c) => {
   const server = await findOwnedServer(actor, c.req.param("id"));
   if (!server) return c.json({ error: "not_found" }, 404);
 
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl });
+  if (denied) return denied;
+
   const status = await getServerRelayStatus(server);
   return c.json(status);
 });
@@ -1485,6 +1602,9 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
       400,
     );
   }
+
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl });
+  if (denied) return denied;
 
   let rawBody: unknown = {};
   const contentType = c.req.header("content-type") ?? "";

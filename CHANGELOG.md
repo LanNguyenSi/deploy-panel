@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- A signed-in non-admin can no longer make the panel connect to private, loopback or link-local addresses through a registered server. The non-admin host restriction that `probe-vps` and the first `install-relay` already applied now also covers server registration and every later use: `POST` and `PATCH /api/servers` reject a `host` or `relayUrl` host that is private, loopback, link-local (including the cloud metadata address) or resolves to one (400 `private_host`, the body names the `field`), and the per-id routes `:id/test`, `:id/system`, `:id/relay-status`, `:id/relay-self-update`, `:id/install-relay` and `:id/update-relay-image` re-check the stored `host` and `relayUrl` before any SSH or relay request, so rows registered before this fix and names whose DNS changed later are rejected too (the relay answers were returned to the caller before). The relay URL a non-admin's installer prints is checked before first install and re-install store it. Admin behaviour is unchanged. The check and the later connection each resolve the name, so a DNS record that flips in between is not covered, and relay calls made by the app, sync and v1 routes still read the stored `relayUrl` without a per-request check.
+
 ### Added
 
 - The servers page can reopen the live log of a running deploy. Each deploying app's row now shows a `View progress` button next to its disabled Deploy button: it opens that app's deploy panel again even after another app's deploy moved the panel away, and after the panel was closed it shows a "deploy running" placeholder until that app's own poll chain writes its real log again. It never starts a deploy.
