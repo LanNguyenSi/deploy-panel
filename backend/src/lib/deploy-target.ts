@@ -292,7 +292,12 @@ export function assessTargetReachedWithEntry(
 }
 
 /** A full or abbreviated commit sha, the only explicit rollback target the check can compare. */
-const COMMIT_SHA_PATTERN = /^[0-9a-f]{7,40}$/i;
+/**
+ * A full or abbreviated commit sha (7 to 40 hex characters). Shared with the
+ * rollback routes, which reject any other `to_commit` with 400, so a rollback
+ * that reaches the relay always names a target this proof can compare.
+ */
+export const COMMIT_SHA_PATTERN = /^[0-9a-f]{7,40}$/i;
 
 /**
  * Decides whether a rollback (recovered after a lost relay connection) really
@@ -314,8 +319,9 @@ const COMMIT_SHA_PATTERN = /^[0-9a-f]{7,40}$/i;
  *
  * What the entry must show about the target depends on the request:
  * - an explicit commit sha (full or abbreviated): commitAfter equals it;
- * - an omitted or symbolic target (HEAD~1; what the UI button and the MCP
- *   client send): the requested commit cannot be compared, so the proof is
+ * - an omitted target (the UI button, and the MCP tool without `to_commit`;
+ *   both rollback routes reject a symbolic value such as HEAD~1 with 400):
+ *   the requested commit cannot be compared, so the proof is
  *   the id-matched entry whose commitAfter differs from its commitBefore (the
  *   rollback moved the repo). That needs an id-capable relay: on any other
  *   relay such a request is never proof.

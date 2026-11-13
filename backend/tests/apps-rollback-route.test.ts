@@ -196,7 +196,7 @@ describe("POST /:name/rollback — agent-relay result shape", () => {
   // reachability stays the relay's job: a well-formed but unreachable sha
   // ends as a failed row with the relay's before_reset message (see the
   // RelayError describe block below).
-  it.each(["", "abc123", "zzzzzzz", "HEAD~1", "a".repeat(41), "1234567; rm -rf"])(
+  it.each<unknown>(["", "abc123", "zzzzzzz", "HEAD~1", "a".repeat(41), "1234567; rm -rf", 1234567, ["abcdef1"], null])(
     "present but malformed to_commit %j: 400 bad_request, nothing stored, relay not called",
     async (to_commit) => {
       const res = await app().request("/servers/srv-a/apps/my-app/rollback", {

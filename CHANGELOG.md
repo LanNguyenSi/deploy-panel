@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Both rollback routes (`POST /api/v1/rollback` and `POST /api/servers/:serverId/apps/:name/rollback`) now answer 400 for a `to_commit` that is not a 7 to 40 character hex sha. Values the panel used to forward to the relay are rejected: a symbolic ref such as `HEAD~1`, a 4 to 6 character sha, an empty string, `null`, and non-string values. Omit `to_commit` to roll back to the previous version.
 - Dependency updates: `renovate.json` extends the shared `github>LanNguyenSi/renovate-config` preset (weekly grouped patch/minor pull requests, 7-day minimum release age, no automerge, majors only through the Dependency Dashboard).
 
 ### Docs

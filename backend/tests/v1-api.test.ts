@@ -966,7 +966,7 @@ describe("v1 POST /rollback: to_commit validation", () => {
     return res;
   }
 
-  it.each(["", "abc123", "zzzzzzz", "HEAD~1", "a".repeat(41), "1234567; rm -rf"])(
+  it.each<unknown>(["", "abc123", "zzzzzzz", "HEAD~1", "a".repeat(41), "1234567; rm -rf", 1234567, ["abcdef1"], null])(
     "present but malformed to_commit %j: 400 bad_request, nothing stored, relay not called",
     async (to_commit) => {
       const res = await postRollback({ server: "my-server", app: "my-app", to_commit });

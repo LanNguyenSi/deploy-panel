@@ -893,12 +893,12 @@ describe("deploy_rollback", () => {
       jsonResponse({ deploy: { id: "d9", status: "running", server: "s", app: "a", triggeredBy: "agent" } }),
     );
 
-    const result = await cb({ server: "s", app: "a", to_commit: "abc1234", wait: false });
+    const result = await cb({ server: "s", app: "a", to_commit: "0123456789abcdef0123456789abcdef01234567", wait: false });
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, init] = fetchSpy.mock.calls[0];
     expect(url).toBe(`${API_URL}/api/v1/rollback`);
-    expect(init?.body).toBe(JSON.stringify({ server: "s", app: "a", to_commit: "abc1234" }));
+    expect(init?.body).toBe(JSON.stringify({ server: "s", app: "a", to_commit: "0123456789abcdef0123456789abcdef01234567" }));
     expect(textOf(result)).toEqual({ message: "Rollback started", deployId: "d9", status: "running" });
   });
 

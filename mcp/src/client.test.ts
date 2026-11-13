@@ -141,8 +141,8 @@ describe("DeployPanelClient.rollback", () => {
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok());
 
-    await client.rollback("prod-1", "my-app", "abc1234");
-    expect(fetchSpy.mock.calls[0][1]?.body).toBe(JSON.stringify({ server: "prod-1", app: "my-app", to_commit: "abc1234" }));
+    await client.rollback("prod-1", "my-app", "0123456789abcdef0123456789abcdef01234567");
+    expect(fetchSpy.mock.calls[0][1]?.body).toBe(JSON.stringify({ server: "prod-1", app: "my-app", to_commit: "0123456789abcdef0123456789abcdef01234567" }));
 
     await client.rollback("prod-1", "my-app");
     expect(fetchSpy.mock.calls[1][1]?.body).toBe(JSON.stringify({ server: "prod-1", app: "my-app" }));
