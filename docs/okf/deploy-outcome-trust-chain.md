@@ -107,7 +107,7 @@ Deploying deploy-panel's own backend kills the backend process mid-HTTP-response
 
 ## Scheduled deploys share the exact same path
 
-`checkScheduled` (`backend/src/lib/scheduler.ts:38-106`) calls `streamDeploy` directly (scheduler.ts:93-104) rather than hitting the relay via a second, divergent call. The comment at scheduler.ts:83-92 documents why: an earlier version called the relay directly from the scheduler and skipped BOTH the pre-deploy secret provisioning and the required-env hard-fail gate, so a scheduled deploy could reach the relay with a required key missing. Routing scheduled deploys through `streamDeploy` means they get the same secret provisioning, the same three-shape relay handling, and the same trust chain described above — one implementation, not two.
+`checkScheduled` (`backend/src/lib/scheduler.ts:39-136`) calls `streamDeploy` directly (scheduler.ts:123-134) rather than hitting the relay via a second, divergent call. The comment at scheduler.ts:113-122 documents why: an earlier version called the relay directly from the scheduler and skipped BOTH the pre-deploy secret provisioning and the required-env hard-fail gate, so a scheduled deploy could reach the relay with a required key missing. Routing scheduled deploys through `streamDeploy` means they get the same secret provisioning, the same three-shape relay handling, and the same trust chain described above — one implementation, not two.
 
 ## What breaks it
 
@@ -119,7 +119,7 @@ Deploying deploy-panel's own backend kills the backend process mid-HTTP-response
 - Letting the stuck-sweep write `"success"` for any app on a passing preflight alone (or dropping the later-deploy-row check or the exactly-one-entry, trigger, duration and start-of-entry guards in `checkDeployTarget` / `assessTargetReached`): a deploy cut off before the git pull then reads as a success while the old commit still runs; a rollback or redeploy recorded after the stuck start would equally read as its success. Equally, restoring a preflight-only exemption for the panel's own app (it may wait for the relay's entry, never skip it) reopens it for a self-deploy that never ran.
 - Driving a deploy record's terminal status directly (not via `streamDeploy`, and not via `recoverBrokenDeploy`) without first calling `registerActiveDeploy` on its id: the periodic stuck-sweep has no other way to know the record is still genuinely in flight, and can finalize it out from under the caller once it crosses `STUCK_THRESHOLD_MS`. Both rollback routes (routes/apps.ts, routes/v1.ts) do this registration around their own `relayRequest` call for exactly this reason.
 - Flipping `requireHealthyEvidence` between the connection-lost recovery path and the post-success path, or defaulting it to `true` for the post-success path — the optimistic default there is what keeps a transient relay blip after a genuinely successful deploy from turning it red.
-- Calling the relay directly for any new deploy trigger (a second scheduler-style call site) instead of `streamDeploy` — that was the exact scheduler bug scheduler.ts:83-92 documents, and it silently drops secret provisioning + the required-env gate, not just the health gate.
+- Calling the relay directly for any new deploy trigger (a second scheduler-style call site) instead of `streamDeploy` — that was the exact scheduler bug scheduler.ts:113-122 documents, and it silently drops secret provisioning + the required-env gate, not just the health gate.
 
 ## A failed row is not always an outage
 

@@ -139,6 +139,23 @@ describe("relay redirects are not followed", () => {
     expect(internalHits).toBe(0);
   });
 
+  it("an admin-owned row is not exempt: its relay's 302 is the fixed 502, not the target's answer", async () => {
+    // Admins are not filtered by the host guard, but redirects are refused
+    // for every caller. A relayUrl that redirects must be set to its final URL.
+    mServer.findUnique.mockResolvedValue({
+      id: "srv-a",
+      userId: null,
+      name: "fleet-a",
+      host: "203.0.113.10",
+      relayUrl,
+      relayToken: "tok",
+    });
+    const res = await adminApp().request("/servers/srv-a/system");
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: "relay_error", status: 502 });
+    expect(internalHits).toBe(0);
+  });
+
   it("POST /servers/:id/test does not return the redirect target's body", async () => {
     const res = await adminApp().request("/servers/srv-a/test", {
       method: "POST",

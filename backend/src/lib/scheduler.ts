@@ -1,6 +1,7 @@
 import { prisma } from "./prisma.js";
 import { streamDeploy } from "./stream-deploy.js";
 import { recoverStuckDeploys } from "./startup.js";
+import { assertServerTargetsAllowed } from "../services/probe-guard.js";
 
 const CHECK_INTERVAL = 60_000; // 1 minute
 
@@ -77,6 +78,35 @@ export async function checkScheduled() {
       where: { id: entry.id },
       data: { deployId: deploy.id },
     });
+
+    // A server owned by a non-admin (userId set; null is the admin-shared
+    // fleet) gets the same relayUrl host check as the request paths. This
+    // runs with no request actor, so the owner's rights decide: a stored
+    // private or loopback relayUrl fails the deploy here instead of making
+    // the panel call it. The scheduled entry stays `triggered` and points at
+    // the failed deploy row, like any other failed deploy.
+    if (entry.server.userId) {
+      const check = await assertServerTargetsAllowed(
+        { isAdmin: false },
+        { relayUrl: entry.server.relayUrl },
+      );
+      if (!check.ok) {
+        const reason =
+          check.reason === "unparsable"
+            ? "scheduled deploy not run: the stored relayUrl is not a valid URL"
+            : "scheduled deploy not run: private_host, the stored relayUrl points at a private or loopback address";
+        console.warn(`[scheduler] ${entry.appName} on ${entry.server.name}: ${reason}`);
+        await prisma.deploy.update({
+          where: { id: deploy.id },
+          data: {
+            status: "failed",
+            // A JSON step array, like every other failure log (see stream-deploy.ts).
+            log: JSON.stringify([{ name: "deploy", status: "failure", durationMs: 0, output: reason }]),
+          },
+        });
+        continue;
+      }
+    }
 
     await prisma.app.update({ where: { id: app.id }, data: { status: "deploying" } });
 
