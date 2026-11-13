@@ -20,6 +20,15 @@ type Env = {
 };
 export const v1Router = new Hono<Env>();
 
+// Rollback target guard shared in spirit with routes/apps.ts (which keeps
+// its own copy): a rollback `to_commit` must be a full or abbreviated commit
+// sha. An empty or malformed value is a caller mistake, rejected with 400
+// before anything is stored or the relay is called; an absent to_commit
+// means "previous version" and stays absent. Ref reachability (a sha the
+// repo cannot roll back to) stays the relay's job: it answers a
+// before_reset 4xx and the row ends failed.
+const ROLLBACK_COMMIT_PATTERN = /^[0-9a-fA-F]{7,40}$/;
+
 // ── List servers ─────────────────────────────────────────────────────────────
 
 v1Router.get("/servers", async (c) => {
@@ -197,9 +206,25 @@ v1Router.get("/deploys", async (c) => {
   const actor = getActorContext(c);
   const serverIdentifier = c.req.query("server_id");
   const appId = c.req.query("app_id");
+  const appName = c.req.query("app");
   const status = c.req.query("status");
   const limit = Math.min(Number(c.req.query("limit")) || 50, 200);
   const offset = Math.max(Number(c.req.query("offset")) || 0, 0);
+
+  // Only the documented query parameters above are read; an unknown one is
+  // ignored, not an error, so a caller sending extra params keeps working.
+  //
+  // `app` filters by app NAME (the name other v1 routes and the MCP tools
+  // use), `app_id` by app id; accepting both at once would leave two
+  // unrelated app filters to silently AND into an always-empty result, so
+  // the combination answers 400 instead. The name goes through the same
+  // APP_NAME_PATTERN guard as the other v1 routes.
+  if (appName && appId) {
+    return c.json({ error: "bad_request", message: "app and app_id are mutually exclusive: app filters by app name, app_id by app id" }, 400);
+  }
+  if (appName && !APP_NAME_PATTERN.test(appName)) {
+    return c.json({ error: "bad_request", message: "Invalid app name: must be alphanumeric, dots, hyphens, or underscores" }, 400);
+  }
 
   // server_id accepts a name or an id, resolved through
   // findOwnedServerByIdOrName like the other v1 routes (GET /apps, POST
@@ -212,14 +237,19 @@ v1Router.get("/deploys", async (c) => {
   // app_id stays a raw Prisma filter: unlike Server, App has no name-based
   // lookup helper, and App.name is unique per server (schema.prisma), not
   // globally, so an app_id-by-name resolution would be ambiguous without
-  // also requiring server_id. The panel-UI's own GET /api/deploys
-  // (routes/deploys.ts) filters appId the same raw way.
+  // also requiring server_id. The `app` filter instead matches the related
+  // app's name through the relation: with server_id given that is the one
+  // app of that name on that server; without it the filter spans every
+  // visible server, and several same-named apps on different servers all
+  // match, which is the documented behaviour. The panel-UI's own
+  // GET /api/deploys (routes/deploys.ts) filters appId the same raw way.
   const where: Record<string, unknown> = {};
   if (serverIdentifier) {
     const srv = await findOwnedServerByIdOrName(actor, serverIdentifier);
     if (!srv) return c.json({ error: "not_found", message: `Server "${serverIdentifier}" not found` }, 404);
     where.serverId = srv.id;
   }
+  if (appName) where.app = { name: appName };
   if (appId) where.appId = appId;
   if (status) where.status = status;
   if (!actor.isAdmin) {
@@ -286,6 +316,13 @@ v1Router.post("/rollback", async (c) => {
 
   if (!APP_NAME_PATTERN.test(appName)) {
     return c.json({ error: "bad_request", message: "Invalid app name" }, 400);
+  }
+
+  // An empty to_commit is a present-but-invalid value, not "absent": it
+  // fails the pattern and answers 400, so the check is `!== undefined`
+  // rather than truthiness.
+  if (to_commit !== undefined && !ROLLBACK_COMMIT_PATTERN.test(to_commit)) {
+    return c.json({ error: "bad_request", message: "Invalid to_commit: must be 7 to 40 hex characters (a full or abbreviated commit sha)" }, 400);
   }
 
   const actor = getActorContext(c);

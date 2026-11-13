@@ -348,11 +348,12 @@ export function registerTools(server: McpServer, client: DeployPanelClient) {
     {
       server: z.string().describe("Server name or ID"),
       app: z.string().describe("App name"),
+      to_commit: z.string().optional().describe("Commit SHA to roll back to, full or abbreviated (7-40 hex chars); default: the previous version"),
       wait: z.boolean().optional().describe("Wait for rollback to complete (default: true)"),
     },
-    async ({ server, app, wait }) => {
+    async ({ server, app, to_commit, wait }) => {
       try {
-        const { deploy } = await client.rollback(server, app);
+        const { deploy } = await client.rollback(server, app, to_commit);
 
         if (wait === false) {
           return text({ message: "Rollback started", deployId: deploy.id, status: deploy.status });

@@ -190,6 +190,53 @@ describe("POST /:name/rollback — agent-relay result shape", () => {
     expect(mRelay.mock.calls[0][0].headers).toEqual({ "X-Deploy-Id": "deploy-1" });
   });
 
+  // A present but malformed to_commit (anything that is not 7-40 hex chars,
+  // the empty string included: present-but-invalid, not "absent") answers
+  // 400 bad_request before any app upsert, deploy row or relay call. Ref
+  // reachability stays the relay's job: a well-formed but unreachable sha
+  // ends as a failed row with the relay's before_reset message (see the
+  // RelayError describe block below).
+  it.each(["", "abc123", "zzzzzzz", "HEAD~1", "a".repeat(41), "1234567; rm -rf"])(
+    "present but malformed to_commit %j: 400 bad_request, nothing stored, relay not called",
+    async (to_commit) => {
+      const res = await app().request("/servers/srv-a/apps/my-app/rollback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to_commit }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string; message: string };
+      expect(body.error).toBe("bad_request");
+      expect(mAppUpsert).not.toHaveBeenCalled();
+      expect(mDeployCreate).not.toHaveBeenCalled();
+      expect(mRelay).not.toHaveBeenCalled();
+    },
+  );
+
+  it("valid abbreviated sha is forwarded to the relay unchanged, absent to_commit stays absent", async () => {
+    mRelay.mockResolvedValueOnce({ success: true, commitBefore: "abc1234", commitAfter: "1234567" });
+
+    const res = await app().request("/servers/srv-a/apps/my-app/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ to_commit: "abc1234" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mRelay.mock.calls[0][0].body).toEqual({ to_commit: "abc1234" });
+
+    mRelay.mockResolvedValueOnce({ success: true });
+    const res2 = await app().request("/servers/srv-a/apps/my-app/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    expect(res2.status).toBe(200);
+    expect((mRelay.mock.calls[1][0].body as { to_commit?: string }).to_commit).toBeUndefined();
+  });
+
   it("positive case unchanged: flat top-level success shape marks the row rolled_back", async () => {
     mRelay.mockResolvedValueOnce({
       deploy: { id: "relay-deploy-1" },

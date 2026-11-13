@@ -291,11 +291,27 @@ interface RollbackRelayPayload {
   preflight?: { passed: boolean; checks: Array<{ name: string; passed: boolean; message: string; critical?: boolean }> };
 }
 
+// Rollback target guard shared in spirit with routes/v1.ts (which keeps its
+// own copy): a rollback `to_commit` must be a full or abbreviated commit
+// sha. An empty or malformed value is a caller mistake, rejected with 400
+// before any app upsert, deploy row or relay call; an absent to_commit
+// means "previous version" and stays absent. Ref reachability (a sha the
+// repo cannot roll back to) stays the relay's job: it answers a
+// before_reset 4xx and the row ends failed.
+const ROLLBACK_COMMIT_PATTERN = /^[0-9a-fA-F]{7,40}$/;
+
 // POST /api/servers/:serverId/apps/:name/rollback — trigger rollback
 appsRouter.post("/:name/rollback", async (c) => {
   const serverId = getServerId(c);
   const name = c.req.param("name");
   const body = await c.req.json().catch(() => ({}));
+
+  // An empty to_commit is a present-but-invalid value, not "absent": it
+  // fails the pattern and answers 400, so the check is `!== undefined`
+  // rather than truthiness.
+  if (body.to_commit !== undefined && !ROLLBACK_COMMIT_PATTERN.test(body.to_commit)) {
+    return c.json({ error: "bad_request", message: "Invalid to_commit: must be 7 to 40 hex characters (a full or abbreviated commit sha)" }, 400);
+  }
 
   const app = await findOrCreateApp(serverId, name);
   const deploy = await prisma.deploy.create({

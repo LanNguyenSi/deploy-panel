@@ -67,7 +67,7 @@ allowed to manage.
 | `deploy_status`       | Get the status of a deploy by `deploy_id`.                                           |
 | `deploy_list`         | List past deploys, most recent first (optional `app`, `server`, `status`, `limit`, default `limit` 10, max `limit` 200). Use this to find a `deploy_id` for `deploy_status`. |
 | `deploy_preflight`    | Run preflight checks for an app without deploying.                                   |
-| `deploy_rollback`     | Roll an app back to its previous version (`server`, `app`, optional `wait`); polls until completion unless `wait` is `false`. |
+| `deploy_rollback`     | Roll an app back to its previous version, or to a given commit via `to_commit` (`server`, `app`, optional `to_commit`, `wait`); polls until completion unless `wait` is `false`. |
 
 ### `deploy_app`: the panel restarting during its own deploy
 
@@ -147,6 +147,21 @@ app id for an ignored app never turns up in that lookup even though
 looks like an app ID (a uuid), `deploy_list` forwards it as `app_id` anyway
 instead of erroring. A non-ID `app` that matches nothing returns a "not
 found" error, the same as an unresolvable `server`.
+
+### `deploy_rollback`: rolling back to a given commit
+
+By default `deploy_rollback` rolls back to the previous version. Pass
+`to_commit` to roll back to a specific commit instead: a full or
+abbreviated commit sha, 7 to 40 hex characters. Without `to_commit` the
+request body to the panel is exactly `{ server, app }` (no `to_commit`
+key); with it, `{ server, app, to_commit }`. The format is checked by the
+panel before anything starts: a malformed value (too short, non-hex, an
+empty string) makes the tool return the panel's `bad_request` error.
+Whether the commit is actually reachable from the app's history is the
+relay's verdict, not the panel's: a well-formed sha the repository cannot
+roll back to does not fail the call, it ends as a deploy row with status
+`failed` carrying the relay's `before_reset` message (HEAD unmoved), and
+that row is what the poll returns.
 
 ### `deploy_rollback`: blocked-rollback shape
 

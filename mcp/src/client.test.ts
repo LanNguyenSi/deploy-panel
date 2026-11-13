@@ -129,6 +129,36 @@ describe("DeployPanelClient.rollback", () => {
     expect(init?.body).toBe(JSON.stringify({ server, app: "my-app" }));
     expect(result.deploy.status).toBe("running");
   });
+
+  // to_commit is sent only when given; without it the body above is
+  // byte-identical to the pre-to_commit shape (no to_commit key at all).
+  it("sends to_commit only when given, otherwise the body has no to_commit key", async () => {
+    const client = new DeployPanelClient({ apiUrl: API_URL, apiKey: API_KEY });
+    const ok = () =>
+      jsonResponse({ deploy: { id: "d9", status: "running", server: "prod-1", app: "my-app", triggeredBy: "agent" } });
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok());
+
+    await client.rollback("prod-1", "my-app", "abc1234");
+    expect(fetchSpy.mock.calls[0][1]?.body).toBe(JSON.stringify({ server: "prod-1", app: "my-app", to_commit: "abc1234" }));
+
+    await client.rollback("prod-1", "my-app");
+    expect(fetchSpy.mock.calls[1][1]?.body).toBe(JSON.stringify({ server: "prod-1", app: "my-app" }));
+    expect(JSON.parse(fetchSpy.mock.calls[1][1]!.body as string)).not.toHaveProperty("to_commit");
+  });
+
+  it("an empty to_commit is forwarded as-is (the backend rejects it with 400, not the client)", async () => {
+    const client = new DeployPanelClient({ apiUrl: API_URL, apiKey: API_KEY });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({ deploy: { id: "d9", status: "running", server: "prod-1", app: "my-app", triggeredBy: "agent" } }),
+    );
+
+    await client.rollback("prod-1", "my-app", "");
+
+    expect(fetchSpy.mock.calls[0][1]?.body).toBe(JSON.stringify({ server: "prod-1", app: "my-app", to_commit: "" }));
+  });
 });
 
 describe("DeployPanelClient.listDeploys", () => {

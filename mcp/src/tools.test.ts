@@ -867,6 +867,9 @@ describe("deploy_rollback", () => {
     expect(shape.safeParse({ app: "a" }).success).toBe(false);
     expect(shape.safeParse({ server: "s", app: "a", wait: "yes" }).success).toBe(false);
     expect(shape.safeParse({ server: "s", app: "a", wait: false }).success).toBe(true);
+    // to_commit: an optional string (the sha format is the backend's check).
+    expect(shape.safeParse({ server: "s", app: "a", to_commit: "abc1234" }).success).toBe(true);
+    expect(shape.safeParse({ server: "s", app: "a", to_commit: 123 }).success).toBe(false);
   });
 
   it("wait:false returns the started envelope after a single rollback POST, without polling", async () => {
@@ -880,6 +883,22 @@ describe("deploy_rollback", () => {
     const [url, init] = fetchSpy.mock.calls[0];
     expect(url).toBe(`${API_URL}/api/v1/rollback`);
     expect(init?.method).toBe("POST");
+    // No to_commit given: the body is exactly { server, app } (no to_commit key).
+    expect(init?.body).toBe(JSON.stringify({ server: "s", app: "a" }));
+    expect(textOf(result)).toEqual({ message: "Rollback started", deployId: "d9", status: "running" });
+  });
+
+  it("passes to_commit through to the POST body when given, exactly as { server, app, to_commit }", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({ deploy: { id: "d9", status: "running", server: "s", app: "a", triggeredBy: "agent" } }),
+    );
+
+    const result = await cb({ server: "s", app: "a", to_commit: "abc1234", wait: false });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchSpy.mock.calls[0];
+    expect(url).toBe(`${API_URL}/api/v1/rollback`);
+    expect(init?.body).toBe(JSON.stringify({ server: "s", app: "a", to_commit: "abc1234" }));
     expect(textOf(result)).toEqual({ message: "Rollback started", deployId: "d9", status: "running" });
   });
 
