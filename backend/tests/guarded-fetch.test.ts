@@ -48,6 +48,9 @@ beforeEach(async () => {
         res.writeHead(200, { "content-type": "text/event-stream" });
         res.write(": ping\n\n");
         // keep the connection open until the client goes away
+      } else if (req.url === "/status600") {
+        res.writeHead(600);
+        res.end("x");
       } else if (req.url === "/slow") {
         setTimeout(() => {
           res.writeHead(200, { "content-type": "application/json" });
@@ -150,6 +153,13 @@ describe("guardedFetch: socket reuse, errors and the connect timeout", () => {
     expect(err.message).toBe("fetch failed");
     expect(err.cause.code).toBe("ECONNREFUSED");
     expect(classifyProbeError(err)).toBe("offline");
+  });
+
+  it("an answer fetch cannot represent (status 600) is a transport failure, not a raw RangeError", async () => {
+    const err = await guardedFetch(`http://relay.test:${port}/status600`).catch((e) => e);
+    expect(err).toBeInstanceOf(TypeError);
+    expect(err.message).toBe("fetch failed");
+    expect(err.cause).toBeInstanceOf(RangeError);
   });
 
   it("keeps the abort reason of the signal as it is (a timeout is unknown, not offline)", async () => {
