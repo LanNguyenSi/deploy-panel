@@ -85,13 +85,16 @@ function runStep(dir: string, name: string, script: string, opts: RunOpts): RunR
     API_KEY: "k",
     SERVER: opts.server,
     APP: opts.app,
-    ...(opts.force === undefined ? {} : { FORCE: opts.force }),
+    // Set explicitly so a FORCE in the caller's environment never leaks in.
+    FORCE: opts.force ?? "",
     STUB_BODY: bodyFile,
     STUB_CALLS: calls,
     GITHUB_OUTPUT: ghOut,
   };
 
-  const proc = spawnSync("bash", [scriptFile], { env, encoding: "utf8", timeout: 15000, killSignal: "SIGKILL" });
+  // Both steps declare `shell: bash`, which Actions runs as
+  // `bash --noprofile --norc -eo pipefail`.
+  const proc = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", scriptFile], { env, encoding: "utf8", timeout: 15000, killSignal: "SIGKILL" });
   assert.ok(proc.error === undefined, `spawnSync failed: ${String(proc.error)}`);
   assert.ok(proc.signal === null, `${name} step was killed by ${String(proc.signal)} (hang?)`);
 
