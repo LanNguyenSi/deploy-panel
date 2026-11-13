@@ -337,6 +337,10 @@ export async function streamDeploy(opts: {
       headers,
       body: JSON.stringify(body),
       signal: idle.signal,
+      // A relay that redirects could send the panel to an address the
+      // non-admin target guard never saw; a 3xx falls into the generic
+      // "Relay returned <status>" error below.
+      redirect: "manual",
     });
     armIdleTimer(firstByteMs);
 

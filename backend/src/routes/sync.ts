@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
 import { findOwnedServer, getActorContext } from "../lib/ownership.js";
+import { denyPrivateServerTargets } from "../lib/target-guard.js";
 import {
   setServerStatus,
   classifyProbeError,
@@ -30,6 +31,9 @@ syncRouter.post("/:serverId/sync", async (c) => {
   const server = await findOwnedServer(actor, serverId);
   if (!server) return c.json({ error: "not_found" }, 404);
   if (!server.relayUrl) return c.json({ error: "no_relay", message: "No relay configured" }, 400);
+
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl });
+  if (denied) return denied;
 
   try {
     // Get all apps from relay
