@@ -1,13 +1,9 @@
 import { Context, Next } from "hono";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash } from "node:crypto";
 import { config } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
 import { readUserSessionCookie, validateSession } from "../lib/session.js";
-
-function safeCompare(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
-}
+import { parsePanelSessionCookie, safeCompare } from "../lib/panel-token.js";
 
 export function hashApiKey(key: string): string {
   return createHash("sha256").update(key).digest("hex");
@@ -78,13 +74,11 @@ export async function requireAuth(c: Context, next: Next) {
 
   // Check panel_session cookie (legacy admin path — contains raw PANEL_TOKEN).
   const cookie = c.req.header("Cookie");
-  if (cookie) {
-    const panelMatch = cookie.split(";").map(s => s.trim()).find(s => s.startsWith("panel_session="));
-    if (panelMatch && safeCompare(panelMatch.split("=")[1] ?? "", token)) {
-      c.set("authType", "session");
-      c.set("isAdmin", true);
-      return next();
-    }
+  const panelCookie = parsePanelSessionCookie(cookie);
+  if (panelCookie !== null && safeCompare(panelCookie, token)) {
+    c.set("authType", "session");
+    c.set("isAdmin", true);
+    return next();
   }
 
   // Check user_session cookie (native GitHub OAuth login). Non-admin;

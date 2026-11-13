@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
@@ -621,9 +622,18 @@ const SENSITIVE_KEY_PATTERN = /(PASSWORD|PASSWD|PWD|SECRET|TOKEN|KEY|DSN|AUTH|CR
 
 // Mirror the relay's caps locally so a malicious client can't waste a
 // round-trip / bloat the proxy's memory before the relay rejects.
-const ENV_MAX_ENTRIES = 500;
-const ENV_MAX_KEY = 128;
-const ENV_MAX_VALUE = 32_768;
+export const ENV_MAX_ENTRIES = 500;
+export const ENV_MAX_KEY = 128;
+export const ENV_MAX_VALUE = 32_768;
+
+// The env replace route's own request-body cap, sized from the caps above:
+// every entry is `{"key":"…","value":"…"}` plus a comma, so the JSON adds a
+// fixed wrapper (22 bytes) around key + value; 64 per entry absorbs small
+// escaping overhead, and the extra block covers the `{"entries":[…]}`
+// wrapper. The route's validation counts characters, this counts bytes.
+const ENV_ENTRY_JSON_OVERHEAD = 64;
+export const ENV_REPLACE_MAX_BODY_BYTES =
+  ENV_MAX_ENTRIES * (ENV_MAX_KEY + ENV_MAX_VALUE + ENV_ENTRY_JSON_OVERHEAD) + 4096;
 
 function classifySensitivity(entries: { key: string; value: string }[]) {
   return entries.map((e) => ({
@@ -657,6 +667,25 @@ appsRouter.get("/:name/env", async (c) => {
 // Body: { entries: [{ key, value }] } — the complete desired set. The route
 // diffs against the current state, writes the new set via the relay, and
 // records one audit row per changed key (create/update/delete).
+//
+// Own bodyLimit (the global 1 MiB cap in app.ts skips this path): the entry
+// caps allow ~16 MiB of JSON, so the cap here is ENV_REPLACE_MAX_BODY_BYTES.
+const envReplaceBodyLimit = bodyLimit({
+  maxSize: ENV_REPLACE_MAX_BODY_BYTES,
+  onError: (c) =>
+    c.json(
+      {
+        error: "payload_too_large",
+        message: `Request body exceeds the env replace limit (${ENV_REPLACE_MAX_BODY_BYTES} bytes)`,
+      },
+      413,
+    ),
+});
+
+appsRouter.use("/:name/env", (c, next) =>
+  c.req.method === "PUT" ? envReplaceBodyLimit(c, next) : next(),
+);
+
 appsRouter.put("/:name/env", async (c) => {
   const serverId = getServerId(c);
   const name = c.req.param("name");
