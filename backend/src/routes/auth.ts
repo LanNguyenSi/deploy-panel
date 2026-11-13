@@ -1,13 +1,14 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { validatedJson } from "../lib/validator.js";
-import { timingSafeEqual, randomBytes, createHash } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import {
   config,
   hasGitHubOAuthConfigured,
 } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
 import { hashApiKey } from "../middleware/auth.js";
+import { parsePanelSessionCookie, safeCompare } from "../lib/panel-token.js";
 import {
   buildAuthorizationUrl,
   exchangeCodeForToken,
@@ -23,13 +24,6 @@ import {
   createSession,
 } from "../lib/session.js";
 import { audit } from "../lib/audit.js";
-
-// SHA-256 keeps both buffers 32 bytes, so timingSafeEqual cannot throw on a
-// string-length match with a UTF-8 byte-length mismatch (multi-byte input).
-function safeCompare(a: string, b: string): boolean {
-  const digest = (value: string) => createHash("sha256").update(value, "utf8").digest();
-  return timingSafeEqual(digest(a), digest(b));
-}
 
 export const authRouter = new Hono();
 
@@ -346,12 +340,9 @@ authRouter.get("/check", async (c) => {
   const token = config.PANEL_TOKEN;
   if (!token) return c.json({ authenticated: true }); // no auth configured
 
-  const cookie = c.req.header("Cookie");
-  if (cookie) {
-    const session = cookie.split(";").map(s => s.trim()).find(s => s.startsWith("panel_session="));
-    if (session && safeCompare(session.slice("panel_session=".length), token)) {
-      return c.json({ authenticated: true });
-    }
+  const panelCookie = parsePanelSessionCookie(c.req.header("Cookie"));
+  if (panelCookie !== null && safeCompare(panelCookie, token)) {
+    return c.json({ authenticated: true });
   }
 
   const auth = c.req.header("Authorization");

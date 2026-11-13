@@ -1,14 +1,22 @@
 /**
  * GET /api/auth/check and POST /api/auth/login compare the panel token in
- * constant time (safeCompare, backend/src/routes/auth.ts).
+ * constant time (safeCompare, backend/src/lib/panel-token.ts).
  *
  * The comparison hashes both values with SHA-256 before timingSafeEqual, so
  * an input whose string length matches PANEL_TOKEN but whose UTF-8 byte
  * length differs (a multi-byte character, e.g. "ä") returns 401 instead of
- * throwing inside timingSafeEqual (which used to surface as a 500).
+ * throwing inside timingSafeEqual. Before the fix the throw surfaced as a
+ * 500 from POST /login and from the requireAuth middleware (which had the
+ * same old compare); GET /check itself used to answer with `===` and simply
+ * never threw.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// The createHash spy is a structural guard, not a behavioral one: it proves
+// the credential comparison goes through safeCompare's SHA-256 digest (a
+// plain === never hashes). If the helper changes (different digest, fewer
+// digests), update these expectations to match the helper, do not remove the
+// guard.
 vi.mock("node:crypto", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:crypto")>();
   return { ...actual, createHash: vi.fn(actual.createHash) };

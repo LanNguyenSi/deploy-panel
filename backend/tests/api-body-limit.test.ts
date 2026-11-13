@@ -104,4 +104,24 @@ describe("body limit on /api/*", () => {
     });
     expect(res.status).toBe(413);
   });
+
+  it("413 from the Content-Length branch when the header exceeds the limit", async () => {
+    // app.request() with a string body sends no Content-Length, so every
+    // other test here exercises bodyLimit's streaming branch. This one sets
+    // an explicit Content-Length above the limit on a tiny body: only the
+    // header branch can answer 413 (the streamed body is far under it), and
+    // the answer must still be the app's JSON error envelope.
+    const res = await app.request("/api/auth/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": String(MAX_API_REQUEST_BODY_BYTES + 1),
+      },
+      body: '{"token":"x"}',
+    });
+    expect(res.status).toBe(413);
+    expect(res.headers.get("Content-Type")).toMatch(/application\/json/);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("payload_too_large");
+  });
 });
