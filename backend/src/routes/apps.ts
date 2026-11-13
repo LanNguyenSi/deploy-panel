@@ -14,6 +14,7 @@ import { listMaskedAppSecrets, setAppSecret, deleteAppSecret } from "../lib/app-
 import { evaluateRequiredEnv } from "../lib/required-env-gate.js";
 import { classifyDeployLogOutcome } from "../lib/deploy-log.js";
 import { fetchUpstreamByApp, upstreamForApp, type Upstream } from "../lib/upstream.js";
+import { COMMIT_SHA_PATTERN } from "../lib/deploy-target.js";
 
 export const appsRouter = new Hono();
 
@@ -291,11 +292,30 @@ interface RollbackRelayPayload {
   preflight?: { passed: boolean; checks: Array<{ name: string; passed: boolean; message: string; critical?: boolean }> };
 }
 
+// Rollback target guard (same rule in routes/routes/v1.ts): a present `to_commit`
+// must be a string holding a full or abbreviated commit sha
+// (COMMIT_SHA_PATTERN, shared with the rollback proof in deploy-target.ts).
+// Any other present value (empty string, symbolic ref, number, array, null)
+// is a caller mistake, rejected with 400 before anything is stored or the
+// relay is called; an absent to_commit means "previous version" and stays
+// absent. Ref reachability (a sha the repo cannot roll back to) stays the
+// relay's job: it answers a before_reset 4xx and the row ends failed.
+function isValidRollbackTarget(value: unknown): boolean {
+  return typeof value === "string" && COMMIT_SHA_PATTERN.test(value);
+}
+
 // POST /api/servers/:serverId/apps/:name/rollback — trigger rollback
 appsRouter.post("/:name/rollback", async (c) => {
   const serverId = getServerId(c);
   const name = c.req.param("name");
   const body = await c.req.json().catch(() => ({}));
+
+  // An empty to_commit is a present-but-invalid value, not "absent": it
+  // fails the pattern and answers 400, so the check is `!== undefined`
+  // rather than truthiness.
+  if (body.to_commit !== undefined && !isValidRollbackTarget(body.to_commit)) {
+    return c.json({ error: "bad_request", message: "Invalid to_commit: must be 7 to 40 hex characters (a full or abbreviated commit sha)" }, 400);
+  }
 
   const app = await findOrCreateApp(serverId, name);
   const deploy = await prisma.deploy.create({

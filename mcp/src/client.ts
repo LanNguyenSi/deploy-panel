@@ -173,9 +173,14 @@ export class DeployPanelClient {
     return this.request<{ passed: boolean; checks: Array<{ name: string; passed: boolean; message: string }> }>("POST", "/api/v1/preflight", { server, app });
   }
 
-  async rollback(server: string, app: string) {
+  async rollback(server: string, app: string, toCommit?: string) {
+    // `to_commit` is sent only when given: without it the body is exactly
+    // { server, app } (the backend's default target is the previous
+    // version), and a present-but-empty string is NOT filtered out here;
+    // the backend rejects it with 400, which surfaces as a tool error.
     return this.request<{ deploy: { id: string; status: string; server: string; app: string; triggeredBy: string } }>("POST", "/api/v1/rollback", {
       server, app,
+      ...(toCommit !== undefined ? { to_commit: toCommit } : {}),
     });
   }
 
