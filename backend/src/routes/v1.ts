@@ -13,6 +13,7 @@ import {
 } from "../lib/ownership.js";
 import { evaluateRequiredEnv } from "../lib/required-env-gate.js";
 import { APP_NAME_PATTERN } from "../lib/app-name.js";
+import { denyPrivateServerTargets } from "../lib/target-guard.js";
 
 type Env = {
   Variables: { authType: string; apiKeyName?: string; userId?: string; isAdmin?: boolean };
@@ -98,6 +99,10 @@ v1Router.post("/deploy", async (c) => {
   const actor = getActorContext(c);
   const srv = await findOwnedServerByIdOrName(actor, server);
   if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
+  // A non-admin must not make the panel call a private relayUrl (rows stored before
+  // registration was checked, or a DNS change since).
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: srv.relayUrl });
+  if (denied) return denied;
 
   if (!srv.relayUrl) {
     return c.json({ error: "unprocessable", message: `Server "${srv.name}" has no relay configured` }, 422);
@@ -286,6 +291,10 @@ v1Router.post("/rollback", async (c) => {
   const actor = getActorContext(c);
   const srv = await findOwnedServerByIdOrName(actor, server);
   if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
+  // A non-admin must not make the panel call a private relayUrl (rows stored before
+  // registration was checked, or a DNS change since).
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: srv.relayUrl });
+  if (denied) return denied;
 
   const appRecord = await prisma.app.findUnique({
     where: { serverId_name: { serverId: srv.id, name: appName } },
@@ -433,6 +442,10 @@ v1Router.get("/logs", async (c) => {
   const actor = getActorContext(c);
   const srv = await findOwnedServerByIdOrName(actor, server);
   if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
+  // A non-admin must not make the panel call a private relayUrl (rows stored before
+  // registration was checked, or a DNS change since).
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: srv.relayUrl });
+  if (denied) return denied;
 
   try {
     const result = await relayRequest({
@@ -463,6 +476,10 @@ v1Router.post("/preflight", async (c) => {
   const actor = getActorContext(c);
   const srv = await findOwnedServerByIdOrName(actor, server);
   if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
+  // A non-admin must not make the panel call a private relayUrl (rows stored before
+  // registration was checked, or a DNS change since).
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: srv.relayUrl });
+  if (denied) return denied;
 
   try {
     const result = await relayRequest<{ passed?: boolean; checks?: Array<{ name: string; passed: boolean; message: string }> }>({

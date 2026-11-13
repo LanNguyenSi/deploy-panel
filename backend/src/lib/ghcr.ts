@@ -13,6 +13,7 @@ import {
   probeStatusFromHttp,
   type ProbeFailureStatus,
 } from "../services/server-status.js";
+import { relayFetch } from "./relay-fetch.js";
 
 export const GHCR_TOKEN_URL =
   "https://ghcr.io/token?scope=repository:lannguyensi/agent-relay:pull";
@@ -232,7 +233,7 @@ export async function fetchRelayHealth(
       headers["Authorization"] = `Bearer ${server.relayToken}`;
     }
 
-    const response = await fetch(`${server.relayUrl}/health`, {
+    const response = await relayFetch(`${server.relayUrl}/health`, {
       headers,
       signal: AbortSignal.timeout(timeoutMs),
     });

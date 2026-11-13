@@ -1,13 +1,14 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { validatedJson } from "../lib/validator.js";
-import { timingSafeEqual, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import {
   config,
   hasGitHubOAuthConfigured,
 } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
 import { hashApiKey } from "../middleware/auth.js";
+import { parsePanelSessionCookie, safeCompare } from "../lib/panel-token.js";
 import {
   buildAuthorizationUrl,
   exchangeCodeForToken,
@@ -24,15 +25,10 @@ import {
 } from "../lib/session.js";
 import { audit } from "../lib/audit.js";
 
-function safeCompare(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
-}
-
 export const authRouter = new Hono();
 
 const loginSchema = z.object({
-  token: z.string().min(1),
+  token: z.string().min(1).max(1024),
 });
 
 // POST /api/auth/login — set session cookie
@@ -344,16 +340,13 @@ authRouter.get("/check", async (c) => {
   const token = config.PANEL_TOKEN;
   if (!token) return c.json({ authenticated: true }); // no auth configured
 
-  const cookie = c.req.header("Cookie");
-  if (cookie) {
-    const session = cookie.split(";").map(s => s.trim()).find(s => s.startsWith("panel_session="));
-    if (session && session.split("=")[1] === token) {
-      return c.json({ authenticated: true });
-    }
+  const panelCookie = parsePanelSessionCookie(c.req.header("Cookie"));
+  if (panelCookie !== null && safeCompare(panelCookie, token)) {
+    return c.json({ authenticated: true });
   }
 
   const auth = c.req.header("Authorization");
-  if (auth?.startsWith("Bearer ") && auth.slice(7) === token) {
+  if (auth?.startsWith("Bearer ") && safeCompare(auth.slice(7), token)) {
     return c.json({ authenticated: true });
   }
 

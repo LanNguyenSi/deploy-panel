@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { healthRouter } from "./routes/health.js";
@@ -11,7 +12,22 @@ import { auditRouter } from "./routes/audit.js";
 import { scheduledRouter } from "./routes/scheduled.js";
 import { v1Router } from "./routes/v1.js";
 import { apiKeysRouter } from "./routes/api-keys.js";
+import { ENV_REPLACE_MAX_BODY_BYTES } from "./routes/apps.js";
 import { requireAuth, requirePanelAuth } from "./middleware/auth.js";
+
+// One cap for every /api/* request body. /api/auth/login and /api/auth/check
+// answer without authentication, so an uncapped body grows the heap. The
+// bulk-deploy list (50 app names) and per-key secrets fit well under 1 MiB.
+// The one route that legitimately needs more is the app env replace: the
+// API's own caps (ENV_MAX_ENTRIES entries of ENV_MAX_KEY-char keys and
+// ENV_MAX_VALUE-char values, routes/apps.ts) allow roughly 16 MiB of JSON,
+// so that route carries its own larger bodyLimit (ENV_REPLACE_MAX_BODY_BYTES)
+// and the global cap skips exactly that path. Hono runs app.use middleware
+// before any route handler, and two chained bodyLimits take the smaller, so
+// skipping here is what lets the route's larger limit win.
+export const MAX_API_REQUEST_BODY_BYTES = 1024 * 1024;
+
+const ENV_REPLACE_PATH = /^\/api\/servers\/[^/]+\/apps\/[^/]+\/env$/;
 
 export function createApp(corsOrigins: string) {
   const app = new Hono();
@@ -31,6 +47,21 @@ export function createApp(corsOrigins: string) {
       credentials: true,
     }),
   );
+
+  const globalBodyLimit = bodyLimit({
+    maxSize: MAX_API_REQUEST_BODY_BYTES,
+    onError: (c) =>
+      c.json({ error: "payload_too_large", message: "Request body exceeds 1 MiB" }, 413),
+  });
+
+  // The app env replace route carries its own larger bodyLimit in
+  // routes/apps.ts. This middleware runs before every route handler, so the
+  // only way the route's larger limit can win is to skip the path here
+  // (chained bodyLimits would take the smaller cap).
+  app.use("/api/*", (c, next) => {
+    if (c.req.method === "PUT" && ENV_REPLACE_PATH.test(c.req.path)) return next();
+    return globalBodyLimit(c, next);
+  });
 
   // Public (no auth)
   app.route("/api/health", healthRouter);
