@@ -201,6 +201,60 @@ describe("checkScheduled — delegates to streamDeploy", () => {
   });
 });
 
+// ── App-name guard (rows stored before the POST /api/scheduled check) ────────
+
+describe("checkScheduled — invalid app names are cancelled before any write", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each(["../x", ".."])("due entry named %j: no App upsert, no Deploy row, no streamDeploy, status cancelled", async (appName) => {
+    mScheduledDeploy.findMany.mockResolvedValue([makeDueEntry({ appName })]);
+    mScheduledDeploy.update.mockResolvedValue({});
+
+    await checkScheduled();
+
+    // Nothing past the guard runs: no app row (whose path interpolates the
+    // name), no deploy row, no relay call, no "triggered" transition.
+    expect(mApp.upsert).not.toHaveBeenCalled();
+    expect(mApp.update).not.toHaveBeenCalled();
+    expect(mDeploy.create).not.toHaveBeenCalled();
+    expect(mStreamDeploy).not.toHaveBeenCalled();
+    // The only update is the cancellation, with an existing status value.
+    expect(mScheduledDeploy.update).toHaveBeenCalledOnce();
+    expect(mScheduledDeploy.update).toHaveBeenCalledWith({
+      where: { id: "sched-1" },
+      data: { status: "cancelled" },
+    });
+  });
+
+  it("a valid entry in the same tick still runs, the invalid one is cancelled", async () => {
+    mScheduledDeploy.findMany.mockResolvedValue([
+      makeDueEntry({ id: "sched-bad", appName: "../x" }),
+      makeDueEntry({ id: "sched-good", appName: "my-app" }),
+    ]);
+    mScheduledDeploy.update.mockResolvedValue({});
+    mApp.upsert.mockResolvedValue({ id: "app-1", name: "my-app", status: "healthy" });
+    mApp.update.mockResolvedValue({});
+    mDeploy.create.mockResolvedValue({ id: "deploy-1" });
+
+    await checkScheduled();
+
+    // The invalid entry is cancelled and never reaches the app upsert.
+    expect(mScheduledDeploy.update).toHaveBeenCalledWith({
+      where: { id: "sched-bad" },
+      data: { status: "cancelled" },
+    });
+    // The valid neighbour gets the full flow: exactly one upsert/create/
+    // streamDeploy, all for the valid name.
+    expect(mApp.upsert).toHaveBeenCalledOnce();
+    expect(mApp.upsert.mock.calls[0][0].where.serverId_name.name).toBe("my-app");
+    expect(mDeploy.create).toHaveBeenCalledOnce();
+    expect(mStreamDeploy).toHaveBeenCalledOnce();
+    expect(mStreamDeploy).toHaveBeenCalledWith(expect.objectContaining({ appName: "my-app" }));
+  });
+});
+
 // The gate's own pass/fail behavior against a REAL (unmocked) streamDeploy,
 // invoked through the real checkScheduled(), lives in
 // scheduler-required-env-gate.test.ts — kept in a separate file because it

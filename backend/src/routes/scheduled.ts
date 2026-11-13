@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { audit, getActor, getActorUserId } from "../lib/audit.js";
 import { getActorContext } from "../lib/ownership.js";
+import { isValidAppName } from "../lib/app-name.js";
 
 export const scheduledRouter = new Hono();
 
@@ -31,8 +32,18 @@ scheduledRouter.post("/", async (c) => {
     server?: string; app?: string; scheduledFor?: string; force?: boolean;
   };
 
-  if (!server || !app || !scheduledFor) {
+  // The typeof arm matters: `app: 123` reaches isValidAppName, whose regex
+  // coerces it to "123" and passes, then Prisma, which 500s on a non-string.
+  if (!server || !app || typeof app !== "string" || !scheduledFor) {
     return c.json({ error: "bad_request", message: "server, app, and scheduledFor are required" }, 400);
+  }
+
+  // The scheduler later puts this name into an app row path
+  // (`/home/deploy/apps/${appName}`) and into streamDeploy's relay deploy
+  // call, so reject anything the v1 deploy route would reject, before any
+  // DB write (same message v1.ts uses for this case).
+  if (!isValidAppName(app)) {
+    return c.json({ error: "invalid_app_name", message: "Invalid app name: must be alphanumeric, dots, hyphens, or underscores" }, 400);
   }
 
   const scheduledDate = new Date(scheduledFor);

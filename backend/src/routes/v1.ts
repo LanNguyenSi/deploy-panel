@@ -12,14 +12,13 @@ import {
   serverOwnershipWhere,
 } from "../lib/ownership.js";
 import { evaluateRequiredEnv } from "../lib/required-env-gate.js";
+import { APP_NAME_PATTERN } from "../lib/app-name.js";
 import { denyPrivateServerTargets } from "../lib/target-guard.js";
 
 type Env = {
   Variables: { authType: string; apiKeyName?: string; userId?: string; isAdmin?: boolean };
 };
 export const v1Router = new Hono<Env>();
-
-const APP_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 
 // ── List servers ─────────────────────────────────────────────────────────────
 

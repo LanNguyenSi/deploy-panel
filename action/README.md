@@ -38,6 +38,8 @@ Pin the action to a release tag, not to a branch ref: the `main` ref tracks unre
 | `wait` | No | `true` | Wait for deploy completion |
 | `timeout` | No | `300` | Max seconds to wait |
 
+The `force` input accepts only the strings `true` and `false`; any other value is treated as `false` and sent to the API as the JSON boolean `false`.
+
 ## Outputs
 
 | Output | Description |

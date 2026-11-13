@@ -201,6 +201,73 @@ describe("scheduled POST / — create", () => {
     expect(mServer.findFirst).not.toHaveBeenCalled();
     expect(mScheduled.create).not.toHaveBeenCalled();
   });
+
+  // The scheduler later puts appName into an app row path
+  // (`/home/deploy/apps/${appName}`) and into streamDeploy's relay deploy
+  // call, so a name the v1 routes would reject must never be stored.
+  it.each(["../x", "a/b"])("invalid app name %j: 400 invalid_app_name, no server lookup or row created", async (app) => {
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app, scheduledFor: futureDate }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("invalid_app_name");
+    expect(mServer.findFirst).not.toHaveBeenCalled();
+    expect(mScheduled.create).not.toHaveBeenCalled();
+  });
+
+  it("empty app name: 400, no row created", async () => {
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: "", scheduledFor: futureDate }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(mScheduled.create).not.toHaveBeenCalled();
+  });
+
+  // A non-string `app` must fail the presence check, not reach the name
+  // regex (which coerces 123 to "123" and accepts it) and then Prisma,
+  // which would 500 on a non-string appName.
+  it("non-string app (123): 400 bad_request, no server lookup or row created", async () => {
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: 123, scheduledFor: futureDate }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("bad_request");
+    expect(mServer.findFirst).not.toHaveBeenCalled();
+    expect(mScheduled.create).not.toHaveBeenCalled();
+  });
+
+  it("valid app name containing a dot: creates the row", async () => {
+    mServer.findFirst.mockResolvedValue(ownedServer);
+    mScheduled.create.mockResolvedValue({
+      id: "sched-3",
+      serverId: "srv-a",
+      appName: "my.app",
+      scheduledFor: new Date(futureDate),
+      force: false,
+      status: "pending",
+    });
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ server: "my-server", app: "my.app", scheduledFor: futureDate }),
+    });
+
+    expect(res.status).toBe(201);
+    expect(mScheduled.create).toHaveBeenCalledOnce();
+    expect(mScheduled.create.mock.calls[0][0].data.appName).toBe("my.app");
+  });
 });
 
 // ── GET / — ownership filtering ──────────────────────────────────────────────
