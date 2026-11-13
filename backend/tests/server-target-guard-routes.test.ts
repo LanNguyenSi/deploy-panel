@@ -5,6 +5,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 
+// These tests assert route behaviour against a mocked global fetch; the
+// connect-guarded transport (lib/guarded-fetch.ts) is covered in
+// connect-guard.test.ts, so here it forwards to the same fetch.
+vi.mock("../src/lib/guarded-fetch.js", () => ({
+  guardedFetch: vi.fn((url: string, init?: RequestInit) => globalThis.fetch(url, init)),
+}));
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     server: {
@@ -51,6 +58,7 @@ import { prisma } from "../src/lib/prisma.js";
 import { config } from "../src/config/index.js";
 import { appsRouter } from "../src/routes/apps.js";
 import { syncRouter } from "../src/routes/sync.js";
+import { guardedFetch } from "../src/lib/guarded-fetch.js";
 import { v1Router } from "../src/routes/v1.js";
 
 const mServer = prisma.server as unknown as {
@@ -196,10 +204,99 @@ describe("the same rows for an admin, and public rows for a non-admin", () => {
     expect(String(fetchMock.mock.calls[0][0])).toContain("relay.example.com");
   });
 
+  it.each([
+    ["apps GET env", "GET", "/servers/srv-a/apps/myapp/env"],
+    ["v1 GET logs", "GET", "/v1/logs?server=vps-a&app=myapp"],
+    ["sync POST", "POST", "/servers/srv-a/sync"],
+  ] as Array<[string, string, string]>)("%s: the relay of an owned row goes through the guarded transport for a non-admin, not for an admin", async (_l, method, path) => {
+    await (await appFor(NON_ADMIN).request(path, json(method, method === "POST" ? {} : undefined))).text();
+    expect(guardedFetch).toHaveBeenCalled();
+    expect(String(vi.mocked(guardedFetch).mock.calls[0][0])).toContain("relay.example.com");
+
+    vi.mocked(guardedFetch).mockClear();
+    fetchMock.mockClear();
+    await (await appFor(ADMIN).request(path, json(method, method === "POST" ? {} : undefined))).text();
+    expect(fetchMock).toHaveBeenCalled();
+    expect(guardedFetch).not.toHaveBeenCalled();
+  });
+
+  it("apps GET upstream: the relay listing of an owned row is guarded for a non-admin, not for an admin", async () => {
+    const findMany = (prisma.app as unknown as { findMany: ReturnType<typeof vi.fn> }).findMany;
+    findMany.mockResolvedValueOnce([{ name: "myapp" }]);
+    await (await appFor(NON_ADMIN).request("/servers/srv-a/apps/upstream")).text();
+    expect(guardedFetch).toHaveBeenCalledTimes(1);
+
+    vi.mocked(guardedFetch).mockClear();
+    findMany.mockResolvedValueOnce([{ name: "myapp" }]);
+    await (await appFor(ADMIN).request("/servers/srv-a/apps/upstream")).text();
+    expect(guardedFetch).not.toHaveBeenCalled();
+  });
+
+  // Every relayRequest of a route that has an actor must carry it: with the
+  // actor dropped, the owner of the row decides and an admin would be held to
+  // the connect-time check on a private target. An admin on an owned row must
+  // therefore reach the relay through the plain fetch on every one of these.
+  const adminRoutes: Array<[string, string, string, unknown?]> = [
+    ["apps rollback", "POST", "/servers/srv-a/apps/myapp/rollback", {}],
+    ["apps logs", "GET", "/servers/srv-a/apps/myapp/logs"],
+    ["apps env write (read and write)", "PUT", "/servers/srv-a/apps/myapp/env", { entries: [{ key: "A", value: "b" }] }],
+    ["apps preflight", "GET", "/servers/srv-a/apps/myapp/preflight"],
+    ["sync (list and app detail)", "POST", "/servers/srv-a/sync", {}],
+    ["v1 rollback", "POST", "/v1/rollback", { server: "vps-a", app: "myapp" }],
+    ["v1 preflight", "POST", "/v1/preflight", { server: "vps-a", app: "myapp" }],
+  ];
+
+  it.each(adminRoutes)("%s: an admin on an owned row never uses the guarded transport", async (_l, method, path, body) => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({ entries: [], lines: [], apps: [{ name: "myapp", configured: true }], app: { containers: "c" }, success: true }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    const res = await appFor(ADMIN).request(path, json(method, body));
+    await res.text();
+    // v1 rollback answers 202 and calls the relay afterwards
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(0);
+    // The rollback routes go on to the post-deploy health gate, which runs
+    // without an actor and so follows the row owner (documented); only the
+    // rollback request itself carries the actor.
+    const guarded = vi.mocked(guardedFetch).mock.calls.map((c) => String(c[0]));
+    expect(path.endsWith("rollback") ? guarded.filter((u) => u.endsWith("/rollback")) : guarded).toEqual([]);
+  });
+
+  it.each(adminRoutes)("%s: the same call for the non-admin owner uses the guarded transport", async (_l, method, path, body) => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({ entries: [], lines: [], apps: [{ name: "myapp", configured: true }], app: { containers: "c" }, success: true }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    );
+    const res = await appFor(NON_ADMIN).request(path, json(method, body));
+    await res.text();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 20));
+    const relayCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes("relay.example.com"));
+    expect(relayCalls.length).toBeGreaterThan(0);
+    expect(vi.mocked(guardedFetch).mock.calls.length).toBe(relayCalls.length);
+  });
+
   it("v1 POST deploy hands a public relayUrl to streamDeploy for a non-admin", async () => {
     const res = await appFor(NON_ADMIN).request("/v1/deploy", json("POST", { server: "vps-a", app: "myapp" }));
     expect(res.status).toBe(202);
     expect(streamDeployMock).toHaveBeenCalledTimes(1);
+    expect(streamDeployMock.mock.calls[0][0]).toMatchObject({ connectGuard: true });
+  });
+
+  it("v1 POST deploy for an admin, and for a listed id, does not ask for the connect-time guard", async () => {
+    await appFor(ADMIN).request("/v1/deploy", json("POST", { server: "vps-a", app: "myapp" }));
+    expect(streamDeployMock.mock.calls.at(-1)![0]).toMatchObject({ connectGuard: false });
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-a");
+    await appFor(NON_ADMIN).request("/v1/deploy", json("POST", { server: "vps-a", app: "myapp" }));
+    expect(streamDeployMock.mock.calls.at(-1)![0]).toMatchObject({ connectGuard: false });
   });
 });
 

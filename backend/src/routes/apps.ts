@@ -9,6 +9,7 @@ import { audit, getActor, getActorUserId } from "../lib/audit.js";
 import { recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "../lib/deploy-recovery.js";
 import { findOwnedServer, getActorContext } from "../lib/ownership.js";
 import { denyPrivateServerTargets } from "../lib/target-guard.js";
+import { connectGuardRequired } from "../lib/connect-guard.js";
 import { isPrivateOrLoopbackHost } from "../services/probe-guard.js";
 import { listMaskedAppSecrets, setAppSecret, deleteAppSecret } from "../lib/app-secrets.js";
 import { evaluateRequiredEnv } from "../lib/required-env-gate.js";
@@ -99,7 +100,7 @@ appsRouter.get("/", async (c) => {
 appsRouter.get("/upstream", async (c) => {
   const serverId = getServerId(c);
   const apps = await prisma.app.findMany({ where: { serverId }, select: { name: true } });
-  const listing = apps.length > 0 ? await fetchUpstreamByApp(serverId) : null;
+  const listing = apps.length > 0 ? await fetchUpstreamByApp(serverId, getActorContext(c)) : null;
   const upstream: Record<string, Upstream> = {};
   for (const a of apps) upstream[a.name] = upstreamForApp(listing, a.name);
   return c.json({ upstream });
@@ -257,6 +258,7 @@ appsRouter.post("/:name/deploy", async (c) => {
     appName: name,
     relayUrl: server?.relayUrl ?? "",
     relayToken: server?.relayToken ?? null,
+    connectGuard: connectGuardRequired(server, getActorContext(c)),
     body: { branch: body.branch, force: body.force },
     previousStatus: app.status,
   });
@@ -341,6 +343,7 @@ appsRouter.post("/:name/rollback", async (c) => {
   try {
     const raw = await relayRequest<RollbackRelayPayload & { result?: RollbackRelayPayload }>({
       serverId,
+      actor: getActorContext(c),
       path: `/api/apps/${name}/rollback`,
       method: "POST",
       body: { to_commit: body.to_commit },
@@ -463,6 +466,7 @@ appsRouter.get("/:name/logs", async (c) => {
   try {
     const result = await relayRequest({
       serverId,
+      actor: getActorContext(c),
       path: `/api/apps/${name}/logs?lines=${lines}`,
     });
     return c.json(result);
@@ -489,6 +493,7 @@ appsRouter.get("/:name/preflight", async (c) => {
   try {
     const result = await relayRequest<{ passed?: boolean; checks?: Array<{ name: string; passed: boolean; message: string }> }>({
       serverId,
+      actor: getActorContext(c),
       path: `/api/apps/${name}/preflight`,
     });
 
@@ -610,6 +615,7 @@ appsRouter.post("/bulk-deploy", async (c) => {
         appName: name,
         relayUrl: server.relayUrl ?? "",
         relayToken: server.relayToken ?? null,
+        connectGuard: connectGuardRequired(server, getActorContext(c)),
         body: { force: force ?? false },
         previousStatus: app.status,
       });
@@ -672,6 +678,7 @@ appsRouter.get("/:name/env", async (c) => {
   try {
     const result = await relayRequest<{ entries: { key: string; value: string }[] }>({
       serverId,
+      actor: getActorContext(c),
       path: `/api/apps/${name}/env`,
       method: "GET",
     });
@@ -751,6 +758,7 @@ appsRouter.put("/:name/env", async (c) => {
   try {
     const prev = await relayRequest<{ entries: { key: string; value: string }[] }>({
       serverId,
+      actor: getActorContext(c),
       path: `/api/apps/${name}/env`,
       method: "GET",
     });
@@ -764,6 +772,7 @@ appsRouter.put("/:name/env", async (c) => {
   try {
     await relayRequest({
       serverId,
+      actor: getActorContext(c),
       path: `/api/apps/${name}/env`,
       method: "PUT",
       body: { entries },

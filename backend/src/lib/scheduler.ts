@@ -3,6 +3,7 @@ import { streamDeploy } from "./stream-deploy.js";
 import { recoverStuckDeploys } from "./startup.js";
 import { assertServerTargetsAllowed } from "../services/probe-guard.js";
 import { isValidAppName } from "./app-name.js";
+import { connectGuardRequired } from "./connect-guard.js";
 
 const CHECK_INTERVAL = 60_000; // 1 minute
 
@@ -144,6 +145,7 @@ export async function checkScheduled() {
       appName: entry.appName,
       relayUrl: entry.server.relayUrl ?? "",
       relayToken: entry.server.relayToken ?? null,
+      connectGuard: connectGuardRequired(entry.server),
       body: { force: entry.force },
       // upsert returned the row before the `deploying` update above, so this
       // is the status a preflight-blocked deploy restores.

@@ -122,10 +122,11 @@ export interface RelayUpstreamListing {
  * throws; a relay that is down or too slow yields `null` so callers mark
  * every app unknown ("relay unreachable") and the page still renders.
  */
-export async function fetchUpstreamByApp(serverId: string): Promise<RelayUpstreamListing | null> {
+export async function fetchUpstreamByApp(serverId: string, actor?: { isAdmin: boolean }): Promise<RelayUpstreamListing | null> {
   try {
     const body = await relayRequest<{ apps?: unknown }>({
       serverId,
+      actor,
       path: "/api/apps",
       timeoutMs: 8_000,
     });

@@ -75,17 +75,28 @@ const NETWORK_ERROR_CODES = new Set([
   "EPIPE",
   "UND_ERR_CONNECT_TIMEOUT",
   "UND_ERR_SOCKET",
+  // The connect-time target guard refused the address (lib/connect-guard.ts).
+  "ECONNDENIED",
+  "ECONNABORTED",
 ]);
+// Raw node:http(s) failures that are not a bare socket error: HTTP parse
+// errors and TLS / certificate failures.
+const NETWORK_ERROR_CODE_PREFIXES = /^(HPE_|CERT_|ERR_TLS_|ERR_SSL_)/;
+
+function isNetworkCode(code: unknown): boolean {
+  return typeof code === "string" && (NETWORK_ERROR_CODES.has(code) || NETWORK_ERROR_CODE_PREFIXES.test(code));
+}
 
 function isNetworkFailure(err: unknown): boolean {
   const e = err as { message?: unknown; code?: unknown; cause?: unknown } | null;
   if (!e || typeof e !== "object") return false;
   // undici reports a refused connection / DNS failure as
-  // TypeError("fetch failed") with the socket error as `cause`.
+  // TypeError("fetch failed") with the socket error as `cause`; the guarded
+  // transport (lib/guarded-fetch.ts) wraps its failures the same way.
   if (e.message === "fetch failed") return true;
-  if (typeof e.code === "string" && NETWORK_ERROR_CODES.has(e.code)) return true;
+  if (isNetworkCode(e.code)) return true;
   const cause = e.cause as { code?: unknown } | null | undefined;
-  return typeof cause?.code === "string" && NETWORK_ERROR_CODES.has(cause.code);
+  return isNetworkCode(cause?.code);
 }
 
 export type ProbeFailureStatus = "auth" | "unknown" | "offline" | "no-relay";

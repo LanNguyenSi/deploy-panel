@@ -5,6 +5,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 
+// These tests assert route behaviour against a mocked global fetch; the
+// connect-guarded transport (lib/guarded-fetch.ts) is covered in
+// connect-guard.test.ts, so here it forwards to the same fetch.
+vi.mock("../src/lib/guarded-fetch.js", () => ({
+  guardedFetch: vi.fn((url: string, init?: RequestInit) => globalThis.fetch(url, init)),
+}));
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     server: {
@@ -59,6 +66,7 @@ import { prisma } from "../src/lib/prisma.js";
 import { config } from "../src/config/index.js";
 import { serversRouter } from "../src/routes/servers.js";
 import { executeSshCommand } from "../src/services/ssh-executor.js";
+import { guardedFetch } from "../src/lib/guarded-fetch.js";
 import { activeInstalls } from "../src/services/active-installs.js";
 import { assertServerTargetsAllowed } from "../src/services/probe-guard.js";
 
@@ -711,6 +719,20 @@ describe("installer-reported relay URL is checked before it is stored", () => {
     expect(err?.message).toMatch(/public relay domain/);
   });
 
+  it("first install: SSH pins a checked address for a non-admin and not for an admin", async () => {
+    mServer.findUnique.mockResolvedValue(null);
+    vi.mocked(executeSshCommand).mockImplementation(async (opts) => {
+      installOutput("http://10.0.0.5:3001")(opts);
+      return { exitCode: 0, finished: true };
+    });
+    await readSseEvents(await appFor(NON_ADMIN).request("/servers/install-relay", send("POST", firstInstallBody)));
+    expect(vi.mocked(executeSshCommand).mock.calls.at(-1)![0].guardTarget).toBe(true);
+
+    vi.mocked(executeSshCommand).mockClear();
+    await readSseEvents(await appFor(ADMIN).request("/servers/install-relay", send("POST", firstInstallBody)));
+    expect(vi.mocked(executeSshCommand).mock.calls.at(-1)![0].guardTarget).toBe(false);
+  });
+
   it("re-install: a placeholder relay URL is reported as relay_url_invalid and not stored", async () => {
     mServer.findUnique.mockResolvedValue(serverRow());
     vi.mocked(executeSshCommand).mockImplementation(async (opts) => {
@@ -788,5 +810,94 @@ describe("installer-reported relay URL is checked before it is stored", () => {
       (c) => c[0]?.data?.relayUrl === "http://127.0.0.1:3000",
     );
     expect(relayUrlWrites).toHaveLength(1);
+  });
+});
+
+// Connect-time flags: the pre-check above resolves once; these rows are also
+// connected through the checking lookup (HTTP) or an address pinned by it
+// (SSH). The transports themselves are covered in connect-guard.test.ts.
+describe("connect-time guard flags on the per-id routes", () => {
+  const fetchRoutes: Array<[string, string, string]> = [
+    ["test", "POST", "/servers/srv-a/test"],
+    ["system", "GET", "/servers/srv-a/system"],
+    ["relay-status", "GET", "/servers/srv-a/relay-status"],
+    ["relay-self-update", "POST", "/servers/srv-a/relay-self-update"],
+  ];
+  const sshRoutes: Array<[string, string]> = [
+    ["install-relay", "/servers/srv-a/install-relay"],
+    ["update-relay-image", "/servers/srv-a/update-relay-image"],
+  ];
+
+  it.each(fetchRoutes)("%s: a non-admin's relay is fetched through the guarded transport", async (_n, method, path) => {
+    mServer.findUnique.mockResolvedValue(serverRow());
+    const res = await appFor(NON_ADMIN).request(path, send(method, method === "POST" ? {} : undefined));
+    await res.text();
+    expect(guardedFetch).toHaveBeenCalled();
+    expect(vi.mocked(guardedFetch).mock.calls[0][0]).toContain("relay.example.com");
+    // every request to the relay went through it, none through the plain fetch
+    const relayCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes("relay.example.com"));
+    expect(relayCalls.length).toBe(vi.mocked(guardedFetch).mock.calls.length);
+  });
+
+  it("update-relay-image: the SSH inspect and install and the health check are all guarded for a non-admin", async () => {
+    mServer.findUnique.mockResolvedValue(serverRow());
+    vi.mocked(executeSshCommand).mockImplementation(async (opts) => ({
+      exitCode: opts.command.includes("grep") ? 1 : 0,
+      finished: true,
+    }));
+    await (await appFor(NON_ADMIN).request("/servers/srv-a/update-relay-image", send("POST", sshBody))).text();
+    const calls = vi.mocked(executeSshCommand).mock.calls;
+    expect(calls.length).toBe(2);
+    for (const call of calls) expect(call[0].guardTarget).toBe(true);
+    const relayCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes("relay.example.com"));
+    expect(relayCalls.length).toBeGreaterThan(0);
+    expect(relayCalls.length).toBe(vi.mocked(guardedFetch).mock.calls.length);
+  });
+
+  it("test: a connection the guard refuses is an offline relay (status written), not a 500", async () => {
+    mServer.findUnique.mockResolvedValue(serverRow());
+    const denied = Object.assign(new Error("lookup failed: ENOTFOUND"), { code: "ECONNDENIED" });
+    vi.mocked(guardedFetch).mockRejectedValueOnce(new TypeError("fetch failed", { cause: denied }));
+    const res = await appFor(NON_ADMIN).request("/servers/srv-a/test", send("POST", {}));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: "offline", message: "fetch failed" });
+    expect(mServer.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: "offline" }) }),
+    );
+  });
+
+  it.each(fetchRoutes)("%s: an admin on the same owned row keeps the plain fetch", async (_n, method, path) => {
+    mServer.findUnique.mockResolvedValue(serverRow());
+    const res = await appFor(ADMIN).request(path, send(method, method === "POST" ? {} : undefined));
+    await res.text();
+    expect(fetchMock).toHaveBeenCalled();
+    expect(guardedFetch).not.toHaveBeenCalled();
+  });
+
+  it.each(fetchRoutes)("%s: a listed id keeps the plain fetch for a non-admin", async (_n, method, path) => {
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-a");
+    mServer.findUnique.mockResolvedValue(serverRow());
+    const res = await appFor(NON_ADMIN).request(path, send(method, method === "POST" ? {} : undefined));
+    await res.text();
+    expect(fetchMock).toHaveBeenCalled();
+    expect(guardedFetch).not.toHaveBeenCalled();
+  });
+
+  it.each(sshRoutes)("%s: SSH for a non-admin pins a checked address; admin and a listed id do not", async (_n, path) => {
+    mServer.findUnique.mockResolvedValue(serverRow());
+    await (await appFor(NON_ADMIN).request(path, send("POST", sshBody))).text();
+    expect(vi.mocked(executeSshCommand).mock.calls.length).toBeGreaterThan(0);
+    for (const call of vi.mocked(executeSshCommand).mock.calls) expect(call[0].guardTarget).toBe(true);
+
+    vi.mocked(executeSshCommand).mockClear();
+    await (await appFor(ADMIN).request(path, send("POST", sshBody))).text();
+    expect(vi.mocked(executeSshCommand).mock.calls.length).toBeGreaterThan(0);
+    for (const call of vi.mocked(executeSshCommand).mock.calls) expect(call[0].guardTarget).toBe(false);
+
+    vi.mocked(executeSshCommand).mockClear();
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-a");
+    await (await appFor(NON_ADMIN).request(path, send("POST", sshBody))).text();
+    expect(vi.mocked(executeSshCommand).mock.calls.length).toBeGreaterThan(0);
+    for (const call of vi.mocked(executeSshCommand).mock.calls) expect(call[0].guardTarget).toBe(false);
   });
 });

@@ -196,6 +196,19 @@ describe("classifyProbeError: one classifier for /test, sync and relay-self-upda
     ).toBe("offline");
   });
 
+  it("maps a connect-time guard refusal, bare or wrapped as fetch failed, to offline", () => {
+    const denied = Object.assign(new Error("target is a private or loopback address"), { code: "ECONNDENIED" });
+    expect(classifyProbeError(denied)).toBe("offline");
+    expect(classifyProbeError(new TypeError("fetch failed", { cause: denied }))).toBe("offline");
+  });
+
+  it("maps raw node:http parse and TLS failures (bare or on the cause) to offline", () => {
+    for (const code of ["HPE_INVALID_CONSTANT", "CERT_HAS_EXPIRED", "ERR_TLS_CERT_ALTNAME_INVALID", "ERR_SSL_WRONG_VERSION_NUMBER", "ETIMEDOUT"]) {
+      expect(classifyProbeError(Object.assign(new Error("x"), { code }))).toBe("offline");
+      expect(classifyProbeError(new Error("x", { cause: Object.assign(new Error("y"), { code }) }))).toBe("offline");
+    }
+  });
+
   it("maps a relay answer that cannot be parsed (SyntaxError) to unknown", () => {
     expect(classifyProbeError(new SyntaxError("Unexpected token <"))).toBe("unknown");
   });

@@ -39,6 +39,7 @@ syncRouter.post("/:serverId/sync", async (c) => {
     // Get all apps from relay
     const listing = await relayRequest<{ apps: RelayApp[] }>({
       serverId,
+      actor,
       path: "/api/apps",
     });
     const relayApps = listing?.apps;
@@ -58,6 +59,7 @@ syncRouter.post("/:serverId/sync", async (c) => {
       try {
         const detail = await relayRequest<{ app: { containers: string | null } }>({
           serverId,
+          actor,
           path: `/api/apps/${relayApp.name}`,
         });
         // If relay returns app detail with containers info, app is running

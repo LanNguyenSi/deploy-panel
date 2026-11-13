@@ -166,6 +166,8 @@ describe("checkScheduled — delegates to streamDeploy", () => {
       appName: "my-app",
       relayUrl: "http://relay.example",
       relayToken: "relay-tok",
+      // no owner on the fixture row: the admin-shared fleet is not connect-guarded
+      connectGuard: false,
       body: { force: false },
       // the app status from before the `deploying` flip, restored if preflight blocks the deploy
       previousStatus: "healthy",

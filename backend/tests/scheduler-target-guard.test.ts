@@ -114,6 +114,8 @@ describe("checkScheduled: relayUrl host check for non-admin owned servers", () =
     expect(mStream).toHaveBeenCalledTimes(1);
     expect(mStream.mock.calls[0][0].relayUrl).toBe("https://relay.example.com");
     expect(mDeploy.update.mock.calls.some((c) => c[0].data.status === "failed")).toBe(false);
+    // the owner decides at connect time too: the relay is resolved and checked inside the connection
+    expect(mStream.mock.calls[0][0].connectGuard).toBe(true);
   });
 
   it("proceeds for an admin-shared server (userId null) with a private relayUrl, without a lookup", async () => {
@@ -123,6 +125,7 @@ describe("checkScheduled: relayUrl host check for non-admin owned servers", () =
     await checkScheduled();
     expect(mStream).toHaveBeenCalledTimes(1);
     expect(mStream.mock.calls[0][0].relayUrl).toBe("http://10.0.0.5:3000");
+    expect(mStream.mock.calls[0][0].connectGuard).toBe(false);
     expect(lookupMock).not.toHaveBeenCalled();
   });
 
@@ -147,6 +150,8 @@ describe("checkScheduled: TRUSTED_RELAY_SERVER_IDS", () => {
     expect(mStream).toHaveBeenCalledTimes(1);
     expect(mStream.mock.calls[0][0].relayUrl).toBe("http://agent-relay:8222");
     expect(mDeploy.update.mock.calls.some((c) => c[0].data.status === "failed")).toBe(false);
+    // the listed row keeps its exemption at connect time as well
+    expect(mStream.mock.calls[0][0].connectGuard).toBe(false);
   });
 
   it("still fails the deploy when only another id is listed", async () => {

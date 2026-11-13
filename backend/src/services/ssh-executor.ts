@@ -14,6 +14,8 @@
  */
 import { createHash } from "node:crypto";
 import { Client, type ConnectConfig } from "ssh2";
+import { connect as netConnect, type Socket } from "node:net";
+import { assertLiteralAllowed, guardedLookup } from "../lib/connect-guard.js";
 
 export type SshAuth =
   | { kind: "password"; password: string }
@@ -59,6 +61,18 @@ export interface ExecuteSshCommandOptions {
    * otherwise ssh2's built-in known_hosts enforcement applies.
    */
   expectedHostKeySha256?: string;
+  /**
+   * Connect ssh2 over a socket that resolves `host` through the checking
+   * lookup (lib/connect-guard.ts): every address the name resolves to must be
+   * public, a lookup error is a refusal, and the socket can only connect to an
+   * address that was classified, so a DNS record that flips after a pre-check
+   * is never dialed. Node's address fallback applies (all checked addresses
+   * are tried). An IP-literal host is classified before any socket is opened.
+   * A refusal rejects with `SshError` `connect_failed` and opens no
+   * connection. Callers set it for a non-admin actor or a server row with an
+   * owner (`connectGuardRequiredForActor` / `connectGuardRequired`).
+   */
+  guardTarget?: boolean;
 }
 
 export interface ExecuteSshCommandResult {
@@ -292,6 +306,8 @@ export async function executeSshCommand(
     const stderrLine = makeLineStream(opts.onStderr);
     let settled = false;
     let stream: { signal: (s: string) => void } | null = null;
+    // Only set for a guarded target: the socket whose lookup checks the address.
+    let guardSocket: Socket | undefined;
 
     const cleanup = () => {
       for (const b of credBuffers) zeroBuffer(b);
@@ -301,6 +317,7 @@ export async function executeSshCommand(
       } catch {
         // already closed — fine
       }
+      guardSocket?.destroy();
     };
 
     const settle = (
@@ -365,6 +382,17 @@ export async function executeSshCommand(
     });
 
     try {
+      if (opts.guardTarget) {
+        // Node skips `lookup` for an IP literal, so classify it here. A name is
+        // checked by the lookup inside the socket's own connection attempt.
+        assertLiteralAllowed(opts.host);
+        guardSocket = netConnect({
+          host: opts.host,
+          port: opts.port ?? 22,
+          lookup: guardedLookup,
+        });
+        config.sock = guardSocket;
+      }
       client.connect(config);
     } catch (err) {
       settle(

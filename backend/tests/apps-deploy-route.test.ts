@@ -46,6 +46,7 @@ vi.mock("../src/lib/deploy-recovery.js", () => ({
 import { prisma } from "../src/lib/prisma.js";
 import { streamDeploy } from "../src/lib/stream-deploy.js";
 import { appsRouter } from "../src/routes/apps.js";
+import { getActorContext } from "../src/lib/ownership.js";
 import { Hono } from "hono";
 
 const mAppUpsert = prisma.app.upsert as unknown as ReturnType<typeof vi.fn>;
@@ -123,6 +124,43 @@ describe("apps router: streamDeploy delegation", () => {
     expect(mStreamDeploy).toHaveBeenCalledWith(
       expect.objectContaining({ previousStatus: "unhealthy", body: { force: false } }),
     );
+  });
+
+  describe("connect-time guard flag", () => {
+    const post = (path: string, body: unknown) =>
+      app().request(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+    beforeEach(() => {
+      mDeployCreate.mockResolvedValue({ id: "deploy-1", status: "running" });
+      mServerFindUnique.mockResolvedValue({
+        id: "srv-a",
+        userId: "user-a",
+        relayUrl: "http://relay.example",
+        relayToken: "tok",
+      });
+    });
+
+    it.each([
+      ["POST /:name/deploy", "/servers/srv-a/apps/my-app/deploy", {}],
+      ["POST /bulk-deploy", "/servers/srv-a/apps/bulk-deploy", { apps: ["app-1"] }],
+    ])("%s: an owned row deployed by its non-admin owner asks for the guard", async (_l, path, body) => {
+      await post(path, body);
+      expect(mStreamDeploy).toHaveBeenCalledWith(expect.objectContaining({ connectGuard: true }));
+    });
+
+    it.each([
+      ["POST /:name/deploy", "/servers/srv-a/apps/my-app/deploy", {}],
+      ["POST /bulk-deploy", "/servers/srv-a/apps/bulk-deploy", { apps: ["app-1"] }],
+    ])("%s: an admin acting on the same row does not", async (_l, path, body) => {
+      vi.mocked(getActorContext).mockReturnValue({ userId: null, isAdmin: true });
+      await post(path, body);
+      expect(mStreamDeploy).toHaveBeenCalledWith(expect.objectContaining({ connectGuard: false }));
+      vi.mocked(getActorContext).mockReturnValue({ userId: "user-a", isAdmin: false });
+    });
   });
 
   it("POST /bulk-deploy calls streamDeploy exactly once per app", async () => {

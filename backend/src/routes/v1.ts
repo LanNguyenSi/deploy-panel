@@ -14,6 +14,7 @@ import {
 import { evaluateRequiredEnv } from "../lib/required-env-gate.js";
 import { APP_NAME_PATTERN } from "../lib/app-name.js";
 import { denyPrivateServerTargets } from "../lib/target-guard.js";
+import { connectGuardRequired } from "../lib/connect-guard.js";
 import { COMMIT_SHA_PATTERN } from "../lib/deploy-target.js";
 
 type Env = {
@@ -146,6 +147,7 @@ v1Router.post("/deploy", async (c) => {
     appName,
     relayUrl: srv.relayUrl,
     relayToken: srv.relayToken,
+    connectGuard: connectGuardRequired(srv, actor),
     body: { branch: ref, force: force ?? false },
     previousStatus: appRecord.status,
   });
@@ -372,6 +374,7 @@ v1Router.post("/rollback", async (c) => {
         }
       >({
         serverId: srv.id,
+        actor,
         path: `/api/apps/${appName}/rollback`,
         method: "POST",
         body: { to_commit },
@@ -491,6 +494,7 @@ v1Router.get("/logs", async (c) => {
   try {
     const result = await relayRequest({
       serverId: srv.id,
+      actor,
       path: `/api/apps/${appName}/logs?lines=${lines}`,
     });
     return c.json(result);
@@ -525,6 +529,7 @@ v1Router.post("/preflight", async (c) => {
   try {
     const result = await relayRequest<{ passed?: boolean; checks?: Array<{ name: string; passed: boolean; message: string }> }>({
       serverId: srv.id,
+      actor,
       path: `/api/apps/${appName}/preflight`,
     });
 

@@ -7,6 +7,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Hono } from "hono";
 
+// These tests assert route behaviour against a mocked global fetch; the
+// connect-guarded transport (lib/guarded-fetch.ts) is covered in
+// connect-guard.test.ts, so here it forwards to the same fetch.
+vi.mock("../src/lib/guarded-fetch.js", () => ({
+  guardedFetch: vi.fn((url: string, init?: RequestInit) => globalThis.fetch(url, init)),
+}));
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     server: {
@@ -23,6 +30,7 @@ vi.mock("../src/lib/prisma.js", () => ({
 
 import { prisma } from "../src/lib/prisma.js";
 import { serversRouter } from "../src/routes/servers.js";
+import { guardedFetch } from "../src/lib/guarded-fetch.js";
 import { activeInstalls } from "../src/services/active-installs.js";
 import {
   GHCR_MANIFEST_URL,
@@ -555,6 +563,22 @@ describe("POST /servers/:id/relay-self-update reads the relay's own record", () 
       expect(res.status).toBe(202);
       expect(body).toMatchObject({ status: "pending", kind: "relay_in_progress" });
       noStatusWrite();
+    });
+
+    it("the record read after a trigger timeout goes through the guarded transport for a non-admin", async () => {
+      relay({
+        healthAfter: OLD_SHA,
+        trigger: timeout,
+        record: () => jsonRes({ revision: OLD_SHA, state: state({ status: "in_progress" }) }),
+      });
+      await selfUpdate();
+      expect(recordCalls.length).toBeGreaterThan(0);
+      const recordUrls = fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/api/self-update") && c[1]?.method !== "POST");
+      expect(recordUrls.length).toBeGreaterThan(0);
+      const guardedUrls = vi.mocked(guardedFetch).mock.calls.map((c) => String(c[0]));
+      expect(guardedUrls.filter((u) => u.endsWith("/api/self-update")).length).toBe(
+        fetchMock.mock.calls.filter((c) => String(c[0]).endsWith("/api/self-update")).length,
+      );
     });
 
     // Repro of the stale-record defect: earlier same-revision update (prev=X,
