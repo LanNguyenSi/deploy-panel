@@ -177,6 +177,11 @@ describe("streamDeploy — pre-deploy secret provisioning + required-env gate", 
 describe("streamDeploy: relay 409 env-unreadable from the provisioning env read", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks keeps implementations set by earlier tests; reset the
+    // history fallback of statusAfterBlocked so only previousStatus can
+    // produce the restored status.
+    mDeployFindMany.mockReset();
+    mDeployFindMany.mockResolvedValue([]);
     mAppFindUnique.mockResolvedValue({ requiredEnvKeys: ["METRICS_API_TOKEN"] });
   });
 
@@ -189,12 +194,12 @@ describe("streamDeploy: relay 409 env-unreadable from the provisioning env read"
     mProvision.mockRejectedValue(unreadableError());
     const fetchSpy = vi.spyOn(globalThis, "fetch");
 
-    await streamDeploy({ ...baseOpts, previousStatus: "healthy" });
+    await streamDeploy({ ...baseOpts, previousStatus: "unhealthy" });
 
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(recoverBrokenDeploy).not.toHaveBeenCalled();
     expect(lastCall(mDeployUpdate).data.status).toBe("failed");
-    expect(lastCall(mAppUpdate).data.status).toBe("healthy");
+    expect(lastCall(mAppUpdate).data.status).toBe("unhealthy");
     const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
     expect(steps.at(-1)).toMatchObject({ name: "env-preflight", kind: "preflight-check", status: "failure" });
     expect(steps.at(-1).message).toContain("unreadable");

@@ -72,12 +72,13 @@ const ENV_UNREADABLE_MESSAGE_MAX_CHARS = 300;
 /**
  * Recognises the relay's "I cannot read this app's .env file" answer: an
  * HTTP 409 actually returned by a relay for the app-env read (agent-relay
- * sends it when the `.env` is a symlink or otherwise not a regular file).
- * Errors the panel raised itself (`local`) are never that answer, even if
- * they happen to carry a 409 code.
+ * sends it when the `.env` is a symlink or otherwise not a regular file;
+ * only the GET answers 409, the env PUT has no 409 answer). Errors the
+ * panel raised itself (`local`) are never that answer, even if they happen
+ * to carry a 409 code.
  *
- * Returns a bounded single-line message naming the unreadable env file and
- * carrying the relay's own text (from the response body when present, which
+ * Returns a bounded message (line breaks in the relay text are kept)
+ * naming the unreadable env file and carrying the relay's own text (from the response body when present, which
  * is preferred, else the raw body, else the error message), or null for
  * anything else. Callers treat a non-null answer as "cannot provision or
  * check the env, block the deploy / fail the check", never as a lost

@@ -15,6 +15,11 @@ describe("envUnreadableRelayMessage", () => {
     expect(msg).toBe("Env file unreadable on the relay: .env is a symlink");
   });
 
+  it("trims surrounding whitespace of the message or error field", () => {
+    const msg = envUnreadableRelayMessage(new RelayError("m", 409, JSON.stringify({ error: "  padded reason  " })));
+    expect(msg).toBe("Env file unreadable on the relay: padded reason");
+  });
+
   it("message extraction precedence: body message field wins, then error field, then raw body text, then the error message", () => {
     const both = envUnreadableRelayMessage(
       new RelayError("m", 409, JSON.stringify({ message: "the message field", error: "the error field" })),
