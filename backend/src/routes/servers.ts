@@ -1,4 +1,4 @@
-import { Hono, type Context } from "hono";
+import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { validatedJson } from "../lib/validator.js";
@@ -6,7 +6,6 @@ import { urlV3 } from "../lib/zod-url.js";
 import { prisma } from "../lib/prisma.js";
 import { audit, getActor, getActorUserId } from "../lib/audit.js";
 import {
-  type ActorContext,
   findOwnedServer,
   getActorContext,
   serverOwnershipWhere,
@@ -29,6 +28,8 @@ import {
   assertServerTargetsAllowed,
   consumeProbeQuota,
 } from "../services/probe-guard.js";
+import { denyPrivateServerTargets } from "../lib/target-guard.js";
+import { relayFetch } from "../lib/relay-fetch.js";
 import {
   computeRelayOutdated,
   fetchRelayHealth,
@@ -50,35 +51,18 @@ function sanitizeServer(server: any) {
   };
 }
 
-export const serversRouter = new Hono();
-
 /**
- * Non-admin target guard for the routes that store or use a server's SSH
- * host or relay URL. Returns the 400 `private_host` response when the
- * actor is a non-admin and a passed target is private/loopback (literal
- * or resolved); returns null when the route may continue. Admins always
- * pass. Pass only the targets the route actually connects to.
+ * SSE error text when a non-admin's installer reported a relay URL the panel
+ * will not store: either not a URL at all (port-only installs print a
+ * placeholder such as `http://<set-host-ip>:3001`) or a private address.
  */
-async function denyPrivateServerTargets(
-  c: Context,
-  actor: ActorContext,
-  targets: { host?: string | null; relayUrl?: string | null },
-): Promise<Response | null> {
-  const check = await assertServerTargetsAllowed(actor, targets);
-  if (check.ok) return null;
-  const subject = check.field === "host" ? "host" : "relayUrl host";
-  return c.json(
-    {
-      error: "private_host",
-      field: check.field,
-      message:
-        check.reason === "literal"
-          ? `non-admin actors cannot use a private/loopback ${subject}`
-          : `${subject} resolves to a private/loopback address`,
-    },
-    400,
-  );
+function installerRelayUrlMessage(unparsable: boolean): string {
+  return unparsable
+    ? "the installer did not report a usable relay URL (it printed a placeholder); re-run the install with a public relay domain"
+    : "the installer reported a relay URL on a private/loopback address; re-run the install with a public relay domain";
 }
+
+export const serversRouter = new Hono();
 
 export const createServerSchema = z.object({
   name: z.string().min(1).max(100),
@@ -214,7 +198,7 @@ serversRouter.post("/:id/test", async (c) => {
       headers["Authorization"] = `Bearer ${server.relayToken}`;
     }
 
-    const response = await fetch(`${server.relayUrl}/health`, {
+    const response = await relayFetch(`${server.relayUrl}/health`, {
       headers,
       signal: AbortSignal.timeout(5000),
     });
@@ -290,7 +274,7 @@ serversRouter.get("/:id/system", async (c) => {
     const headers: Record<string, string> = {};
     if (server.relayToken) headers["Authorization"] = `Bearer ${server.relayToken}`;
 
-    const res = await fetch(`${server.relayUrl}/api/system`, {
+    const res = await relayFetch(`${server.relayUrl}/api/system`, {
       headers,
       signal: AbortSignal.timeout(5000),
     });
@@ -719,19 +703,12 @@ serversRouter.post("/install-relay", async (c) => {
         relayUrl: parsedOutput.value.relayUrl,
       });
       if (!relayCheck.ok) {
-        await audit(
-          "server.install-relay.failed",
-          input.host,
-          "private_host",
-          getActor(c),
-          getActorUserId(c),
-        );
+        const unusable = relayCheck.reason === "unparsable";
+        const kind = unusable ? "relay_url_invalid" : "private_host";
+        await audit("server.install-relay.failed", input.host, kind, getActor(c), getActorUserId(c));
         await stream.writeSSE({
           event: "error",
-          data: JSON.stringify({
-            kind: "private_host",
-            message: "the installer reported a relay URL on a private/loopback address",
-          }),
+          data: JSON.stringify({ kind, message: installerRelayUrlMessage(unusable) }),
         });
         return;
       }
@@ -1013,19 +990,18 @@ serversRouter.post("/:id/install-relay", async (c) => {
         relayUrl: parsedOutput.value.relayUrl,
       });
       if (!relayCheck.ok) {
+        const unusable = relayCheck.reason === "unparsable";
+        const kind = unusable ? "relay_url_invalid" : "private_host";
         await audit(
           "server.reinstall-relay.failed",
           `${server.name} (${server.host})`,
-          "private_host",
+          kind,
           getActor(c),
           getActorUserId(c),
         );
         await stream.writeSSE({
           event: "error",
-          data: JSON.stringify({
-            kind: "private_host",
-            message: "the installer reported a relay URL on a private/loopback address",
-          }),
+          data: JSON.stringify({ kind, message: installerRelayUrlMessage(unusable) }),
         });
         return;
       }
@@ -1477,7 +1453,7 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
             if (server.relayToken) {
               headers["Authorization"] = `Bearer ${server.relayToken}`;
             }
-            const response = await fetch(`${server.relayUrl}/health`, {
+            const response = await relayFetch(`${server.relayUrl}/health`, {
               headers,
               signal: AbortSignal.timeout(5000),
             });
@@ -1735,7 +1711,7 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
 
     let triggerRes: Response;
     try {
-      triggerRes = await fetch(`${server.relayUrl}/api/self-update`, {
+      triggerRes = await relayFetch(`${server.relayUrl}/api/self-update`, {
         method: "POST",
         headers,
         body: JSON.stringify(parsed.data.tag ? { tag: parsed.data.tag } : {}),

@@ -181,10 +181,19 @@ describe("assertServerTargetsAllowed", () => {
     ["http://127.1/", "literal"],
     ["http://2130706433/", "literal"],
     ["http://[::ffff:7f00:1]/", "literal"],
-    ["not a url", "literal"],
   ])("denies relayUrl %s", async (relayUrl, reason) => {
     const r = await assertServerTargetsAllowed({ isAdmin: false }, { relayUrl });
     expect(r).toEqual({ ok: false, field: "relayUrl", reason });
+  });
+
+  it("tells an unparsable relayUrl apart from a private one", async () => {
+    for (const relayUrl of ["not a url", "http://<set-host-ip>:3001"]) {
+      expect(await assertServerTargetsAllowed({ isAdmin: false }, { relayUrl })).toEqual({
+        ok: false,
+        field: "relayUrl",
+        reason: "unparsable",
+      });
+    }
   });
 
   it("denies a relayUrl hostname that resolves to a private address", async () => {
@@ -207,6 +216,18 @@ describe("assertServerTargetsAllowed", () => {
     ).toEqual({ ok: true });
     // Brackets are stripped before the DNS pass.
     expect(lookupMock).toHaveBeenCalledWith("2001:db8::1", expect.anything());
+  });
+});
+
+describe("a stored relayUrl that is not a URL", () => {
+  it("answers 400 invalid_relay_url to a non-admin before any fetch", async () => {
+    mServer.findUnique.mockResolvedValue(serverRow({ relayUrl: "http://<set-host-ip>:3001" }));
+    const res = await appFor(NON_ADMIN).request("/servers/srv-a/system");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; field: string };
+    expect(body.error).toBe("invalid_relay_url");
+    expect(body.field).toBe("relayUrl");
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
@@ -502,6 +523,68 @@ describe("installer-reported relay URL is checked before it is stored", () => {
     expect(events.find((e) => e.event === "error")?.data.kind).toBe("private_host");
     expect(events.find((e) => e.event === "done")).toBeUndefined();
     expect(mServer.create).not.toHaveBeenCalled();
+  });
+
+  it("first install: a placeholder relay URL is reported as relay_url_invalid, not private_host", async () => {
+    mServer.findUnique.mockResolvedValue(null);
+    vi.mocked(executeSshCommand).mockImplementation(async (opts) => {
+      installOutput("http://<set-host-ip>:3001")(opts);
+      return { exitCode: 0, finished: true };
+    });
+    const res = await appFor(NON_ADMIN).request(
+      "/servers/install-relay",
+      send("POST", firstInstallBody),
+    );
+    const events = await readSseEvents(res);
+    const err = events.find((e) => e.event === "error")?.data;
+    expect(err?.kind).toBe("relay_url_invalid");
+    expect(err?.message).toMatch(/public relay domain/);
+    expect(mServer.create).not.toHaveBeenCalled();
+  });
+
+  it("first install: a private relay URL says so and asks for a public relay domain", async () => {
+    mServer.findUnique.mockResolvedValue(null);
+    vi.mocked(executeSshCommand).mockImplementation(async (opts) => {
+      installOutput("http://10.0.0.5:3001")(opts);
+      return { exitCode: 0, finished: true };
+    });
+    const res = await appFor(NON_ADMIN).request(
+      "/servers/install-relay",
+      send("POST", firstInstallBody),
+    );
+    const err = (await readSseEvents(res)).find((e) => e.event === "error")?.data;
+    expect(err?.kind).toBe("private_host");
+    expect(err?.message).toMatch(/private\/loopback/);
+    expect(err?.message).toMatch(/public relay domain/);
+  });
+
+  it("re-install: a placeholder relay URL is reported as relay_url_invalid and not stored", async () => {
+    mServer.findUnique.mockResolvedValue(serverRow());
+    vi.mocked(executeSshCommand).mockImplementation(async (opts) => {
+      installOutput("http://<set-host-ip>:3001")(opts);
+      return { exitCode: 0, finished: true };
+    });
+    const res = await appFor(NON_ADMIN).request(
+      "/servers/srv-a/install-relay",
+      send("POST", sshBody),
+    );
+    const events = await readSseEvents(res);
+    const err = events.find((e) => e.event === "error")?.data;
+    expect(err?.kind).toBe("relay_url_invalid");
+    expect(err?.message).toMatch(/public relay domain/);
+    expect(mServer.update.mock.calls.filter((c) => c[0]?.data?.relayUrl !== undefined)).toHaveLength(0);
+  });
+
+  it("first install: admin may store a placeholder relay URL (unchanged)", async () => {
+    mServer.findUnique.mockResolvedValue(null);
+    mServer.create.mockResolvedValue(serverRow({ userId: null }));
+    vi.mocked(executeSshCommand).mockImplementation(async (opts) => {
+      installOutput("http://<set-host-ip>:3001")(opts);
+      return { exitCode: 0, finished: true };
+    });
+    const res = await appFor(ADMIN).request("/servers/install-relay", send("POST", firstInstallBody));
+    const events = await readSseEvents(res);
+    expect(events.find((e) => e.event === "done")).toBeDefined();
   });
 
   it("first install: admin keeps an internal relay URL", async () => {
