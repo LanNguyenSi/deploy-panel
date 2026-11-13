@@ -1,4 +1,5 @@
 import { prisma } from "./prisma.js";
+import { relayFetch } from "./relay-fetch.js";
 
 export interface RelayRequestOptions {
   serverId: string;
@@ -26,7 +27,7 @@ export async function relayRequest<T>(options: RelayRequestOptions): Promise<T> 
     headers["Authorization"] = `Bearer ${server.relayToken}`;
   }
 
-  const response = await fetch(`${server.relayUrl}${path}`, {
+  const response = await relayFetch(`${server.relayUrl}${path}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,

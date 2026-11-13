@@ -8,6 +8,7 @@ import { setAppStatusAfterRollback, setAppStatusAfterRollbackRejection } from ".
 import { audit, getActor, getActorUserId } from "../lib/audit.js";
 import { recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "../lib/deploy-recovery.js";
 import { findOwnedServer, getActorContext } from "../lib/ownership.js";
+import { denyPrivateServerTargets } from "../lib/target-guard.js";
 import { isPrivateOrLoopbackHost } from "../services/probe-guard.js";
 import { listMaskedAppSecrets, setAppSecret, deleteAppSecret } from "../lib/app-secrets.js";
 import { evaluateRequiredEnv } from "../lib/required-env-gate.js";
@@ -34,6 +35,10 @@ appsRouter.use("*", async (c, next) => {
   const actor = getActorContext(c);
   const server = await findOwnedServer(actor, serverId);
   if (!server) return c.json({ error: "not_found" }, 404);
+  // Most app routes call the relay (and the rest are cheap to refuse): a non-admin
+  // whose server stores a private relayUrl gets 400 private_host before any of them.
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl });
+  if (denied) return denied;
   return next();
 });
 

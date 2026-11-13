@@ -21,6 +21,7 @@
  */
 
 import { normalizeRevision } from "../lib/ghcr.js";
+import { relayFetch } from "../lib/relay-fetch.js";
 
 export type RelayRecordOutcome =
   | { kind: "none" }
@@ -68,7 +69,7 @@ export async function readRelaySelfUpdateOutcome(
   try {
     const headers: Record<string, string> = {};
     if (server.relayToken) headers["Authorization"] = `Bearer ${server.relayToken}`;
-    const res = await fetch(`${server.relayUrl}/api/self-update`, {
+    const res = await relayFetch(`${server.relayUrl}/api/self-update`, {
       headers,
       signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),
     });
