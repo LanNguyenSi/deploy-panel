@@ -332,7 +332,7 @@ export async function streamDeploy(opts: {
     };
     armIdleTimer(firstByteMs);
 
-    const res = await fetch(`${relayUrl}/api/apps/${appName}/deploy?stream=true`, {
+    const res = await fetch(`${relayUrl}/api/apps/${encodeURIComponent(appName)}/deploy?stream=true`, {
       method: "POST",
       headers,
       body: JSON.stringify(body),

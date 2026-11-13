@@ -70,7 +70,7 @@ All app endpoints are nested under a server: `/api/servers/:serverId/apps`.
 | Method | Path                 | Description                        |
 |--------|----------------------|------------------------------------|
 | GET    | `/api/scheduled`     | List scheduled deploys (`status` query: `pending` by default, `all` for every status; at most 50, soonest first) |
-| POST   | `/api/scheduled`     | Schedule a one-time deploy; body `{ server, app, scheduledFor, force? }` (`server` is a name or id; `scheduledFor` must be in the future) |
+| POST   | `/api/scheduled`     | Schedule a one-time deploy; body `{ server, app, scheduledFor, force? }` (`server` is a name or id; `scheduledFor` must be in the future; `app` must match the v1 app-name pattern (alphanumeric, dots, hyphens, underscores), else 400 `invalid_app_name` before anything is stored) |
 | DELETE | `/api/scheduled/:id` | Cancel a pending scheduled deploy (sets status `cancelled`; 404 once triggered) |
 
 ## API v1 (CI/CD pipeline integration)

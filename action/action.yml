@@ -57,10 +57,11 @@ runs:
         FORCE: ${{ inputs.force }}
       run: |
         echo "::group::Preflight checks"
+        BODY=$(jq -n --arg server "$SERVER" --arg app "$APP" '{server:$server, app:$app}')
         RESULT=$(curl -sf -X POST "$PANEL_URL/api/v1/preflight" \
           -H "Authorization: Bearer $API_KEY" \
           -H "Content-Type: application/json" \
-          -d "{\"server\": \"$SERVER\", \"app\": \"$APP\"}")
+          -d "$BODY")
 
         echo "$RESULT" | jq -r '.checks[]? | "\(if .passed then "✅" else "❌" end) \(.name): \(.message)"' 2>/dev/null || echo "$RESULT"
 
@@ -81,10 +82,13 @@ runs:
         APP: ${{ inputs.app }}
         FORCE: ${{ inputs.force }}
       run: |
+        BODY=$(jq -n --arg server "$SERVER" --arg app "$APP" \
+          --argjson force "$( [ "$FORCE" = "true" ] && echo true || echo false )" \
+          '{server:$server, app:$app, force:$force}')
         RESULT=$(curl -sf -X POST "$PANEL_URL/api/v1/deploy" \
           -H "Authorization: Bearer $API_KEY" \
           -H "Content-Type: application/json" \
-          -d "{\"server\": \"$SERVER\", \"app\": \"$APP\", \"force\": $FORCE}")
+          -d "$BODY")
 
         DEPLOY_ID=$(echo "$RESULT" | jq -r '.deploy.id')
         echo "Deploy started: $DEPLOY_ID"

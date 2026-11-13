@@ -50,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - The examples in `action/README.md` now pin the composite action to a release tag instead of the moving `main` ref, and a new "Pinning and updates" section explains tag pins (or the tag's commit SHA for a stricter pin) and automatic bumps via Renovate's `github-actions` manager or Dependabot's `github-actions` ecosystem. The dashboard example in `README.md` now mirrors what the dashboard actually renders (the status panel line, the totals line, "Recent Deploys" rows with a time-ago stamp) and points to `/deploys` for commit ranges.
 
+### Security
+
+- Scheduled deploys can no longer smuggle a hostile app name into a relay URL, and the `Deploy Panel` GitHub Action no longer builds API request bodies by string interpolation. `POST /api/scheduled` now rejects an `app` that fails the pattern the v1 deploy route already required (shared in the new `backend/src/lib/app-name.ts`: `APP_NAME_PATTERN` / `isValidAppName`, used unchanged by `routes/v1.ts`) with 400 `invalid_app_name` before any DB write, so a scheduled name can no longer carry path traversal into the scheduler's app row path or the streaming deploy call; `streamDeploy` additionally percent-encodes the app name in the relay deploy URL (`encodeURIComponent`). In `action/action.yml` both request bodies are built with `jq -n --arg`, so a quote or backslash in `server`/`app` can no longer change the JSON, and `force` is mapped to a real JSON boolean: only the input string `true` sends `true`, anything else (including an empty or a non-boolean value) sends `false` instead of producing invalid JSON.
+
 ## [0.8.0] - 2026-11-01
 
 ### Security
