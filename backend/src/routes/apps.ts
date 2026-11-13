@@ -37,7 +37,7 @@ appsRouter.use("*", async (c, next) => {
   if (!server) return c.json({ error: "not_found" }, 404);
   // Most app routes call the relay (and the rest are cheap to refuse): a non-admin
   // whose server stores a private relayUrl gets 400 private_host before any of them.
-  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl });
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: server.relayUrl }, server.id);
   if (denied) return denied;
   return next();
 });

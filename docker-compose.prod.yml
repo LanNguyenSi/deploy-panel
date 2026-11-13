@@ -86,6 +86,10 @@ services:
       # empty value means "any verified GitHub user", which must never be
       # the prod default. The backend default stays empty for dev.
       ALLOWED_GITHUB_LOGINS: ${ALLOWED_GITHUB_LOGINS:?ALLOWED_GITHUB_LOGINS must be set}
+      # Server ids (comma-separated) whose stored private relayUrl a non-admin
+      # owner may use, e.g. a relay on this host's Docker network. Empty = none.
+      # Only list servers whose relayUrl you control (see docs/configuration.md).
+      TRUSTED_RELAY_SERVER_IDS: ${TRUSTED_RELAY_SERVER_IDS:-}
       # Native GitHub OAuth (pairs with #60 — standalone login). Empty =
       # disabled (routes 503, frontend hides button). Set GITHUB_CLIENT_ID
       # and GITHUB_CLIENT_SECRET in the prod .env to enable. With OAuth

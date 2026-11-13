@@ -101,7 +101,7 @@ v1Router.post("/deploy", async (c) => {
   if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
   // A non-admin must not make the panel call a private relayUrl (rows stored before
   // registration was checked, or a DNS change since).
-  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: srv.relayUrl });
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: srv.relayUrl }, srv.id);
   if (denied) return denied;
 
   if (!srv.relayUrl) {
@@ -293,7 +293,7 @@ v1Router.post("/rollback", async (c) => {
   if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
   // A non-admin must not make the panel call a private relayUrl (rows stored before
   // registration was checked, or a DNS change since).
-  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: srv.relayUrl });
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: srv.relayUrl }, srv.id);
   if (denied) return denied;
 
   const appRecord = await prisma.app.findUnique({
@@ -444,7 +444,7 @@ v1Router.get("/logs", async (c) => {
   if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
   // A non-admin must not make the panel call a private relayUrl (rows stored before
   // registration was checked, or a DNS change since).
-  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: srv.relayUrl });
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: srv.relayUrl }, srv.id);
   if (denied) return denied;
 
   try {
@@ -478,7 +478,7 @@ v1Router.post("/preflight", async (c) => {
   if (!srv) return c.json({ error: "not_found", message: `Server "${server}" not found` }, 404);
   // A non-admin must not make the panel call a private relayUrl (rows stored before
   // registration was checked, or a DNS change since).
-  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: srv.relayUrl });
+  const denied = await denyPrivateServerTargets(c, actor, { relayUrl: srv.relayUrl }, srv.id);
   if (denied) return denied;
 
   try {

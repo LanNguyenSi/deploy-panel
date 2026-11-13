@@ -35,6 +35,7 @@ vi.mock("../src/config/index.js", () => ({
     CORS_ORIGINS: "http://localhost:3000",
     FRONTEND_URL: "http://localhost:3000",
     PORT: 3001,
+    TRUSTED_RELAY_SERVER_IDS: [] as string[],
   },
   allowedGitHubLogins: [],
 }));
@@ -55,6 +56,7 @@ vi.mock("../src/lib/ghcr.js", async () => {
 });
 
 import { prisma } from "../src/lib/prisma.js";
+import { config } from "../src/config/index.js";
 import { serversRouter } from "../src/routes/servers.js";
 import { executeSshCommand } from "../src/services/ssh-executor.js";
 import { activeInstalls } from "../src/services/active-installs.js";
@@ -112,6 +114,7 @@ const fetchMock = vi.fn();
 
 beforeEach(() => {
   vi.clearAllMocks();
+  config.TRUSTED_RELAY_SERVER_IDS.length = 0;
   activeInstalls.clear();
   lookupMock.mockReset();
   lookupMock.mockResolvedValue([{ address: "203.0.113.4", family: 4 }]);
@@ -477,6 +480,156 @@ describe("per-id relay fetch routes on a pre-existing row with an internal relay
     await res.text();
     expect(fetchMock).toHaveBeenCalled();
     expect(String(fetchMock.mock.calls[0][0])).toContain("relay.example.com");
+  });
+});
+
+describe("TRUSTED_RELAY_SERVER_IDS on the per-id routes", () => {
+  const internalRelay = () => serverRow({ relayUrl: "http://169.254.169.254/latest" });
+  const internalHost = () => serverRow({ host: "10.0.0.7" });
+  const fetchCases: Array<[string, string, string]> = [
+    ["test", "POST", "/servers/srv-a/test"],
+    ["system", "GET", "/servers/srv-a/system"],
+    ["relay-status", "GET", "/servers/srv-a/relay-status"],
+    ["relay-self-update", "POST", "/servers/srv-a/relay-self-update"],
+  ];
+
+  it.each(fetchCases)("%s: a listed id fetches the private relayUrl for a non-admin", async (_n, method, path) => {
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-a");
+    mServer.findUnique.mockResolvedValue(internalRelay());
+    const res = await appFor(NON_ADMIN).request(path, send(method, method === "POST" ? {} : undefined));
+    await res.text();
+    expect(fetchMock).toHaveBeenCalled();
+    expect(String(fetchMock.mock.calls[0][0])).toContain("169.254.169.254");
+  });
+
+  it.each(fetchCases)("%s: an id that is not listed is still rejected", async (_n, method, path) => {
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-other");
+    mServer.findUnique.mockResolvedValue(internalRelay());
+    const res = await appFor(NON_ADMIN).request(path, send(method, method === "POST" ? {} : undefined));
+    await expectPrivateHost(res, "relayUrl");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("install-relay: a listed id reaches SSH on a private host", async () => {
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-a");
+    mServer.findUnique.mockResolvedValue(internalHost());
+    const res = await appFor(NON_ADMIN).request("/servers/srv-a/install-relay", send("POST", sshBody));
+    await res.text();
+    expect(executeSshCommand).toHaveBeenCalled();
+  });
+
+  it("install-relay: an id that is not listed is rejected before any SSH", async () => {
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-other");
+    mServer.findUnique.mockResolvedValue(internalHost());
+    const res = await appFor(NON_ADMIN).request("/servers/srv-a/install-relay", send("POST", sshBody));
+    await expectPrivateHost(res, "host");
+    expect(executeSshCommand).not.toHaveBeenCalled();
+  });
+
+  it("update-relay-image: a listed id reaches SSH with a private host and relayUrl", async () => {
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-a");
+    mServer.findUnique.mockResolvedValue(serverRow({ host: "10.0.0.7", relayUrl: "http://169.254.169.254" }));
+    const res = await appFor(NON_ADMIN).request("/servers/srv-a/update-relay-image", send("POST", sshBody));
+    await res.text();
+    expect(executeSshCommand).toHaveBeenCalled();
+  });
+
+  describe("PATCH on a listed id is locked for non-admins", () => {
+    const patch = (actor: { userId: string | null; isAdmin: boolean }, body: unknown) =>
+      appFor(actor).request("/servers/srv-a", send("PATCH", body));
+
+    async function expectLocked(res: Response) {
+      expect(res.status).toBe(403);
+      expect(((await res.json()) as { error: string }).error).toBe("trusted_server_locked");
+      expect(mServer.update).not.toHaveBeenCalled();
+    }
+
+    beforeEach(() => {
+      config.TRUSTED_RELAY_SERVER_IDS.push("srv-a");
+      mServer.findUnique.mockResolvedValue(internalRelay());
+      mServer.update.mockResolvedValue(internalRelay());
+    });
+
+    it("relayUrl to a public value is refused with 403", async () => {
+      await expectLocked(await patch(NON_ADMIN, { relayUrl: "https://relay.example.com" }));
+    });
+
+    it("relayUrl and host to private values are refused with 403 too (the lock comes first)", async () => {
+      await expectLocked(await patch(NON_ADMIN, { relayUrl: "http://10.9.9.9:8222" }));
+      await expectLocked(await patch(NON_ADMIN, { host: "10.0.0.9" }));
+    });
+
+    it("host to a public value is refused with 403", async () => {
+      await expectLocked(await patch(NON_ADMIN, { host: "203.0.113.99" }));
+    });
+
+    it("name only is allowed (200)", async () => {
+      const res = await patch(NON_ADMIN, { name: "renamed" });
+      expect(res.status).toBe(200);
+      expect(mServer.update).toHaveBeenCalledTimes(1);
+    });
+
+    it("resending the stored host and relayUrl unchanged is allowed (200)", async () => {
+      const stored = serverRow();
+      mServer.findUnique.mockResolvedValue(stored);
+      const res = await patch(NON_ADMIN, { host: stored.host, relayUrl: stored.relayUrl });
+      expect(res.status).toBe(200);
+    });
+
+    it("resending a stored private relayUrl is still a checked write (400 private_host)", async () => {
+      const res = await patch(NON_ADMIN, { relayUrl: internalRelay().relayUrl });
+      await expectPrivateHost(res, "relayUrl");
+      expect(mServer.update).not.toHaveBeenCalled();
+    });
+
+    it("an admin may still change relayUrl on a listed id", async () => {
+      mServer.findUnique.mockResolvedValue(serverRow({ userId: null, relayUrl: "http://10.0.0.5:8222" }));
+      const res = await patch(ADMIN, { relayUrl: "https://relay.example.com" });
+      expect(res.status).toBe(200);
+      expect(mServer.update).toHaveBeenCalledTimes(1);
+    });
+
+    it("an id that is not listed keeps the unchanged PATCH behaviour", async () => {
+      config.TRUSTED_RELAY_SERVER_IDS.length = 0;
+      const ok = await patch(NON_ADMIN, { relayUrl: "https://relay.example.com" });
+      expect(ok.status).toBe(200);
+      const denied = await patch(NON_ADMIN, { relayUrl: "http://10.9.9.9:8222" });
+      await expectPrivateHost(denied, "relayUrl");
+    });
+  });
+
+  it("POST: a new server with a private relayUrl is rejected even when ids are listed", async () => {
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-a", "srv-new");
+    mServer.findUnique.mockResolvedValue(null);
+    lookupMock.mockImplementation(async (name: string) => [
+      { address: name === "agent-relay" ? "172.18.0.5" : "203.0.113.4", family: 4 },
+    ]);
+    const res = await appFor(NON_ADMIN).request(
+      "/servers",
+      send("POST", { name: "vps-new", host: "203.0.113.10", relayUrl: "http://agent-relay:8222" }),
+    );
+    await expectPrivateHost(res, "relayUrl");
+    expect(mServer.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("assertServerTargetsAllowed with a stored server id", () => {
+  it("skips the check, and any lookup, only for a listed id", async () => {
+    config.TRUSTED_RELAY_SERVER_IDS.push("srv-a");
+    const targets = { host: "10.0.0.1", relayUrl: "http://agent-relay:8222" };
+    expect(await assertServerTargetsAllowed({ isAdmin: false }, targets, "srv-a")).toEqual({ ok: true });
+    expect(lookupMock).not.toHaveBeenCalled();
+    expect(await assertServerTargetsAllowed({ isAdmin: false }, targets, "srv-b")).toEqual({
+      ok: false,
+      field: "host",
+      reason: "literal",
+    });
+    // No id passed (a write path): never exempt, even when ids are listed.
+    expect(await assertServerTargetsAllowed({ isAdmin: false }, targets)).toEqual({
+      ok: false,
+      field: "host",
+      reason: "literal",
+    });
   });
 });
 
