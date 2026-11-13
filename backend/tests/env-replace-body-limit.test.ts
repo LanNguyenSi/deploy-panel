@@ -121,4 +121,24 @@ describe("body limit on the env replace route", () => {
     const json = (await res.json()) as { error: string };
     expect(json.error).toBe("payload_too_large");
   });
+
+  // The global skip must match exactly PUT .../apps/:name/env: neighbouring
+  // PUT routes without a limit of their own, and a trailing-slash variant of
+  // the env path, keep the 1 MiB cap.
+  for (const path of [
+    "/api/servers/srv-1/apps/my-app/secrets/K",
+    "/api/servers/srv-1/apps/my-app/required-env-keys",
+    "/api/servers/srv-1/apps/my-app/env/",
+  ]) {
+    it(`a body between the limits on PUT ${path} is 413 (global cap not skipped)`, async () => {
+      const res = await app.request(path, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` },
+        body: envBody(MAX_API_REQUEST_BODY_BYTES + 64 * 1024),
+      });
+      expect(res.status).toBe(413);
+      const json = (await res.json()) as { error: string };
+      expect(json.error).toBe("payload_too_large");
+    });
+  }
 });
