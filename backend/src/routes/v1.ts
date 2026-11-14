@@ -13,6 +13,7 @@ import {
 } from "../lib/ownership.js";
 import { evaluateRequiredEnv } from "../lib/required-env-gate.js";
 import { APP_NAME_PATTERN } from "../lib/app-name.js";
+import { relayAppPath } from "../lib/relay-path.js";
 import { denyPrivateServerTargets } from "../lib/target-guard.js";
 import { connectGuardRequired } from "../lib/connect-guard.js";
 import { COMMIT_SHA_PATTERN } from "../lib/deploy-target.js";
@@ -375,7 +376,7 @@ v1Router.post("/rollback", async (c) => {
       >({
         serverId: srv.id,
         actor,
-        path: `/api/apps/${appName}/rollback`,
+        path: relayAppPath(appName, "/rollback"),
         method: "POST",
         body: { to_commit },
         headers: { "X-Deploy-Id": deployId },
@@ -495,7 +496,7 @@ v1Router.get("/logs", async (c) => {
     const result = await relayRequest({
       serverId: srv.id,
       actor,
-      path: `/api/apps/${appName}/logs?lines=${lines}`,
+      path: relayAppPath(appName, "/logs", `?lines=${lines}`),
     });
     return c.json(result);
   } catch (err) {
@@ -530,7 +531,7 @@ v1Router.post("/preflight", async (c) => {
     const result = await relayRequest<{ passed?: boolean; checks?: Array<{ name: string; passed: boolean; message: string }> }>({
       serverId: srv.id,
       actor,
-      path: `/api/apps/${appName}/preflight`,
+      path: relayAppPath(appName, "/preflight"),
     });
 
     // Merge in the panel-side required-env hard-fail check (same gate the

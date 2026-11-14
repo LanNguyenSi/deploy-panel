@@ -21,15 +21,19 @@ vi.mock("../src/lib/post-deploy-gate.js", () => ({
 }));
 
 import { streamDeploy } from "../src/lib/stream-deploy.js";
+import { recoverBrokenDeploy } from "../src/lib/deploy-recovery.js";
 
-// appName is interpolated into the relay deploy URL, so streamDeploy encodes
-// the name itself rather than let it rewrite the URL path. This encoding
-// protects this one call only: `..` and `.` pass through encodeURIComponent
-// unchanged, so traversal-style names are stopped upstream instead — the
-// scheduler guard cancels ScheduledDeploy rows stored before
-// `POST /api/scheduled` started validating names, and the v1 routes reject
-// them at the request.
-async function firstFetchUrl(appName: string): Promise<string> {
+const mRecover = recoverBrokenDeploy as unknown as ReturnType<typeof vi.fn>;
+
+// streamDeploy builds its relay deploy URL through relayAppPath (lib/relay-
+// path.ts), which validates the app name against the shared guard before
+// encoding it. A valid name reaches the relay (encoded, a no-op for the guard's
+// charset). An invalid name is refused BEFORE the fetch: streamDeploy lands in
+// its own catch and hands the row to recoverBrokenDeploy, exactly as it does
+// for a dropped connection, so a traversal-shaped name can never escape the
+// path segment and the deploy never crashes.
+
+async function runDeploy(appName: string): Promise<{ urls: string[] }> {
   const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
     ok: false,
     status: 400,
@@ -47,25 +51,26 @@ async function firstFetchUrl(appName: string): Promise<string> {
     body: {},
   });
 
-  const [url] = fetchSpy.mock.calls[0] as [string, RequestInit];
+  const urls = fetchSpy.mock.calls.map((c) => c[0] as string);
   fetchSpy.mockRestore();
-  return url;
+  return { urls };
 }
 
-describe("streamDeploy percent-encodes the app name in the relay deploy URL", () => {
+describe("streamDeploy builds the relay deploy URL through relayAppPath", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(console, "log").mockImplementation(() => {});
   });
 
-  it("a plain name passes through unchanged", async () => {
-    expect(await firstFetchUrl("my-app")).toBe("http://relay.example/api/apps/my-app/deploy?stream=true");
+  it.each(["my-app", "my.app", "a_b", "9lives"])("calls the relay for the valid name %j", async (name) => {
+    const { urls } = await runDeploy(name);
+    expect(urls).toEqual([`http://relay.example/api/apps/${name}/deploy?stream=true`]);
+    expect(mRecover).not.toHaveBeenCalled();
   });
 
-  it("a name containing a space is percent-encoded", async () => {
-    expect(await firstFetchUrl("my app")).toBe("http://relay.example/api/apps/my%20app/deploy?stream=true");
-  });
-
-  it("a name with a path separator or a quote cannot escape the path segment", async () => {
-    expect(await firstFetchUrl('a/b"c')).toBe("http://relay.example/api/apps/a%2Fb%22c/deploy?stream=true");
+  it.each(["..", ".", "a/b", "my app", 'a/b"c', "../x"])("refuses the invalid name %j before the fetch", async (name) => {
+    const { urls } = await runDeploy(name);
+    expect(urls).toEqual([]);
+    expect(mRecover).toHaveBeenCalledTimes(1);
   });
 });

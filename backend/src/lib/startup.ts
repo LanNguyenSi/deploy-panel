@@ -1,5 +1,7 @@
 import { prisma } from "./prisma.js";
 import { relayRequest } from "./relay.js";
+import { relayAppPath } from "./relay-path.js";
+import { isValidAppName } from "./app-name.js";
 import { listActiveDeployIds, readExistingSteps } from "./deploy-recovery.js";
 import { checkDeployTargetDetailed, type RelayEntryEvidence } from "./deploy-target.js";
 import { classifyDeployLogOutcome, isBlockedDeployLog } from "./deploy-log.js";
@@ -287,8 +289,47 @@ export async function recoverStuckDeploys(): Promise<void> {
   sweepInFlight = true;
   try {
     await sweepOnce();
+    // Once per process: report App rows whose name is not a safe relay path
+    // segment. It runs after the sweep (and behind the same re-entrancy guard)
+    // so a slow pass cannot delay it into a second overlapping pass, and its
+    // own failure can never fail a sweep that already finalized deploy rows.
+    // Guarded by a module flag rather than `once`, because recoverStuckDeploys
+    // also runs periodically from the scheduler: the operator wants one list at
+    // boot, not the same warning every sweep.
+    if (!appNamesAudited) {
+      appNamesAudited = true;
+      await logInvalidAppNames().catch((err) => {
+        console.error("[startup] Failed to audit App rows for invalid names:", err);
+      });
+    }
   } finally {
     sweepInFlight = false;
+  }
+}
+
+// Set on the first recoverStuckDeploys pass so the name audit is a one-time
+// boot report, not a per-sweep log line (recoverStuckDeploys is periodic,
+// see scheduler.ts's startScheduler).
+let appNamesAudited = false;
+
+/**
+ * Report App rows whose `name` fails the shared app-name guard
+ * (`isValidAppName`, lib/app-name.ts): the relay path builders in lib/relay-
+ * path.ts refuse such a name, so these rows can never be deployed, rolled
+ * back, synced or recovered. They are almost always leftovers the scheduler
+ * upserted from relay-reported names before name validation existed. This is
+ * read-only: it logs one warning line per offending row (its id and the name
+ * JSON-escaped, so a traversal-shaped name cannot forge a log line) and never
+ * deletes or rewrites anything. Removing or renaming such a row is the
+ * operator's call; see the operations doc.
+ */
+export async function logInvalidAppNames(): Promise<void> {
+  const rows = await prisma.app.findMany({ select: { id: true, name: true } });
+  for (const row of rows) {
+    if (isValidAppName(row.name)) continue;
+    console.warn(
+      `[startup] App row ${row.id} has a name that is not a safe relay path segment and cannot be deployed: ${JSON.stringify(row.name)}`,
+    );
   }
 }
 
@@ -367,7 +408,7 @@ async function recoverStuckRecords(stuckDeploys: StuckDeploy[]): Promise<void> {
         try {
           const result = await relayRequest<{ app: string; passed: boolean }>({
             serverId: deploy.server.id,
-            path: `/api/apps/${deploy.app.name}/preflight`,
+            path: relayAppPath(deploy.app.name, "/preflight"),
           });
           if (!result.passed) {
             failedCheck = "relay preflight did not pass";

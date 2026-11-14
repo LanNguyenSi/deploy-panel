@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
+import { relayAppPath, InvalidAppNameError } from "../lib/relay-path.js";
 import { findOwnedServer, getActorContext } from "../lib/ownership.js";
 import { denyPrivateServerTargets } from "../lib/target-guard.js";
 import {
@@ -56,11 +57,24 @@ syncRouter.post("/:serverId/sync", async (c) => {
     for (const relayApp of configuredApps) {
       // Check if app containers are running via relay app detail
       let newStatus = "unknown";
+      let appPath: string;
+      try {
+        appPath = relayAppPath(relayApp.name);
+      } catch (err) {
+        // A relay that reports an app under a name that is not a safe path
+        // segment: skip it (no relay detail call, no App row written for it)
+        // instead of aborting the whole sync or interpolating it into a URL.
+        if (err instanceof InvalidAppNameError) {
+          console.log(`[sync] Skipping relay app ${JSON.stringify(relayApp.name)} on server ${serverId}: ${err.message}`);
+          continue;
+        }
+        throw err;
+      }
       try {
         const detail = await relayRequest<{ app: { containers: string | null } }>({
           serverId,
           actor,
-          path: `/api/apps/${relayApp.name}`,
+          path: appPath,
         });
         // If relay returns app detail with containers info, app is running
         newStatus = detail.app?.containers ? "healthy" : "unhealthy";

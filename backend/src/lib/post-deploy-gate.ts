@@ -1,6 +1,7 @@
 import { isIP } from "node:net";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { relayRequest } from "./relay.js";
+import { relayAppPath } from "./relay-path.js";
 import { isPrivateOrLoopbackHost } from "../services/probe-guard.js";
 
 /**
@@ -447,10 +448,12 @@ export async function verifyDeployHealth(opts: VerifyDeployHealthOptions): Promi
     try {
       const detail = await relayReq<{ app?: { containers?: string | null } }>({
         serverId: opts.serverId,
-        // appName is already validated `^[a-zA-Z0-9_-]+$` at every caller, so
-        // this encode is a no-op today — kept as defense-in-depth so the gate
-        // can't be the weak link if a future caller forgets to validate.
-        path: `/api/apps/${encodeURIComponent(opts.appName)}`,
+        // relayAppPath validates the name against the shared app-name guard and
+        // encodes it (defense-in-depth): a refused name throws here and lands
+        // in the catch below, i.e. "could not inspect this poll", never a
+        // crash, so the gate can't be the weak link if a caller forgets to
+        // validate.
+        path: relayAppPath(opts.appName),
       });
       containerInspected = true;
       const entries = parseComposePs(detail.app?.containers ?? null);

@@ -4,6 +4,7 @@ import { hasRollbackOrFailedStep, isBuildCachePruneStep, recoverBrokenDeploy, re
 import { verifyDeployHealth } from "./post-deploy-gate.js";
 import { provisionAndCheckAppSecrets, type ProvisionResult } from "./provision-secrets.js";
 import { envUnreadableRelayMessage } from "./relay.js";
+import { relayAppPath } from "./relay-path.js";
 import {
   CONFLICT_STEP_KIND,
   PREFLIGHT_CHECK_KIND,
@@ -365,7 +366,7 @@ export async function streamDeploy(opts: {
     };
     armIdleTimer(firstByteMs);
 
-    const deployUrl = `${relayUrl}/api/apps/${encodeURIComponent(appName)}/deploy?stream=true`;
+    const deployUrl = `${relayUrl}${relayAppPath(appName, "/deploy", "?stream=true")}`;
     const deployInit: RequestInit = {
       method: "POST",
       headers,

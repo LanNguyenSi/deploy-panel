@@ -92,6 +92,8 @@ This is a manual step, not part of the relay flow; the CI job `relay-config` (`s
 
 `Server.userId` is null for admin-shared servers and set for servers a non-admin user created; see [okf/auth-and-ownership-model.md](okf/auth-and-ownership-model.md).
 
+The relay path builders (`backend/src/lib/relay-path.ts`) refuse an app `name` that is not a safe single path segment (see the guard in `backend/src/lib/app-name.ts`), so an App row stored with such a name can never be deployed, rolled back, synced or recovered. Rows like that are almost always leftovers the scheduler upserted from relay-reported names before name validation existed. At boot the backend logs one warning per such row (`[startup] App row <id> has a name that is not a safe relay path segment...`, with the name JSON-escaped so a traversal-shaped name cannot forge a log line); this is read-only and changes nothing. To clean one up, the operator renames or deletes the row directly in the database by the `id` from that log line, for example with `psql`: `UPDATE "App" SET "name" = '<valid name>' WHERE "id" = '<id>';` to keep the row and its deploy history, or `DELETE FROM "App" WHERE "id" = '<id>';` to drop it. Use a name that matches the guard (an alphanumeric first character, then alphanumerics, `.`, `-` or `_`); the row will be re-synced from the relay on the next server sync if the relay still reports that app.
+
 The state diagram shows how a deploy row moves from `running` to its final status and what decides each one.
 
 ```mermaid
