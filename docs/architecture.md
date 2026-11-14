@@ -97,8 +97,8 @@ The state diagram shows how a deploy row moves from `running` to its final statu
 ```mermaid
 stateDiagram-v2
   [*] --> running
-  running --> failed: missing required env, relay 4xx, preflight block (app status kept), relay failure or health gate fails
-  running --> success: relay success and health gate pass, recovery or stuck sweep proves the target, or stuck sweep preflight passes for the panel's own app
+  running --> failed: missing required env, relay 4xx, preflight block (app status kept), relay failure, or the health gate fails (in the stream or in the stuck sweep)
+  running --> success: relay success and health gate pass, or recovery or the stuck sweep proves the target and the health gate passes
   running --> rolled_back: rollback route, relay success
   running --> interrupted: recovery or stuck sweep cannot prove the target
   success --> [*]

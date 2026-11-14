@@ -3,6 +3,7 @@ import { relayRequest } from "./relay.js";
 import { listActiveDeployIds, readExistingSteps } from "./deploy-recovery.js";
 import { checkDeployTargetDetailed, type RelayEntryEvidence } from "./deploy-target.js";
 import { classifyDeployLogOutcome, isBlockedDeployLog } from "./deploy-log.js";
+import { verifyDeployHealth, type DeployHealthVerdict } from "./post-deploy-gate.js";
 
 // The target check itself lives in deploy-target.ts (shared with
 // recoverBrokenDeploy); these re-exports keep the names this module has
@@ -49,6 +50,31 @@ const SELF_DEPLOY_UNVERIFIED_MARKER = "this self-deploy is not verified";
  */
 const SELF_DEPLOY_UPGRADE_WINDOW_MS = 60 * 60 * 1000;
 
+/**
+ * How long after its start a deploy whose health gate is not (yet) clean is
+ * left `running` for another look, before the gate's verdict stands. Reuses the
+ * self-deploy grace: a freshly recreated service (the panel's own frontend
+ * right after a self-deploy, or the panel's public route while Traefik picks up
+ * the new container) is briefly restarting, starting or answering 502 without
+ * being broken. The anchor is the later of the row's start and this process's
+ * start for the panel's own app (the same rule as SELF_DEPLOY_PROOF_GRACE_MS)
+ * and the row's start for every other app.
+ */
+const SWEEP_GATE_GRACE_MS = SELF_DEPLOY_PROOF_GRACE_MS;
+
+/**
+ * Upper bound for one health-gate run inside a sweep pass. The gate polls with
+ * its own defaults (4 polls, up to 9 more while a healthcheck is still
+ * starting, 5 s apart: about 65 s when the relay answers at once); the bound
+ * covers a relay or route that answers slowly. A run that exceeds it counts as
+ * an unhealthy verdict ("did not finish"), so the grace rules above apply to
+ * it. Each relay request inside the gate also gets SWEEP_GATE_RELAY_TIMEOUT_MS
+ * instead of the 5 minute default, so a run that outlives the bound ends soon
+ * after it on its own.
+ */
+const SWEEP_GATE_TIMEOUT_MS = 2 * 60 * 1000;
+const SWEEP_GATE_RELAY_TIMEOUT_MS = 15 * 1000;
+
 /** When this process started, derived from its uptime so a test can control it. */
 function processStartMs(): number {
   return Date.now() - process.uptime() * 1000;
@@ -70,6 +96,102 @@ const DEFAULT_PANEL_SELF_APP_NAME = "deploy-panel";
 function isPanelSelfApp(appName: string): boolean {
   const configured = process.env.PANEL_SELF_APP_NAME?.trim();
   return appName === (configured || DEFAULT_PANEL_SELF_APP_NAME);
+}
+
+interface GateStep {
+  name: string;
+  status: string;
+  durationMs: number;
+  output: string;
+}
+
+type SweepGateOutcome =
+  | { kind: "pass"; step: GateStep }
+  | { kind: "fail"; step: GateStep; reason: string }
+  | { kind: "wait" };
+
+/** Whether a deploy's gate verdict may still change: see SWEEP_GATE_GRACE_MS. */
+function withinSweepGateGrace(deploy: { createdAt: Date; app: { name: string } }): boolean {
+  const anchor = isPanelSelfApp(deploy.app.name)
+    ? Math.max(deploy.createdAt.getTime(), processStartMs())
+    : deploy.createdAt.getTime();
+  return Date.now() - anchor < SWEEP_GATE_GRACE_MS;
+}
+
+/**
+ * The post-deploy health gate (the one streamDeploy's finalizeDeploy runs, same
+ * options: compose ps through the relay plus the app's liveUrl, optimistic
+ * about an unreadable relay) for a deploy the sweep is about to record as
+ * success. The relay's single-service probe and its history entry both pass
+ * while a sibling service crashloops, which is exactly what a self-deploy cut
+ * off from its stream would otherwise be recorded as.
+ *
+ * Verdicts:
+ * - clean: `pass`, with a gate step shaped like the stream path's.
+ * - a gate that is not clean (offenders, a route that is down, or no verdict
+ *   within SWEEP_GATE_TIMEOUT_MS) or that ended unconfirmed (a healthcheck still
+ *   "starting" after its window) while `withinGrace`: `wait`, the record stays
+ *   running and the next pass looks again.
+ * - not clean after the grace: `fail`, with the gate's offender list as reason.
+ * - unconfirmed after the grace: `pass`, as on the stream path (the absence of
+ *   bad news, with the gate's note in the step).
+ * A relay that cannot be read for compose ps is not a bad signal on its own
+ * (optimistic mode): the relay's history entry has just proven the deploy.
+ */
+async function runSweepHealthGate(
+  deploy: { appId: string; app: { name: string }; server: { id: string } },
+  withinGrace: boolean,
+): Promise<SweepGateOutcome> {
+  const app = await prisma.app.findUnique({ where: { id: deploy.appId }, select: { liveUrl: true } }).catch((err) => {
+    // Same degrade-don't-abort posture as recoverBrokenDeploy: no route probe,
+    // the container check still runs.
+    console.warn(`[stuck-sweep] could not load liveUrl for ${deploy.app.name}: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  });
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let verdict: DeployHealthVerdict;
+  try {
+    verdict = await Promise.race([
+      verifyDeployHealth({
+        serverId: deploy.server.id,
+        appName: deploy.app.name,
+        liveUrl: app?.liveUrl ?? null,
+        relayRequestImpl: (options) => relayRequest({ ...options, timeoutMs: SWEEP_GATE_RELAY_TIMEOUT_MS }),
+      }),
+      new Promise<DeployHealthVerdict>((resolve) => {
+        timer = setTimeout(
+          () => resolve({ healthy: false, reason: `the post-deploy health gate did not finish within ${SWEEP_GATE_TIMEOUT_MS / 1000}s` }),
+          SWEEP_GATE_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+
+  const noteSuffix = verdict.notes?.length ? ` [${verdict.notes.join("; ")}]` : "";
+  const unconfirmed = verdict.unconfirmed === true;
+
+  if (verdict.healthy && !unconfirmed) {
+    return {
+      kind: "pass",
+      step: { name: "post-deploy health gate", status: "success", durationMs: 0, output: `Containers in a healthy run state and public route reachable${noteSuffix}` },
+    };
+  }
+  if (withinGrace) return { kind: "wait" };
+  if (verdict.healthy) {
+    return {
+      kind: "pass",
+      step: { name: "post-deploy health gate", status: "success", durationMs: 0, output: `Passed optimistically without positive health confirmation${noteSuffix}` },
+    };
+  }
+  const reason = verdict.reason ?? "Post-deploy verification failed";
+  return {
+    kind: "fail",
+    reason,
+    step: { name: "post-deploy health gate", status: "failure", durationMs: 0, output: `${reason}${noteSuffix}` },
+  };
 }
 
 /**
@@ -103,6 +225,10 @@ function isPanelSelfApp(appName: string): boolean {
  *    supplies the record's commitBefore, commitAfter and duration. The
  *    panel's own app gets the same proof, and while the relay has no entry
  *    for it yet the record stays `running` (see isPanelSelfApp).
+ *    A proven deploy is then held to the post-deploy health gate the stream
+ *    path runs (runSweepHealthGate): unhealthy services or an app route that
+ *    is down make it `failed` (app `unhealthy`), after SWEEP_GATE_GRACE_MS;
+ *    before that the record stays `running` for another look.
  * 3. Otherwise (unhealthy, relay unreachable, target not reached) → mark
  *    as "interrupted", with the failed check named in the recovery step
  *
@@ -191,6 +317,10 @@ async function recoverStuckRecords(stuckDeploys: StuckDeploy[]): Promise<void> {
       let failedCheck: string | undefined = "no relay configured for this server";
       // The relay entry's commits and duration, when it proved the deploy.
       let evidence: RelayEntryEvidence | undefined;
+      // The health gate's step, appended to the log when the gate ran, and
+      // whether it is what failed the deploy (the app then reads unhealthy).
+      let gateStep: GateStep | undefined;
+      let gateFailed = false;
 
       // Try to check the app's actual health via relay
       if (deploy.server.relayUrl && deploy.app.name) {
@@ -212,9 +342,26 @@ async function recoverStuckRecords(stuckDeploys: StuckDeploy[]): Promise<void> {
             // same proof; it only gets time (see isPanelSelfApp).
             const target = await checkDeployTargetDetailed(deploy, deploy.server.id, deploy.app.name);
             if (target.reached) {
-              newStatus = "success";
-              failedCheck = undefined;
+              // The relay's entry and a passing preflight do not show that
+              // every service of the project is up: run the gate the stream
+              // path runs before recording success.
+              const gate = await runSweepHealthGate(deploy, withinSweepGateGrace(deploy));
+              if (gate.kind === "wait") {
+                // A service may still be coming up after the recreate: leave
+                // the record running and look again on the next pass.
+                console.log(`[stuck-sweep] Deploy ${deploy.id} (${deploy.app.name}) reached its target but the health gate is not clean yet, waiting`);
+                continue;
+              }
+              gateStep = gate.step;
               evidence = target.evidence;
+              if (gate.kind === "pass") {
+                newStatus = "success";
+                failedCheck = undefined;
+              } else {
+                newStatus = "failed";
+                gateFailed = true;
+                failedCheck = `post-deploy health gate: ${gate.reason}`;
+              }
             } else if (
               target.noEntry &&
               isPanelSelfApp(deploy.app.name) &&
@@ -273,7 +420,7 @@ async function recoverStuckRecords(stuckDeploys: StuckDeploy[]): Promise<void> {
           commitBefore: evidence?.commitBefore ?? undefined,
           commitAfter: evidence?.commitAfter ?? undefined,
           duration: evidence?.durationMs ?? undefined,
-          log: JSON.stringify([...existingSteps, recoveryStep]),
+          log: JSON.stringify([...existingSteps, ...(gateStep ? [gateStep] : []), recoveryStep]),
         },
       });
 
@@ -302,7 +449,8 @@ async function recoverStuckRecords(stuckDeploys: StuckDeploy[]): Promise<void> {
           data:
             newStatus === "success"
               ? { status: "healthy", lastDeployAt: new Date() }
-              : { status: "unknown" },
+              : // The gate found the app not serving, as it does on the stream path.
+                { status: gateFailed ? "unhealthy" : "unknown" },
         });
       }
 
@@ -398,8 +546,10 @@ async function reconcileDeployingApps(): Promise<void> {
  * commits to this row.
  * The write is a compare-and-set on `interrupted` plus the marker. The proof is
  * the same checkDeployTarget as the sweep's, so a later deploy row of the app
- * blocks the upgrade. The app card moves to `healthy` only when no deploy of
- * the app is `running`.
+ * blocks the upgrade, and the same health gate runs before the row is written
+ * (the grace is over by then): a gate that is not clean makes the row `failed`
+ * and the app `unhealthy` instead. The app card moves to `healthy` only when no
+ * deploy of the app is `running`.
  */
 async function upgradeSelfDeploys(): Promise<void> {
   const selfName = process.env.PANEL_SELF_APP_NAME?.trim() || DEFAULT_PANEL_SELF_APP_NAME;
@@ -427,30 +577,39 @@ async function upgradeSelfDeploys(): Promise<void> {
       const target = await checkDeployTargetDetailed(deploy, deploy.server.id, deploy.app.name);
       if (!target.reached || !target.idMatched) continue;
       const evidence = target.evidence;
+      // The same gate as the sweep's own success path. The row was left
+      // `running` for the whole grace window before it ended interrupted, so
+      // the grace is over here: the gate's verdict stands.
+      const gate = await runSweepHealthGate(deploy, false);
+      if (gate.kind === "wait") continue;
+      const gateFailed = gate.kind === "fail";
       const step = {
         name: "startup-recovery",
-        status: "success",
+        status: gateFailed ? "failure" : "success",
         durationMs: 0,
-        output: `Upgraded from interrupted to success: the relay's history now proves this deploy (it was ${SELF_DEPLOY_UNVERIFIED_MARKER} when first swept)`,
+        output: gateFailed
+          ? `Upgraded from interrupted to failed: the relay's history now proves this deploy, but the post-deploy health gate failed: ${gate.reason}`
+          : `Upgraded from interrupted to success: the relay's history now proves this deploy (it was ${SELF_DEPLOY_UNVERIFIED_MARKER} when first swept)`,
       };
       const { count } = await prisma.deploy.updateMany({
         where: { id: deploy.id, status: "interrupted", log: { contains: SELF_DEPLOY_UNVERIFIED_MARKER } },
         data: {
-          status: "success",
+          status: gateFailed ? "failed" : "success",
           commitBefore: evidence?.commitBefore ?? undefined,
           commitAfter: evidence?.commitAfter ?? undefined,
           duration: evidence?.durationMs ?? undefined,
-          log: JSON.stringify([...readExistingSteps(deploy.log), step]),
+          log: JSON.stringify([...readExistingSteps(deploy.log), gate.step, step]),
         },
       });
       if (count === 0) continue;
-      // The row just became a proven success, so the app records the deploy
-      // (same rule as finalizeDeploy in stream-deploy.ts).
+      // A row that just became a proven success makes the app record the
+      // deploy (same rule as finalizeDeploy in stream-deploy.ts); one the gate
+      // failed leaves the app unhealthy and lastDeployAt alone.
       await prisma.app.updateMany({
         where: { id: deploy.appId, deploys: { none: { status: "running" } } },
-        data: { status: "healthy", lastDeployAt: new Date() },
+        data: gateFailed ? { status: "unhealthy" } : { status: "healthy", lastDeployAt: new Date() },
       });
-      console.log(`[stuck-sweep] Self-deploy ${deploy.id} (${deploy.app.name}): upgraded to success`);
+      console.log(`[stuck-sweep] Self-deploy ${deploy.id} (${deploy.app.name}): upgraded to ${gateFailed ? "failed" : "success"}`);
     } catch (err) {
       console.error(`[stuck-sweep] Failed to revisit self-deploy ${deploy.id}:`, err);
     }
