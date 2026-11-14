@@ -1,5 +1,6 @@
 import { prisma } from "./prisma.js";
 import { relayRequest } from "./relay.js";
+import { relayAppPath } from "./relay-path.js";
 
 /**
  * One entry of the relay's own deploy history. The fields are the ones
@@ -435,7 +436,7 @@ function assessEntryOutcome(entry: RelayDeployRecord, head: string): EntryVerdic
 }
 
 function fetchAppDetail(serverId: string, appName: string): Promise<RelayAppDetail> {
-  return relayRequest<RelayAppDetail>({ serverId, path: `/api/apps/${encodeURIComponent(appName)}` });
+  return relayRequest<RelayAppDetail>({ serverId, path: relayAppPath(appName) });
 }
 
 export type DeployTargetCheck = { reached: true } | { reached: false; failedCheck: string };

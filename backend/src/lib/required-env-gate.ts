@@ -1,5 +1,6 @@
 import { relayRequest, RelayError, envUnreadableRelayMessage } from "./relay.js";
 import { listAppSecretKeys } from "./app-secrets.js";
+import { relayAppPath, InvalidAppNameError } from "./relay-path.js";
 
 /**
  * Shared "is this required key actually resolved" decision, used by both
@@ -57,13 +58,20 @@ export async function evaluateRequiredEnv(opts: {
   try {
     const current = await relayRequest<{ entries?: Array<{ key: string; value: string }> }>({
       serverId,
-      path: `/api/apps/${appName}/env`,
+      path: relayAppPath(appName, "/env"),
       method: "GET",
     });
     for (const entry of current.entries ?? []) {
       if (!resolved.has(entry.key)) resolved.set(entry.key, entry.value);
     }
   } catch (err) {
+    // A refused app name (relay-path.ts) never reached the relay. Fail the
+    // check rather than throw: this gate is advisory on top of the relay's own
+    // preflight, and an unvalidated name is exactly the state it exists to
+    // catch. `missing` stays empty (nothing was confirmed to resolve empty).
+    if (err instanceof InvalidAppNameError) {
+      return { requiredKeys, missing: [], check: { name: "required-env", passed: false, message: err.message } };
+    }
     if (!(err instanceof RelayError)) throw err;
     // A relay 409 says the app's .env file is unreadable on the relay (e.g.
     // a symlink), so nothing could be read: claim neither "resolved" nor

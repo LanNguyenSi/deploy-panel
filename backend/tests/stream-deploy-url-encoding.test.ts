@@ -3,7 +3,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     app: { findUnique: vi.fn().mockResolvedValue({ requiredEnvKeys: [] }), update: vi.fn().mockResolvedValue({}) },
-    deploy: { findUnique: vi.fn(), update: vi.fn().mockResolvedValue({}) },
+    deploy: { findUnique: vi.fn(), findMany: vi.fn().mockResolvedValue([]), update: vi.fn().mockResolvedValue({}) },
   },
 }));
 
@@ -20,16 +20,30 @@ vi.mock("../src/lib/post-deploy-gate.js", () => ({
   verifyDeployHealth: vi.fn().mockResolvedValue({ healthy: true }),
 }));
 
+import { prisma } from "../src/lib/prisma.js";
 import { streamDeploy } from "../src/lib/stream-deploy.js";
+import { recoverBrokenDeploy } from "../src/lib/deploy-recovery.js";
+import { provisionAndCheckAppSecrets } from "../src/lib/provision-secrets.js";
+import { InvalidAppNameError } from "../src/lib/relay-path.js";
 
-// appName is interpolated into the relay deploy URL, so streamDeploy encodes
-// the name itself rather than let it rewrite the URL path. This encoding
-// protects this one call only: `..` and `.` pass through encodeURIComponent
-// unchanged, so traversal-style names are stopped upstream instead — the
-// scheduler guard cancels ScheduledDeploy rows stored before
-// `POST /api/scheduled` started validating names, and the v1 routes reject
-// them at the request.
-async function firstFetchUrl(appName: string): Promise<string> {
+const mRecover = recoverBrokenDeploy as unknown as ReturnType<typeof vi.fn>;
+const mProvision = provisionAndCheckAppSecrets as unknown as ReturnType<typeof vi.fn>;
+const mDeployUpdate = prisma.deploy.update as unknown as ReturnType<typeof vi.fn>;
+const mAppUpdate = prisma.app.update as unknown as ReturnType<typeof vi.fn>;
+
+// streamDeploy builds its relay deploy URL through relayAppPath (lib/relay-
+// path.ts), which refuses a name the relay itself refuses (RELAY_APP_NAME_
+// PATTERN). A relay-accepted name reaches the relay (encoding it, a no-op for
+// that charset). A refused name never reaches the fetch AND is not a lost
+// connection: streamDeploy finalizes the row `failed` with a preflight-kind
+// step naming the refusal, restores the App row to its pre-dispatch status
+// (the same finalization as the panel's own preflight refusal), and must NOT
+// hand it to recoverBrokenDeploy (the sweep refuses the same name at its
+// preflight, and the health gate would decide this row on an app nothing was
+// observed of). The App-status contract against the stuck-sweep is pinned in
+// refused-deploy-app-status.test.ts.
+
+async function runDeploy(appName: string): Promise<{ urls: string[] }> {
   const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
     ok: false,
     status: 400,
@@ -45,27 +59,75 @@ async function firstFetchUrl(appName: string): Promise<string> {
     relayUrl: "http://relay.example",
     relayToken: "tok",
     body: {},
+    previousStatus: "healthy",
   });
 
-  const [url] = fetchSpy.mock.calls[0] as [string, RequestInit];
+  const urls = fetchSpy.mock.calls.map((c) => c[0] as string);
   fetchSpy.mockRestore();
-  return url;
+  return { urls };
 }
 
-describe("streamDeploy percent-encodes the app name in the relay deploy URL", () => {
+function refusedFinalize() {
+  expect(mDeployUpdate).toHaveBeenCalledTimes(1);
+  const data = mDeployUpdate.mock.calls[0][0].data;
+  expect(data.status).toBe("failed");
+  const steps = JSON.parse(data.log);
+  expect(steps).toHaveLength(1);
+  expect(steps[0].status).toBe("failure");
+  expect(steps[0].kind).toBe("preflight-check");
+  expect(steps[0].output).toContain("refusing to build a relay app path");
+  // The App card goes back to the status it had before the dispatch.
+  expect(mAppUpdate).toHaveBeenCalledTimes(1);
+  expect(mAppUpdate.mock.calls[0][0]).toEqual({ where: { id: "app-1" }, data: { status: "healthy" } });
+}
+
+describe("streamDeploy builds the relay deploy URL through relayAppPath", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mProvision.mockResolvedValue({ provisionedKeys: [], wrote: false, missing: [] });
+    vi.spyOn(console, "log").mockImplementation(() => {});
   });
 
-  it("a plain name passes through unchanged", async () => {
-    expect(await firstFetchUrl("my-app")).toBe("http://relay.example/api/apps/my-app/deploy?stream=true");
+  it.each(["my-app", "_bad", "-bad", "a_b", "9lives"])("calls the relay for the relay-accepted name %j", async (name) => {
+    const { urls } = await runDeploy(name);
+    expect(urls).toEqual([`http://relay.example/api/apps/${name}/deploy?stream=true`]);
+    expect(mRecover).not.toHaveBeenCalled();
   });
 
-  it("a name containing a space is percent-encoded", async () => {
-    expect(await firstFetchUrl("my app")).toBe("http://relay.example/api/apps/my%20app/deploy?stream=true");
-  });
+  it.each(["..", ".", "a/b", "my app", 'a/b"c', "../x", "my.app", "app.env"])(
+    "refuses the name %j before the fetch, finalizes failed naming the refusal, recovers nothing and restores the App status",
+    async (name) => {
+      const { urls } = await runDeploy(name);
+      expect(urls).toEqual([]);
+      expect(mRecover).not.toHaveBeenCalled();
+      refusedFinalize();
+      expect(JSON.parse(mDeployUpdate.mock.calls[0][0].data.log)[0].output).toContain(JSON.stringify(name));
+    },
+  );
 
-  it("a name with a path separator or a quote cannot escape the path segment", async () => {
-    expect(await firstFetchUrl('a/b"c')).toBe("http://relay.example/api/apps/a%2Fb%22c/deploy?stream=true");
+  it("refuses a name the provisioning env read rejected with the same finalization (no recovery, App status restored)", async () => {
+    mProvision.mockRejectedValueOnce(new InvalidAppNameError("a.b"));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      text: async () => "x",
+    } as unknown as Response);
+
+    await streamDeploy({
+      serverId: "srv-a",
+      deployId: "9f1c2d3e-0000-4000-8000-000000000002",
+      appId: "app-1",
+      appName: "a.b",
+      relayUrl: "http://relay.example",
+      relayToken: "tok",
+      body: {},
+      previousStatus: "healthy",
+    });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+    expect(mRecover).not.toHaveBeenCalled();
+    refusedFinalize();
   });
 });

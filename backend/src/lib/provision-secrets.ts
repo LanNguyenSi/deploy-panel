@@ -1,6 +1,7 @@
 import { relayRequest } from "./relay.js";
 import { getDecryptedAppSecrets } from "./app-secrets.js";
 import { computeMissingRequiredKeys } from "./required-env-gate.js";
+import { relayAppPath } from "./relay-path.js";
 
 export interface ProvisionResult {
   /** Key NAMES only — never log or return the values alongside these. */
@@ -42,7 +43,7 @@ export async function provisionAndCheckAppSecrets(opts: {
 
   const current = await relayRequest<{ entries?: Array<{ key: string; value: string }> }>({
     serverId,
-    path: `/api/apps/${appName}/env`,
+    path: relayAppPath(appName, "/env"),
     method: "GET",
   });
 
@@ -57,7 +58,7 @@ export async function provisionAndCheckAppSecrets(opts: {
   if (changed) {
     await relayRequest({
       serverId,
-      path: `/api/apps/${appName}/env`,
+      path: relayAppPath(appName, "/env"),
       method: "PUT",
       body: { entries: Array.from(merged, ([key, value]) => ({ key, value })) },
     });

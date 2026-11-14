@@ -1549,3 +1549,78 @@ describe("v1 POST /rollback: recoverBrokenDeploy rejection is caught, not left u
     consoleErrorSpy.mockRestore();
   });
 });
+
+// ── Names the v1 guard lets through but the relay path builder refuses ───────
+//
+// The v1 routes guard `app` with APP_NAME_PATTERN (lib/app-name.ts), which
+// allows dots; relayAppPath refuses what the relay refuses (no dots). So a
+// dotted name passes the route guard and must still end in the route's own
+// 400 invalid_app_name, with no relay call, no Deploy row and no connection-
+// lost recovery (a refusal is not a lost connection).
+describe("v1 routes: a name the relay path builder refuses answers 400 invalid_app_name", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mServer.findFirst.mockResolvedValue(ownedServer);
+    mApp.findUnique.mockResolvedValue({ ...appRecord, name: "my.app" });
+    mDeploy.create.mockResolvedValue({ id: "rollback-1", status: "running", serverId: "srv-a", appId: "app-a" });
+    mDeploy.update.mockResolvedValue({});
+  });
+
+  const post = (path: string, body: object) =>
+    appFor({ userId: "user-a", isAdmin: false }).request(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  function expectNothingStartedOrRecovered() {
+    expect(relayRequest).not.toHaveBeenCalled();
+    expect(mDeploy.create).not.toHaveBeenCalled();
+    expect(mDeploy.update).not.toHaveBeenCalled();
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+  }
+
+  it.each(["my.app", "a.b", "v1.2"])("POST /rollback %j: 400, no Deploy row, no relay call, no recovery", async (name) => {
+    const res = await post("/rollback", { server: "my-server", app: name });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("invalid_app_name");
+    // Flush the fire-and-forget IIFE a leaked row would have started.
+    await new Promise((r) => setTimeout(r, 0));
+    expectNothingStartedOrRecovered();
+  });
+
+  it.each(["my.app", "a.b"])("GET /logs %j: 400, no relay call", async (name) => {
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request(
+      `/logs?server=my-server&app=${encodeURIComponent(name)}&lines=20`,
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("invalid_app_name");
+    expectNothingStartedOrRecovered();
+  });
+
+  it.each(["my.app", "a.b"])("POST /preflight %j: 400, no relay call", async (name) => {
+    const res = await post("/preflight", { server: "my-server", app: name });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("invalid_app_name");
+    expectNothingStartedOrRecovered();
+  });
+
+  it("a relay-accepted name still reaches the relay on all three routes", async () => {
+    mApp.findUnique.mockResolvedValue({ ...appRecord, requiredEnvKeys: [] });
+    vi.mocked(relayRequest).mockResolvedValue({ success: true, passed: true });
+
+    const logs = await appFor({ userId: "user-a", isAdmin: false }).request("/logs?server=my-server&app=my-app&lines=20");
+    expect(logs.status).toBe(200);
+    const pre = await post("/preflight", { server: "my-server", app: "my-app" });
+    expect(pre.status).toBe(200);
+    const rb = await post("/rollback", { server: "my-server", app: "my-app" });
+    expect(rb.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(vi.mocked(relayRequest).mock.calls.map((c) => c[0].path)).toEqual([
+      "/api/apps/my-app/logs?lines=20",
+      "/api/apps/my-app/preflight",
+      "/api/apps/my-app/rollback",
+    ]);
+  });
+});

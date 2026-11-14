@@ -640,3 +640,65 @@ describe("POST /:name/rollback: recoverBrokenDeploy rejection is caught, not lef
     consoleErrorSpy.mockRestore();
   });
 });
+
+// This route has no app-name pattern of its own (unlike /logs, /preflight and
+// /env, which reject with 400 invalid_app_name up front). Its relay path now
+// comes from relayAppPath (lib/relay-path.ts), which refuses any name the
+// relay itself refuses (RELAY_APP_NAME_PATTERN, mirroring agent-relay's
+// APP_NAME). The refusal must surface as the same 400 the sibling routes give,
+// BEFORE any App upsert, Deploy row or relay round-trip: never an unhandled
+// throw and never a traversal-shaped name interpolated into the rollback URL.
+describe("POST /:name/rollback: refuses an unsafe app name with 400 and no relay call", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mAppUpsert.mockResolvedValue({ id: "app-a", name: "my-app" });
+    mDeployCreate.mockResolvedValue({ id: "deploy-1", status: "running" });
+    mDeployUpdate.mockResolvedValue({});
+  });
+
+  // A single URL segment the relay's rule (mirrored by the helper) rejects:
+  // a dot, an encoded space, an encoded path traversal. (A bare `%2e%2e` is
+  // normalised away by the router into a `..` segment that collapses the
+  // path, so it never reaches the handler; an encoded traversal that keeps a
+  // non-dot character, like `..x` below, does.)
+  it.each(["a.b", "a%20b", "%2e%2e%2fx"])("name %j: 400 invalid_app_name, nothing stored, relay not called", async (encoded) => {
+    const res = await app().request(`/servers/srv-a/apps/${encoded}/rollback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid_app_name" });
+    expect(mAppUpsert).not.toHaveBeenCalled();
+    expect(mDeployCreate).not.toHaveBeenCalled();
+    expect(mRelay).not.toHaveBeenCalled();
+    expect(mRecoverBrokenDeploy).not.toHaveBeenCalled();
+  });
+
+  // The relay accepts leading `_` and `-`, so the panel must roll those apps
+  // back too: they reach the relay exactly as at the base (regression guard
+  // for a helper guard stricter than the relay's).
+  it.each(["_bad", "-bad"])("relay-accepted name %j reaches the relay at its rollback path", async (name) => {
+    mRelay.mockResolvedValueOnce({ success: true, commitBefore: "a", commitAfter: "b" });
+    const res = await app().request(`/servers/srv-a/apps/${name}/rollback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(200);
+    expect(mRelay).toHaveBeenCalledTimes(1);
+    expect(mRelay.mock.calls[0][0].path).toBe(`/api/apps/${name}/rollback`);
+  });
+
+  it("a clean name still reaches the relay at the encoded /rollback path", async () => {
+    mRelay.mockResolvedValueOnce({ success: true, commitBefore: "a", commitAfter: "b" });
+    const res = await app().request("/servers/srv-a/apps/my-app/rollback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(200);
+    expect(mRelay.mock.calls[0][0].path).toBe("/api/apps/my-app/rollback");
+  });
+});

@@ -4,6 +4,7 @@ import { hasRollbackOrFailedStep, isBuildCachePruneStep, recoverBrokenDeploy, re
 import { verifyDeployHealth } from "./post-deploy-gate.js";
 import { provisionAndCheckAppSecrets, type ProvisionResult } from "./provision-secrets.js";
 import { envUnreadableRelayMessage } from "./relay.js";
+import { InvalidAppNameError, relayAppPath } from "./relay-path.js";
 import {
   CONFLICT_STEP_KIND,
   PREFLIGHT_CHECK_KIND,
@@ -365,7 +366,7 @@ export async function streamDeploy(opts: {
     };
     armIdleTimer(firstByteMs);
 
-    const deployUrl = `${relayUrl}/api/apps/${encodeURIComponent(appName)}/deploy?stream=true`;
+    const deployUrl = `${relayUrl}${relayAppPath(appName, "/deploy", "?stream=true")}`;
     const deployInit: RequestInit = {
       method: "POST",
       headers,
@@ -565,6 +566,33 @@ export async function streamDeploy(opts: {
       });
     }
   } catch (err) {
+    if (err instanceof InvalidAppNameError) {
+      // relayAppPath refused the app name (the provisioning env read or the
+      // deploy URL), before anything reached the relay. This is neither a
+      // lost connection nor an app failure: nothing ran and nothing was
+      // observed. It is finalized like the panel's own preflight refusal
+      // above: the row ends `failed` with a preflight-kind step naming the
+      // refusal, and the App row is restored to its pre-dispatch status (or
+      // left alone when another deploy owns the `deploying` card), so the
+      // card does not sit on `deploying` until the stuck-sweep reconciles it
+      // and that sweep (reconcileDeployingApps) finds nothing to settle.
+      // recoverBrokenDeploy must NOT run: it would probe the app's health
+      // and let the gate's verdict decide this row, and the sweep already
+      // refuses this name at its own preflight.
+      console.log(`[stream-deploy] ${appName}: refused before deploy: ${err.message}`);
+      steps.push({ name: "env-preflight", kind: PREFLIGHT_CHECK_KIND, status: "failure", durationMs: 0, message: err.message, output: err.message });
+      await finalizeBlockedDeploy({
+        deployId,
+        appId,
+        previousStatus,
+        steps,
+        duration: Date.now() - startedAt,
+        keepAppStatus: previousStatus === "deploying",
+      }).catch((dbErr) => {
+        console.error(`[stream-deploy] failed to finalize refused deploy ${deployId}:`, dbErr);
+      });
+      return;
+    }
     const errMsg = err instanceof Error ? err.message : String(err);
     console.log(`[stream-deploy] Connection error for ${appName}: ${errMsg}`);
     // Awaited (not fire-and-forget) with its own .catch: recoverBrokenDeploy

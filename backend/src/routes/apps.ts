@@ -16,6 +16,7 @@ import { evaluateRequiredEnv } from "../lib/required-env-gate.js";
 import { classifyDeployLogOutcome } from "../lib/deploy-log.js";
 import { fetchUpstreamByApp, upstreamForApp, type Upstream } from "../lib/upstream.js";
 import { COMMIT_SHA_PATTERN } from "../lib/deploy-target.js";
+import { relayAppPath, InvalidAppNameError } from "../lib/relay-path.js";
 
 export const appsRouter = new Hono();
 
@@ -319,6 +320,19 @@ appsRouter.post("/:name/rollback", async (c) => {
     return c.json({ error: "bad_request", message: "Invalid to_commit: must be 7 to 40 hex characters (a full or abbreviated commit sha)" }, 400);
   }
 
+  // Refuse an app name that is not a safe relay path segment BEFORE creating
+  // any app or deploy row or calling the relay: same 400 invalid_app_name the
+  // sibling :name routes answer, and nothing is stored or sent. This route has
+  // no up-front name pattern of its own, so RELAY_APP_NAME_PATTERN (applied by
+  // relayAppPath) is what stops a traversal-shaped `:name` here.
+  let rollbackPath: string;
+  try {
+    rollbackPath = relayAppPath(name, "/rollback");
+  } catch (err) {
+    if (err instanceof InvalidAppNameError) return c.json({ error: "invalid_app_name" }, 400);
+    throw err;
+  }
+
   const app = await findOrCreateApp(serverId, name);
   const deploy = await prisma.deploy.create({
     data: { serverId, appId: app.id, status: "running", triggeredBy: "panel" },
@@ -344,7 +358,7 @@ appsRouter.post("/:name/rollback", async (c) => {
     const raw = await relayRequest<RollbackRelayPayload & { result?: RollbackRelayPayload }>({
       serverId,
       actor: getActorContext(c),
-      path: `/api/apps/${name}/rollback`,
+      path: rollbackPath,
       method: "POST",
       body: { to_commit: body.to_commit },
       headers: { "X-Deploy-Id": deploy.id },
@@ -467,10 +481,11 @@ appsRouter.get("/:name/logs", async (c) => {
     const result = await relayRequest({
       serverId,
       actor: getActorContext(c),
-      path: `/api/apps/${name}/logs?lines=${lines}`,
+      path: relayAppPath(name, "/logs", `?lines=${lines}`),
     });
     return c.json(result);
   } catch (err) {
+    if (err instanceof InvalidAppNameError) return c.json({ error: "invalid_app_name" }, 400);
     if (err instanceof RelayError) return c.json({ error: err.message }, err.status as any);
     throw err;
   }
@@ -494,7 +509,7 @@ appsRouter.get("/:name/preflight", async (c) => {
     const result = await relayRequest<{ passed?: boolean; checks?: Array<{ name: string; passed: boolean; message: string }> }>({
       serverId,
       actor: getActorContext(c),
-      path: `/api/apps/${name}/preflight`,
+      path: relayAppPath(name, "/preflight"),
     });
 
     const app = await prisma.app.findUnique({
@@ -519,6 +534,7 @@ appsRouter.get("/:name/preflight", async (c) => {
 
     return c.json(result);
   } catch (err) {
+    if (err instanceof InvalidAppNameError) return c.json({ error: "invalid_app_name" }, 400);
     if (err instanceof RelayError) return c.json({ error: err.message }, err.status as any);
     throw err;
   }
@@ -679,11 +695,12 @@ appsRouter.get("/:name/env", async (c) => {
     const result = await relayRequest<{ entries: { key: string; value: string }[] }>({
       serverId,
       actor: getActorContext(c),
-      path: `/api/apps/${name}/env`,
+      path: relayAppPath(name, "/env"),
       method: "GET",
     });
     return c.json({ entries: classifySensitivity(result.entries ?? []) });
   } catch (err) {
+    if (err instanceof InvalidAppNameError) return c.json({ error: "invalid_app_name" }, 400);
     if (err instanceof RelayError) return c.json({ error: err.message }, err.status as 400 | 404 | 500);
     throw err;
   }
@@ -717,6 +734,18 @@ appsRouter.put("/:name/env", async (c) => {
   const serverId = getServerId(c);
   const name = c.req.param("name");
   if (!APP_NAME_PATTERN.test(name)) return c.json({ error: "invalid_app_name" }, 400);
+
+  // Shared guard, backstop below the pattern above (which mirrors the same
+  // relay rule): refuse any name the relay path builder rejects BEFORE
+  // upserting an App row or calling the relay, so a future divergence in
+  // either pattern cannot leak a non-segment name into the URL or a row.
+  let envPath: string;
+  try {
+    envPath = relayAppPath(name, "/env");
+  } catch (err) {
+    if (err instanceof InvalidAppNameError) return c.json({ error: "invalid_app_name" }, 400);
+    throw err;
+  }
 
   const body = await c.req.json().catch(() => null);
   if (!body || !Array.isArray(body.entries)) {
@@ -759,7 +788,7 @@ appsRouter.put("/:name/env", async (c) => {
     const prev = await relayRequest<{ entries: { key: string; value: string }[] }>({
       serverId,
       actor: getActorContext(c),
-      path: `/api/apps/${name}/env`,
+      path: envPath,
       method: "GET",
     });
     current = prev.entries ?? [];
@@ -773,7 +802,7 @@ appsRouter.put("/:name/env", async (c) => {
     await relayRequest({
       serverId,
       actor: getActorContext(c),
-      path: `/api/apps/${name}/env`,
+      path: envPath,
       method: "PUT",
       body: { entries },
     });
