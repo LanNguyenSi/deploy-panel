@@ -4,7 +4,7 @@ import { hasRollbackOrFailedStep, isBuildCachePruneStep, recoverBrokenDeploy, re
 import { verifyDeployHealth } from "./post-deploy-gate.js";
 import { provisionAndCheckAppSecrets, type ProvisionResult } from "./provision-secrets.js";
 import { envUnreadableRelayMessage } from "./relay.js";
-import { relayAppPath } from "./relay-path.js";
+import { InvalidAppNameError, relayAppPath } from "./relay-path.js";
 import {
   CONFLICT_STEP_KIND,
   PREFLIGHT_CHECK_KIND,
@@ -566,6 +566,27 @@ export async function streamDeploy(opts: {
       });
     }
   } catch (err) {
+    if (err instanceof InvalidAppNameError) {
+      // relayAppPath refused the app name (the provisioning env read or the
+      // deploy URL), before anything reached the relay. This is neither a
+      // lost connection nor an app failure: nothing ran and nothing was
+      // observed, so the row ends `failed` with a step naming the refusal
+      // and the App row is left exactly as the dispatch wrote it (the stuck-
+      // sweep's reconcileDeployingApps is the backstop for a card left on
+      // `deploying`). recoverBrokenDeploy must NOT run: it would probe the
+      // app's health and let the gate's verdict decide this row, and the
+      // sweep already refuses this name at its own preflight.
+      console.log(`[stream-deploy] ${appName}: refused before deploy: ${err.message}`);
+      await prisma.deploy
+        .update({
+          where: { id: deployId },
+          data: { status: "failed", log: failureStepLog(err.message) },
+        })
+        .catch((dbErr) => {
+          console.error(`[stream-deploy] failed to finalize refused deploy ${deployId}:`, dbErr);
+        });
+      return;
+    }
     const errMsg = err instanceof Error ? err.message : String(err);
     console.log(`[stream-deploy] Connection error for ${appName}: ${errMsg}`);
     // Awaited (not fire-and-forget) with its own .catch: recoverBrokenDeploy

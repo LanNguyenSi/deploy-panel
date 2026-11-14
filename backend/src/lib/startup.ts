@@ -1,7 +1,6 @@
 import { prisma } from "./prisma.js";
 import { relayRequest } from "./relay.js";
-import { relayAppPath } from "./relay-path.js";
-import { isValidAppName } from "./app-name.js";
+import { InvalidAppNameError, RELAY_APP_NAME_PATTERN, relayAppPath } from "./relay-path.js";
 import { listActiveDeployIds, readExistingSteps } from "./deploy-recovery.js";
 import { checkDeployTargetDetailed, type RelayEntryEvidence } from "./deploy-target.js";
 import { classifyDeployLogOutcome, isBlockedDeployLog } from "./deploy-log.js";
@@ -313,20 +312,20 @@ export async function recoverStuckDeploys(): Promise<void> {
 let appNamesAudited = false;
 
 /**
- * Report App rows whose `name` fails the shared app-name guard
- * (`isValidAppName`, lib/app-name.ts): the relay path builders in lib/relay-
- * path.ts refuse such a name, so these rows can never be deployed, rolled
- * back, synced or recovered. They are almost always leftovers the scheduler
- * upserted from relay-reported names before name validation existed. This is
- * read-only: it logs one warning line per offending row (its id and the name
- * JSON-escaped, so a traversal-shaped name cannot forge a log line) and never
- * deletes or rewrites anything. Removing or renaming such a row is the
- * operator's call; see the operations doc.
+ * Report App rows whose `name` the relay path builder refuses: `RELAY_APP_NAME_PATTERN`
+ * (lib/relay-path.ts) mirrors the relay's own `APP_NAME` rule, so these are
+ * exactly the rows whose app could never be operated at the relay either , 
+ * relayAppPath refuses the same names before any request. They are almost
+ * always leftovers sync upserted from relay-reported names before name
+ * validation existed. This is read-only: it logs one warning line per
+ * offending row (its id and the name JSON-escaped, so a traversal-shaped name
+ * cannot forge a log line) and never deletes or rewrites anything. Removing
+ * or renaming such a row is the operator's call; see the operations doc.
  */
 export async function logInvalidAppNames(): Promise<void> {
   const rows = await prisma.app.findMany({ select: { id: true, name: true } });
   for (const row of rows) {
-    if (isValidAppName(row.name)) continue;
+    if (RELAY_APP_NAME_PATTERN.test(row.name)) continue;
     console.warn(
       `[startup] App row ${row.id} has a name that is not a safe relay path segment and cannot be deployed: ${JSON.stringify(row.name)}`,
     );
@@ -467,7 +466,13 @@ async function recoverStuckRecords(stuckDeploys: StuckDeploy[]): Promise<void> {
                 : target.failedCheck;
             }
           }
-        } catch {
+        } catch (err) {
+          if (err instanceof InvalidAppNameError) {
+            // The shared guard refused the row's name before the relay was
+            // contacted. Same fail-closed outcome as an unreachable relay,
+            // but the recovery step names the refusal, not a relay failure.
+            failedCheck = `the app name is not a safe relay path segment: ${err.message}`;
+          }
           // Relay unreachable or app not found: mark as interrupted
         }
       }

@@ -1,16 +1,18 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-// Two startup behaviours this PR adds, both driven by the shared app-name guard
-// (lib/app-name.ts) via relayAppPath (lib/relay-path.ts):
+// Two startup behaviours, both keyed on the guard relayAppPath applies
+// (lib/relay-path.ts, RELAY_APP_NAME_PATTERN mirroring the relay's own
+// APP_NAME rule):
 //
-// 1. The stuck-deploy preflight (recoverStuckRecords) now builds its relay path
-//    through relayAppPath, so an App row whose name was upserted (by the
-//    scheduler, before name validation existed) as something like `../x` is
-//    refused BEFORE the relay is contacted. It lands in the existing per-record
-//    catch and ends `interrupted`, the same fail-closed outcome as an
-//    unreachable relay: no relay request, no crash of the startup sequence.
-// 2. logInvalidAppNames reports every such App row once at boot (id +
-//    JSON-escaped name), read-only, for the operator to clean up.
+// 1. The stuck-deploy preflight (recoverStuckRecords) builds its relay path
+//    through relayAppPath, so an App row named something like `a.b` (a name
+//    the relay itself refuses) is rejected BEFORE the relay is contacted.
+//    It lands in the per-record catch and ends `interrupted` like an
+//    unreachable relay, but the failed check names the refusal. A name the
+//    relay accepts (`_bad` included) still reaches the preflight request,
+//    exactly as it did before the helper existed.
+// 2. logInvalidAppNames reports every App row the HELPER would refuse once at
+//    boot (id + JSON-escaped name), read-only, for the operator to clean up.
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
@@ -53,52 +55,77 @@ const stuckRow = (name: string) => ({
   server: { id: "srv-a", relayUrl: "http://relay.example", relayToken: null },
 });
 
-describe("startup stuck-deploy preflight refuses an unsafe App-row name", () => {
+describe("startup stuck-deploy preflight refuses a name the helper rejects", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     clearActiveDeploys();
     mUpdateMany.mockResolvedValue({ count: 1 });
     mAppFindMany.mockResolvedValue([]);
     (prisma.deploy.findFirst as any).mockResolvedValue(null);
-    mDeployFindMany.mockImplementation(async (args: any) => (args?.where?.status === "running" ? [stuckRow("../x")] : []));
+    mRelay.mockResolvedValue({ app: "_bad", passed: false });
   });
 
-  it("makes no relay request and finalizes the row interrupted when the app row name is ../x", async () => {
+  it("makes no relay request and finalizes the row interrupted with the refusal named when the app row name is a.b", async () => {
+    mDeployFindMany.mockImplementation(async (args: any) => (args?.where?.status === "running" ? [stuckRow("a.b")] : []));
+
     await recoverStuckDeploys();
 
     // relayAppPath refused the name before the preflight request could be sent.
     expect(mRelay).not.toHaveBeenCalled();
-    // The per-record catch treats the refusal like an unreachable relay: failed
-    // closed as interrupted, with the reason this branch already carries.
+    // Failed closed as interrupted like an unreachable relay, but the recovery
+    // step names the refusal instead of blaming the relay.
     const finalized = mUpdateMany.mock.calls.at(-1)![0];
     expect(finalized.data.status).toBe("interrupted");
     const steps = JSON.parse(finalized.data.log);
-    expect(steps.at(-1).output).toContain("relay unreachable or app lookup failed");
+    expect(steps.at(-1).output).toContain("app name is not a safe relay path segment");
+    expect(steps.at(-1).output).toContain(JSON.stringify("a.b"));
+    expect(steps.at(-1).output).not.toContain("relay unreachable or app lookup failed");
+  });
+
+  it("still contacts the relay for a name the relay accepts (_bad), like at the base", async () => {
+    mDeployFindMany.mockImplementation(async (args: any) => (args?.where?.status === "running" ? [stuckRow("_bad")] : []));
+
+    await recoverStuckDeploys();
+
+    expect(mRelay).toHaveBeenCalledTimes(1);
+    expect(mRelay.mock.calls[0][0].path).toBe("/api/apps/_bad/preflight");
+    const finalized = mUpdateMany.mock.calls.at(-1)![0];
+    expect(finalized.data.status).toBe("interrupted");
+    const steps = JSON.parse(finalized.data.log);
+    // A plain failing preflight, not a refusal: the row reads as an app answer.
+    expect(steps.at(-1).output).toContain("relay preflight did not pass");
   });
 });
 
-describe("logInvalidAppNames reports unsafe App-row names, read-only", () => {
+describe("logInvalidAppNames reports what the HELPER refuses, read-only", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("logs one warning per offending row with its id and a JSON-escaped name, and none for clean rows", async () => {
+  it("logs one warning per row the helper refuses, none for relay-operable names", async () => {
     mAppFindMany.mockResolvedValue([
       { id: "good-1", name: "my-app" },
       { id: "bad-1", name: "../x" },
       { id: "bad-2", name: "a b" },
       { id: "good-2", name: "deploy-panel" },
+      { id: "good-3", name: "_bad" },
+      { id: "good-4", name: "-bad" },
+      { id: "bad-3", name: "a.b" },
     ]);
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     await logInvalidAppNames();
 
-    // One line per bad row, none per good row.
-    expect(warn).toHaveBeenCalledTimes(2);
+    // One line per refused row (relay rule: ../x, "a b", a.b), none for
+    // relay-operable names, leading `_`/`-` included (the relay accepts them,
+    // so they are not leftovers). Dotted names ARE reported: the relay
+    // refuses them too.
+    expect(warn).toHaveBeenCalledTimes(3);
     const lines = warn.mock.calls.map((c) => String(c[0]));
     expect(lines.some((l) => l.includes("bad-1") && l.includes(JSON.stringify("../x")))).toBe(true);
     expect(lines.some((l) => l.includes("bad-2") && l.includes(JSON.stringify("a b")))).toBe(true);
-    expect(lines.some((l) => l.includes("good-1") || l.includes("good-2"))).toBe(false);
+    expect(lines.some((l) => l.includes("bad-3") && l.includes(JSON.stringify("a.b")))).toBe(true);
+    expect(lines.some((l) => l.includes("good-1") || l.includes("good-2") || l.includes("good-3") || l.includes("good-4"))).toBe(false);
     // The traversal name is JSON-escaped, never spliced in raw.
-    expect(lines.some((l) => l.includes(`"${JSON.stringify("../x")}"`) || l.includes(JSON.stringify("../x")))).toBe(true);
+    expect(lines.some((l) => l.includes(JSON.stringify("../x")))).toBe(true);
 
     warn.mockRestore();
   });

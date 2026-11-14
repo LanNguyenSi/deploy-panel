@@ -735,9 +735,10 @@ appsRouter.put("/:name/env", async (c) => {
   const name = c.req.param("name");
   if (!APP_NAME_PATTERN.test(name)) return c.json({ error: "invalid_app_name" }, 400);
 
-  // Shared guard: refuse a name the relay path builder rejects (e.g. one the
-  // stricter local pattern above happens to admit but that is not a valid
-  // segment) before upserting an App row or calling the relay.
+  // Shared guard, backstop below the pattern above (which mirrors the same
+  // relay rule): refuse any name the relay path builder rejects BEFORE
+  // upserting an App row or calling the relay, so a future divergence in
+  // either pattern cannot leak a non-segment name into the URL or a row.
   let envPath: string;
   try {
     envPath = relayAppPath(name, "/env");
