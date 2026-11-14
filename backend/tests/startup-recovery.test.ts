@@ -31,6 +31,7 @@ vi.mock("../src/lib/prisma.js", () => ({
       update: vi.fn().mockResolvedValue({}),
       findMany: vi.fn().mockResolvedValue([]),
       updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      findUnique: vi.fn().mockResolvedValue({ liveUrl: null }),
     },
   },
 }));
@@ -39,8 +40,32 @@ vi.mock("../src/lib/relay.js", () => ({
   relayRequest: vi.fn(),
 }));
 
+// The real health gate runs in these tests; only its clock, DNS and HTTP are
+// replaced (no sleeping between polls, a public address for every host, a
+// scripted route), so a sweep pass costs no wall time.
+const gateEnv = vi.hoisted(() => ({
+  fetch: vi.fn(),
+  /** Keep the sweep's own sleep between polls instead of the no-op. */
+  realSleep: false,
+}));
+vi.mock("../src/lib/post-deploy-gate.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/post-deploy-gate.js")>();
+  return {
+    ...actual,
+    verifyDeployHealth: vi.fn((opts: Parameters<typeof actual.verifyDeployHealth>[0]) =>
+      actual.verifyDeployHealth({
+        ...opts,
+        sleepImpl: gateEnv.realSleep ? opts.sleepImpl : async () => {},
+        fetchImpl: gateEnv.fetch as unknown as typeof fetch,
+        lookupImpl: async () => [{ address: "93.184.216.34" }],
+      }),
+    ),
+  };
+});
+
 import { prisma } from "../src/lib/prisma.js";
 import { relayRequest } from "../src/lib/relay.js";
+import { verifyDeployHealth } from "../src/lib/post-deploy-gate.js";
 import { recoverStuckDeploys, RELAY_CLOCK_TOLERANCE_MS } from "../src/lib/startup.js";
 import { registerActiveDeploy, clearActiveDeploys } from "../src/lib/deploy-recovery.js";
 
@@ -50,7 +75,9 @@ const mDeployFindFirst = (prisma.deploy as any).findFirst as ReturnType<typeof v
 const mAppUpdate = (prisma.app as any).update as ReturnType<typeof vi.fn>;
 const mAppFindMany = (prisma.app as any).findMany as ReturnType<typeof vi.fn>;
 const mAppUpdateMany = (prisma.app as any).updateMany as ReturnType<typeof vi.fn>;
+const mAppFindUnique = (prisma.app as any).findUnique as ReturnType<typeof vi.fn>;
 const mRelay = relayRequest as unknown as ReturnType<typeof vi.fn>;
+const mVerify = verifyDeployHealth as unknown as ReturnType<typeof vi.fn>;
 
 // deploy.findMany serves two queries: the running rows and (after them) the
 // unverified self-deploy rows of upgradeSelfDeploys. Route by the status asked for.
@@ -66,7 +93,7 @@ const mockRelay = (opts: {
   passed?: boolean;
   /** What GET /health returns; omitted means the relay reports no version. */
   health?: { status?: string; version?: string };
-  detail?: { commit?: string; recentDeploys?: Array<Record<string, unknown>> };
+  detail?: { commit?: string; recentDeploys?: Array<Record<string, unknown>>; containers?: string };
 }) => {
   mRelay.mockImplementation(async ({ path }: { path: string }) => {
     if (path.endsWith("/preflight")) return { app: "x", passed: opts.passed ?? true };
@@ -109,6 +136,10 @@ describe("recoverStuckDeploys", () => {
     mDeployFindFirst.mockResolvedValue(null);
     mAppFindMany.mockResolvedValue([]);
     mAppUpdateMany.mockResolvedValue({ count: 1 });
+    mAppFindUnique.mockResolvedValue({ liveUrl: null });
+    gateEnv.realSleep = false;
+    gateEnv.fetch.mockReset();
+    gateEnv.fetch.mockResolvedValue({ status: 200 });
     upgradeRows = [];
   });
 
@@ -959,6 +990,502 @@ describe("recoverStuckDeploys", () => {
     await firstPass;
   });
 
+  describe("post-deploy health gate before a swept deploy is recorded success", () => {
+    const MIN = 60_000;
+    const ago = (ms: number) => new Date(Date.now() - ms);
+    // A deploy that started `startedMsAgo` ago whose relay entry (id-less
+    // timing correlation) ended 30 s after the start and ran 20 s.
+    const row = (startedMsAgo: number, name = "deploy-panel") =>
+      makeStuckDeploy({
+        id: "g1",
+        appId: "ag1",
+        createdAt: ago(startedMsAgo),
+        app: { name },
+        server: { id: "srv-a", relayUrl: "http://relay.example", relayToken: null },
+      });
+    const entry = (startedMsAgo: number) =>
+      relayDeployAfterStart({
+        deployId: "g1",
+        createdAt: new Date(Date.now() - startedMsAgo + 30_000).toISOString(),
+        durationMs: 20_000,
+      });
+    const svc = (service: string, over: Record<string, unknown> = {}) => ({
+      Service: service,
+      Name: `proj-${service}-1`,
+      State: "running",
+      Health: "",
+      ExitCode: 0,
+      Status: "Up 2 minutes",
+      ...over,
+    });
+    const relayWith = (startedMsAgo: number, rows: Array<Record<string, unknown>>) =>
+      mockRelay({ passed: true, detail: { commit: "newsha2", recentDeploys: [entry(startedMsAgo)], containers: JSON.stringify(rows) } });
+    const restartingFrontend = svc("frontend", { State: "restarting", ExitCode: 1, Status: "Restarting (1) 3 seconds ago" });
+    const startingFrontend = svc("frontend", { Health: "starting" });
+    const written = () => lastCall(mUpdateMany).data;
+    const writtenSteps = () => JSON.parse(written().log) as Array<{ name: string; status: string; output?: string }>;
+    const noWrites = () => {
+      expect(mUpdateMany).not.toHaveBeenCalled();
+      expect(mAppUpdate).not.toHaveBeenCalled();
+    };
+    // By default the process has been up for a day, so the row's own start
+    // anchors the grace window; the tests that move the process start say so.
+    const bootedAgo = (ms: number) => vi.spyOn(process, "uptime").mockReturnValue(ms / 1000);
+    beforeEach(() => {
+      bootedAgo(24 * 60 * MIN);
+    });
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    });
+
+    it("healthy: target reached and every service up is success, with a passing gate step before the recovery step", async () => {
+      setStuck([row(3 * MIN)]);
+      relayWith(3 * MIN, [svc("backend"), svc("frontend")]);
+
+      await recoverStuckDeploys();
+
+      expect(written().status).toBe("success");
+      expect(lastCall(mAppUpdate).data).toMatchObject({ status: "healthy", lastDeployAt: expect.any(Date) });
+      const steps = writtenSteps();
+      expect(steps.at(-2)).toMatchObject({ name: "post-deploy health gate", status: "success" });
+      expect(steps.at(-1)).toMatchObject({ name: "startup-recovery", status: "success" });
+    });
+
+    it("runs the gate with the stream path's inputs: the relay app and the app's liveUrl", async () => {
+      setStuck([row(3 * MIN)]);
+      relayWith(3 * MIN, [svc("backend")]);
+      mAppFindUnique.mockResolvedValue({ liveUrl: "https://panel.example.test" });
+
+      await recoverStuckDeploys();
+
+      expect(mAppFindUnique).toHaveBeenCalledWith({ where: { id: "ag1" }, select: { liveUrl: true } });
+      expect(mVerify).toHaveBeenCalledWith(expect.objectContaining({ serverId: "srv-a", appName: "deploy-panel", liveUrl: "https://panel.example.test" }));
+      expect(gateEnv.fetch).toHaveBeenCalledWith("https://panel.example.test", expect.anything());
+      expect(written().status).toBe("success");
+    });
+
+    it("never runs the gate for a deploy the target check did not prove", async () => {
+      setStuck([row(11 * MIN)]);
+      mockRelay({ passed: true, detail: { commit: "oldsha1", recentDeploys: [], containers: JSON.stringify([restartingFrontend]) } });
+
+      await recoverStuckDeploys();
+
+      expect(mVerify).not.toHaveBeenCalled();
+      expect(written().status).toBe("interrupted");
+    });
+
+    it("a sibling crashlooping after the grace is failed, the app unhealthy, and the offender named in a gate step and in the recovery step", async () => {
+      setStuck([row(11 * MIN)]);
+      relayWith(11 * MIN, [svc("backend"), restartingFrontend]);
+
+      await recoverStuckDeploys();
+
+      expect(written().status).toBe("failed");
+      // The relay's entry still proved the target: its facts are kept.
+      expect(written().commitAfter).toBe("newsha2222222");
+      expect(written().duration).toBe(20_000);
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "unhealthy", lastDeployAt: expect.any(Date) });
+      const steps = writtenSteps();
+      expect(steps.at(-2)).toMatchObject({ name: "post-deploy health gate", status: "failure" });
+      expect(steps.at(-2)!.output).toContain('service "frontend" is restarting (Restarting (1) 3 seconds ago)');
+      expect(steps.at(-1)).toMatchObject({ name: "startup-recovery", status: "failure" });
+      expect(steps.at(-1)!.output).toContain("Marked as failed");
+      expect(steps.at(-1)!.output).toContain('check failed: post-deploy health gate: service "frontend" is restarting');
+    });
+
+    it("the same crashloop inside the grace window leaves the record running with no write", async () => {
+      setStuck([row(3 * MIN)]);
+      relayWith(3 * MIN, [svc("backend"), restartingFrontend]);
+
+      await recoverStuckDeploys();
+
+      noWrites();
+    });
+
+    it("a container still starting inside the grace window leaves the record running, and the gate polled its extended window first", async () => {
+      setStuck([row(3 * MIN)]);
+      relayWith(3 * MIN, [svc("backend"), startingFrontend]);
+
+      await recoverStuckDeploys();
+
+      noWrites();
+      // 4 base polls plus the 9 the gate grants a pending-only window, plus the
+      // target check's own app-detail request.
+      const gatePolls = mRelay.mock.calls.filter((c) => c[0].path === "/api/apps/deploy-panel").length - 1;
+      expect(gatePolls).toBe(13);
+    });
+
+    it("a container still starting after the grace is success as on the stream path, with the gate's note in the step", async () => {
+      setStuck([row(11 * MIN)]);
+      relayWith(11 * MIN, [svc("backend"), startingFrontend]);
+
+      await recoverStuckDeploys();
+
+      expect(written().status).toBe("success");
+      const gateStep = writtenSteps().at(-2)!;
+      expect(gateStep.name).toBe("post-deploy health gate");
+      expect(gateStep.output).toContain("Passed optimistically without positive health confirmation");
+      expect(gateStep.output).toContain('"frontend"');
+    });
+
+    it("a public route answering 502 inside the grace window leaves the record running, after it the deploy is failed with the status named", async () => {
+      mAppFindUnique.mockResolvedValue({ liveUrl: "https://panel.example.test" });
+      gateEnv.fetch.mockResolvedValue({ status: 502 });
+
+      setStuck([row(3 * MIN)]);
+      relayWith(3 * MIN, [svc("backend"), svc("frontend")]);
+      await recoverStuckDeploys();
+      noWrites();
+
+      setStuck([row(11 * MIN)]);
+      relayWith(11 * MIN, [svc("backend"), svc("frontend")]);
+      await recoverStuckDeploys();
+      expect(written().status).toBe("failed");
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "unhealthy", lastDeployAt: expect.any(Date) });
+      expect(writtenSteps().at(-2)!.output).toContain("public route https://panel.example.test returned HTTP 502");
+    });
+
+    it("a route that was 502 and then answers is success on a later pass (the wait is not sticky)", async () => {
+      mAppFindUnique.mockResolvedValue({ liveUrl: "https://panel.example.test" });
+      setStuck([row(3 * MIN)]);
+      relayWith(3 * MIN, [svc("backend"), svc("frontend")]);
+
+      gateEnv.fetch.mockResolvedValue({ status: 502 });
+      await recoverStuckDeploys();
+      noWrites();
+
+      gateEnv.fetch.mockResolvedValue({ status: 200 });
+      await recoverStuckDeploys();
+      expect(written().status).toBe("success");
+    });
+
+    it("a relay that cannot answer compose ps during the gate is not a bad signal: the relay's own entry proved the deploy, so it is success", async () => {
+      setStuck([row(3 * MIN)]);
+      // The target check reads the app detail once; every gate poll after it fails.
+      let detailCalls = 0;
+      mRelay.mockImplementation(async ({ path }: { path: string }) => {
+        if (path.endsWith("/preflight")) return { app: "x", passed: true };
+        if (path === "/health") return { status: "ok" };
+        if (++detailCalls > 1) throw new Error("relay unreachable");
+        return { app: { name: "x", containers: "[]", commit: "newsha2", recentDeploys: [entry(3 * MIN)] } };
+      });
+
+      await recoverStuckDeploys();
+
+      expect(detailCalls).toBeGreaterThan(1);
+      expect(written().status).toBe("success");
+      expect(writtenSteps().at(-2)).toMatchObject({ name: "post-deploy health gate", status: "success" });
+    });
+
+    it("applies to every swept deploy, not only the panel's own app: a non-panel app with a crashlooping sibling is failed", async () => {
+      setStuck([row(11 * MIN, "event-booking-system")]);
+      relayWith(11 * MIN, [svc("backend"), restartingFrontend]);
+
+      await recoverStuckDeploys();
+
+      expect(written().status).toBe("failed");
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "unhealthy", lastDeployAt: expect.any(Date) });
+    });
+
+    it("a non-panel app gets the same grace, counted from the row's start", async () => {
+      setStuck([row(3 * MIN, "event-booking-system")]);
+      relayWith(3 * MIN, [svc("backend"), restartingFrontend]);
+
+      await recoverStuckDeploys();
+
+      noWrites();
+    });
+
+    it("counts the panel's grace from this process's start when that is later than the row's, and never does so for another app", async () => {
+      bootedAgo(1 * MIN);
+      setStuck([row(60 * MIN)]);
+      mockRelay({ passed: true, detail: { commit: "newsha2", recentDeploys: [entry(60 * MIN)], containers: JSON.stringify([restartingFrontend]) } });
+      await recoverStuckDeploys();
+      noWrites();
+
+      setStuck([row(60 * MIN, "event-booking-system")]);
+      await recoverStuckDeploys();
+      expect(written().status).toBe("failed");
+    });
+
+    it("pins the grace edge: waits one second inside it, is failed exactly at it", async () => {
+      // The edge is a millisecond comparison: freeze the clock so the time
+      // between building the row and sweeping it cannot move it.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-06-01T12:00:00Z"));
+      relayWith(10 * MIN - 1000, [restartingFrontend]);
+      setStuck([row(10 * MIN - 1000)]);
+      await recoverStuckDeploys();
+      noWrites();
+
+      vi.clearAllMocks();
+      mUpdateMany.mockResolvedValue({ count: 1 });
+      mDeployFindFirst.mockResolvedValue(null);
+      mAppFindMany.mockResolvedValue([]);
+      mAppFindUnique.mockResolvedValue({ liveUrl: null });
+      relayWith(10 * MIN, [restartingFrontend]);
+      setStuck([row(10 * MIN)]);
+      await recoverStuckDeploys();
+      expect(written().status).toBe("failed");
+    });
+
+    it("a gate that gives no verdict within its bound: the record waits inside the grace, and after it ends interrupted with the app unknown and no commits", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      // Once per sweep pass below; the default implementation stays for the other tests.
+      mVerify.mockImplementationOnce(() => new Promise(() => {}));
+      mVerify.mockImplementationOnce(() => new Promise(() => {}));
+
+      setStuck([row(3 * MIN)]);
+      relayWith(3 * MIN, [svc("backend")]);
+      const waiting = recoverStuckDeploys();
+      await vi.advanceTimersByTimeAsync(120_000);
+      await waiting;
+      noWrites();
+
+      setStuck([row(11 * MIN)]);
+      relayWith(11 * MIN, [svc("backend")]);
+      const undecided = recoverStuckDeploys();
+      await vi.advanceTimersByTimeAsync(120_000);
+      await undecided;
+      expect(written().status).toBe("interrupted");
+      expect(written().commitAfter).toBeUndefined();
+      expect(written().duration).toBeUndefined();
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "unknown" });
+      const steps = writtenSteps();
+      expect(steps.at(-2)).toMatchObject({ name: "post-deploy health gate", status: "failure", output: "the post-deploy health gate did not finish within 120s" });
+      expect(steps.at(-1)!.output).toContain("check failed: the post-deploy health gate did not finish within 120s");
+    });
+
+    it("a cut-off gate that had already seen an offender is interrupted, never success: slow relay, frontend starting then restarting, row past the grace", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      gateEnv.realSleep = true;
+      setStuck([row(11 * MIN)]);
+      // Every compose ps takes 6 s; polls 1-4 see the frontend starting, the rest restarting.
+      let detailCalls = 0;
+      mRelay.mockImplementation(async ({ path }: { path: string }) => {
+        if (path.endsWith("/preflight")) return { app: "x", passed: true };
+        if (path === "/health") return { status: "ok" };
+        const n = ++detailCalls;
+        if (n === 1) return { app: { name: "x", containers: "[]", commit: "newsha2", recentDeploys: [entry(11 * MIN)] } };
+        await new Promise((resolve) => setTimeout(resolve, 6_000));
+        return { app: { name: "x", containers: JSON.stringify([svc("backend"), n - 1 <= 4 ? startingFrontend : restartingFrontend]) } };
+      });
+
+      const pass = recoverStuckDeploys();
+      await vi.advanceTimersByTimeAsync(130_000);
+      await pass;
+
+      expect(written().status).toBe("interrupted");
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "unknown" });
+      // The run that lost the race stops polling: nothing more after the cap.
+      const callsAtEnd = detailCalls;
+      // The target check plus polls 1-11 (they start 11 s apart); poll 12 would start after the 120 s cap.
+      expect(callsAtEnd).toBe(12);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(detailCalls).toBe(callsAtEnd);
+    });
+
+    it("runs the real gate with the sweep's own sleep: a service restarting on every poll after the grace ends failed, and the relay is polled 5 s apart", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      gateEnv.realSleep = true;
+      setStuck([row(11 * MIN)]);
+      const polls: number[] = [];
+      mRelay.mockImplementation(async ({ path }: { path: string }) => {
+        if (path.endsWith("/preflight")) return { app: "x", passed: true };
+        if (path === "/health") return { status: "ok" };
+        polls.push(Date.now());
+        // The first request is the target check; the rest are gate polls.
+        if (polls.length === 1) return { app: { name: "x", containers: "[]", commit: "newsha2", recentDeploys: [entry(11 * MIN)] } };
+        return { app: { name: "x", containers: JSON.stringify([svc("backend"), restartingFrontend]) } };
+      });
+
+      const pass = recoverStuckDeploys();
+      await vi.advanceTimersByTimeAsync(30_000);
+      await pass;
+
+      expect(polls.slice(1).map((t) => t - polls[1])).toEqual([0, 5_000, 10_000, 15_000]);
+      expect(written().status).toBe("failed");
+      expect(writtenSteps().at(-2)!.output).toContain('service "frontend" is restarting');
+    });
+
+    it("a gate that throws something other than the deadline never makes success: the row ends interrupted, even inside the grace", async () => {
+      mVerify.mockImplementationOnce(async () => {
+        throw new Error("gate exploded");
+      });
+      setStuck([row(3 * MIN)]);
+      relayWith(3 * MIN, [svc("backend")]);
+
+      await recoverStuckDeploys();
+
+      expect(written().status).toBe("interrupted");
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "unknown" });
+    });
+
+    it("stops the polling of a gate run that lost the race: its sleep between polls works before the deadline and rejects after it", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      let gateOpts: { sleepImpl: (ms: number) => Promise<void> } | undefined;
+      mVerify.mockImplementationOnce((opts: any) => {
+        gateOpts = opts;
+        return new Promise(() => {});
+      });
+      setStuck([row(3 * MIN)]);
+      relayWith(3 * MIN, [svc("backend")]);
+
+      const pass = recoverStuckDeploys();
+      await vi.advanceTimersByTimeAsync(0);
+      const early = gateOpts!.sleepImpl(5_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(early).resolves.toBeUndefined();
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      await pass;
+      await expect(gateOpts!.sleepImpl(5_000)).rejects.toThrow("deadline");
+    });
+
+    it("a gate run that hits the deadline inside its own sleep is the same no-verdict outcome (interrupted after the grace), not an error", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      // The deadline passes while the gate polls; the timer race has not fired.
+      mVerify.mockImplementationOnce(async (opts: any) => {
+        vi.setSystemTime(Date.now() + 121_000);
+        await opts.sleepImpl(5_000);
+        return { healthy: true };
+      });
+      setStuck([row(11 * MIN)]);
+      relayWith(11 * MIN, [svc("backend")]);
+
+      await recoverStuckDeploys();
+
+      expect(written().status).toBe("interrupted");
+      expect(writtenSteps().at(-2)!.output).toContain("did not finish within 120s");
+    });
+
+    it("a liveUrl lookup that fails is not fatal: the gate runs without a route probe and a clean container check is success", async () => {
+      mAppFindUnique.mockRejectedValue(new Error("db blip"));
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      setStuck([row(3 * MIN)]);
+      relayWith(3 * MIN, [svc("backend"), svc("frontend")]);
+
+      await recoverStuckDeploys();
+
+      expect(mVerify).toHaveBeenCalledWith(expect.objectContaining({ liveUrl: null }));
+      expect(gateEnv.fetch).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("could not load liveUrl for deploy-panel: db blip"));
+      expect(written().status).toBe("success");
+    });
+
+    it("a failed gate step carries the gate's notes next to the offender: a skipped route probe is not lost", async () => {
+      // A literal private address: the route probe is refused (a note), never issued.
+      mAppFindUnique.mockResolvedValue({ liveUrl: "http://10.0.0.5/" });
+      setStuck([row(11 * MIN)]);
+      relayWith(11 * MIN, [svc("backend"), restartingFrontend]);
+
+      await recoverStuckDeploys();
+
+      expect(written().status).toBe("failed");
+      expect(gateEnv.fetch).not.toHaveBeenCalled();
+      const output = writtenSteps().at(-2)!.output!;
+      expect(output).toContain('service "frontend" is restarting');
+      expect(output).toContain("route probe skipped");
+    });
+
+    it("asks the relay with a short per-request timeout so a slow relay cannot hold the gate for the 5 minute default", async () => {
+      setStuck([row(3 * MIN)]);
+      relayWith(3 * MIN, [svc("backend")]);
+
+      await recoverStuckDeploys();
+
+      const gatePoll = mRelay.mock.calls.map((c) => c[0]).filter((o) => o.path === "/api/apps/deploy-panel").at(-1);
+      expect(gatePoll.timeoutMs).toBe(15_000);
+    });
+
+    describe("late relay proof (upgradeSelfDeploys)", () => {
+      const MARK = "the panel is up, but this self-deploy is not verified: target not reached: x";
+      const unverified = (startedMsAgo = 20 * MIN) => ({
+        id: "g1",
+        appId: "ag1",
+        createdAt: ago(startedMsAgo),
+        status: "interrupted",
+        log: JSON.stringify([{ name: "startup-recovery", status: "failure", durationMs: 0, output: `Marked as interrupted; check failed: ${MARK}` }]),
+        app: { name: "deploy-panel" },
+        server: { id: "srv-a", relayUrl: "http://relay.example", relayToken: null },
+      });
+
+      it("a row the late proof would make success is failed, with the app unhealthy, when a service is crashlooping", async () => {
+        setStuck([]);
+        upgradeRows = [unverified()];
+        relayWith(20 * MIN, [svc("backend"), restartingFrontend]);
+
+        await recoverStuckDeploys();
+
+        expect(written().status).toBe("failed");
+        const steps = writtenSteps();
+        expect(steps.at(-2)).toMatchObject({ name: "post-deploy health gate", status: "failure" });
+        expect(steps.at(-1)).toMatchObject({ name: "startup-recovery", status: "failure" });
+        expect(steps.at(-1)!.output).toContain("health gate failed");
+        expect(lastCall(mAppUpdateMany)).toEqual({ where: { id: "ag1", deploys: { none: { status: "running" } } }, data: { status: "unhealthy", lastDeployAt: expect.any(Date) } });
+      });
+
+      it("inside the grace a not-clean gate leaves the row interrupted with no write at all (a miss other than 'no entry yet' ends interrupted at once)", async () => {
+        setStuck([]);
+        upgradeRows = [unverified(3 * MIN)];
+        relayWith(3 * MIN, [svc("backend"), restartingFrontend]);
+
+        await recoverStuckDeploys();
+
+        expect(mUpdateMany).not.toHaveBeenCalled();
+        expect(mAppUpdateMany).not.toHaveBeenCalled();
+      });
+
+      it("a gate that gives no verdict after the grace keeps the row interrupted with no write", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        mVerify.mockImplementationOnce(() => new Promise(() => {}));
+        setStuck([]);
+        upgradeRows = [unverified(20 * MIN)];
+        relayWith(20 * MIN, [svc("backend")]);
+
+        const pass = recoverStuckDeploys();
+        await vi.advanceTimersByTimeAsync(120_000);
+        await pass;
+
+        expect(mUpdateMany).not.toHaveBeenCalled();
+        expect(mAppUpdateMany).not.toHaveBeenCalled();
+      });
+
+      it("counts the grace from this process's start when that is later than the row's", async () => {
+        bootedAgo(1 * MIN);
+        setStuck([]);
+        upgradeRows = [unverified(20 * MIN)];
+        relayWith(20 * MIN, [svc("backend"), restartingFrontend]);
+
+        await recoverStuckDeploys();
+
+        expect(mUpdateMany).not.toHaveBeenCalled();
+      });
+
+      it("inside the grace a clean gate still upgrades the row", async () => {
+        setStuck([]);
+        upgradeRows = [unverified(3 * MIN)];
+        relayWith(3 * MIN, [svc("backend"), svc("frontend")]);
+
+        await recoverStuckDeploys();
+
+        expect(written().status).toBe("success");
+      });
+
+      it("a healthy gate keeps the upgrade to success, with lastDeployAt", async () => {
+        setStuck([]);
+        upgradeRows = [unverified()];
+        relayWith(20 * MIN, [svc("backend"), svc("frontend")]);
+
+        await recoverStuckDeploys();
+
+        expect(written().status).toBe("success");
+        expect(lastCall(mAppUpdateMany).data).toEqual({ status: "healthy", lastDeployAt: expect.any(Date) });
+      });
+    });
+  });
+
   describe("apps left on deploying with no running deploy (reconcileDeployingApps)", () => {
     const appRow = (deploys: Array<{ status: string; log?: string | null }>, over: Record<string, unknown> = {}) => ({
       id: "app1",
@@ -1129,7 +1656,8 @@ describe("recoverStuckDeploys", () => {
       expect(call.where).toEqual({ id: "self1", status: "interrupted", log: { contains: "this self-deploy is not verified" } });
       expect(call.data).toMatchObject({ status: "success", commitBefore: "oldsha1111111", commitAfter: "newsha2222222", duration: 90_000 });
       const steps = JSON.parse(call.data.log);
-      expect(steps).toHaveLength(3);
+      expect(steps).toHaveLength(4);
+      expect(steps.at(-2)).toMatchObject({ name: "post-deploy health gate", status: "success" });
       expect(steps.at(-1)).toMatchObject({ name: "startup-recovery", status: "success" });
       // The row just became a proven success, so the app write also records
       // the deploy (lastDeployAt), the finalizeDeploy rule.
