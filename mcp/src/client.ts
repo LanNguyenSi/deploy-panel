@@ -118,12 +118,15 @@ export class DeployPanelClient {
     // used by listApps/deploy/rollback, so the raw value is forwarded as-is.
     if (options?.server) params.set("server_id", options.server);
 
-    // Unlike server_id, GET /api/v1/deploys' app_id is a raw Prisma filter
-    // that only ever matches an id (v1.ts's own comment: App.name is unique
-    // per server, not globally, so a name-based lookup would be ambiguous
-    // without also requiring server_id). Resolve an app name to its id here
-    // via listApps, scoped to the same server filter so the resolution and
-    // the final query agree on which app is meant.
+    // GET /api/v1/deploys has a name filter now too (v1.ts): `app` matches
+    // the app name through the relation, scoped to server_id when given and
+    // spanning every visible server when not (one name on several servers
+    // matches all of them), while app_id stays a raw id filter. Resolve the
+    // app here via listApps instead, scoped to the same server filter so the
+    // resolution and the final query agree on which app is meant: the tool's
+    // `app` takes a name or an id and the two backend parameters each take
+    // only one form, and an ambiguous name must raise the error below rather
+    // than silently merge deploys from several same-named apps.
     if (options?.app) {
       const { apps } = await this.listApps(options.server);
       const idMatch = apps.find((a) => a.id === options.app);
