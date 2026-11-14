@@ -45,6 +45,8 @@ vi.mock("../src/lib/relay.js", () => ({
 // scripted route), so a sweep pass costs no wall time.
 const gateEnv = vi.hoisted(() => ({
   fetch: vi.fn(),
+  /** Keep the sweep's own sleep between polls instead of the no-op. */
+  realSleep: false,
 }));
 vi.mock("../src/lib/post-deploy-gate.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/lib/post-deploy-gate.js")>();
@@ -53,7 +55,7 @@ vi.mock("../src/lib/post-deploy-gate.js", async (importOriginal) => {
     verifyDeployHealth: vi.fn((opts: Parameters<typeof actual.verifyDeployHealth>[0]) =>
       actual.verifyDeployHealth({
         ...opts,
-        sleepImpl: async () => {},
+        sleepImpl: gateEnv.realSleep ? opts.sleepImpl : async () => {},
         fetchImpl: gateEnv.fetch as unknown as typeof fetch,
         lookupImpl: async () => [{ address: "93.184.216.34" }],
       }),
@@ -135,6 +137,7 @@ describe("recoverStuckDeploys", () => {
     mAppFindMany.mockResolvedValue([]);
     mAppUpdateMany.mockResolvedValue({ count: 1 });
     mAppFindUnique.mockResolvedValue({ liveUrl: null });
+    gateEnv.realSleep = false;
     gateEnv.fetch.mockReset();
     gateEnv.fetch.mockResolvedValue({ status: 200 });
     upgradeRows = [];
@@ -1227,7 +1230,7 @@ describe("recoverStuckDeploys", () => {
       expect(written().status).toBe("failed");
     });
 
-    it("a gate that does not finish within its bound is unconfirmed, not unhealthy: the record waits inside the grace and passes with a note after it", async () => {
+    it("a gate that gives no verdict within its bound: the record waits inside the grace, and after it ends interrupted with the app unknown and no commits", async () => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       // Once per sweep pass below; the default implementation stays for the other tests.
       mVerify.mockImplementationOnce(() => new Promise(() => {}));
@@ -1242,14 +1245,81 @@ describe("recoverStuckDeploys", () => {
 
       setStuck([row(11 * MIN)]);
       relayWith(11 * MIN, [svc("backend")]);
-      const passing = recoverStuckDeploys();
+      const undecided = recoverStuckDeploys();
       await vi.advanceTimersByTimeAsync(120_000);
-      await passing;
-      expect(written().status).toBe("success");
-      const gateStep = writtenSteps().at(-2)!;
-      expect(gateStep.status).toBe("success");
-      expect(gateStep.output).toContain("Passed optimistically without positive health confirmation");
-      expect(gateStep.output).toContain("did not finish within 120s");
+      await undecided;
+      expect(written().status).toBe("interrupted");
+      expect(written().commitAfter).toBeUndefined();
+      expect(written().duration).toBeUndefined();
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "unknown" });
+      const steps = writtenSteps();
+      expect(steps.at(-2)).toMatchObject({ name: "post-deploy health gate", status: "failure", output: "the post-deploy health gate did not finish within 120s" });
+      expect(steps.at(-1)!.output).toContain("check failed: the post-deploy health gate did not finish within 120s");
+    });
+
+    it("a cut-off gate that had already seen an offender is interrupted, never success: slow relay, frontend starting then restarting, row past the grace", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      gateEnv.realSleep = true;
+      setStuck([row(11 * MIN)]);
+      // Every compose ps takes 6 s; polls 1-4 see the frontend starting, the rest restarting.
+      let detailCalls = 0;
+      mRelay.mockImplementation(async ({ path }: { path: string }) => {
+        if (path.endsWith("/preflight")) return { app: "x", passed: true };
+        if (path === "/health") return { status: "ok" };
+        const n = ++detailCalls;
+        if (n === 1) return { app: { name: "x", containers: "[]", commit: "newsha2", recentDeploys: [entry(11 * MIN)] } };
+        await new Promise((resolve) => setTimeout(resolve, 6_000));
+        return { app: { name: "x", containers: JSON.stringify([svc("backend"), n - 1 <= 4 ? startingFrontend : restartingFrontend]) } };
+      });
+
+      const pass = recoverStuckDeploys();
+      await vi.advanceTimersByTimeAsync(130_000);
+      await pass;
+
+      expect(written().status).toBe("interrupted");
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "unknown" });
+      // The run that lost the race stops polling: nothing more after the cap.
+      const callsAtEnd = detailCalls;
+      // The target check plus polls 1-11 (they start 11 s apart); poll 12 would start after the 120 s cap.
+      expect(callsAtEnd).toBe(12);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(detailCalls).toBe(callsAtEnd);
+    });
+
+    it("runs the real gate with the sweep's own sleep: a service restarting on every poll after the grace ends failed, and the relay is polled 5 s apart", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      gateEnv.realSleep = true;
+      setStuck([row(11 * MIN)]);
+      const polls: number[] = [];
+      mRelay.mockImplementation(async ({ path }: { path: string }) => {
+        if (path.endsWith("/preflight")) return { app: "x", passed: true };
+        if (path === "/health") return { status: "ok" };
+        polls.push(Date.now());
+        // The first request is the target check; the rest are gate polls.
+        if (polls.length === 1) return { app: { name: "x", containers: "[]", commit: "newsha2", recentDeploys: [entry(11 * MIN)] } };
+        return { app: { name: "x", containers: JSON.stringify([svc("backend"), restartingFrontend]) } };
+      });
+
+      const pass = recoverStuckDeploys();
+      await vi.advanceTimersByTimeAsync(30_000);
+      await pass;
+
+      expect(polls.slice(1).map((t) => t - polls[1])).toEqual([0, 5_000, 10_000, 15_000]);
+      expect(written().status).toBe("failed");
+      expect(writtenSteps().at(-2)!.output).toContain('service "frontend" is restarting');
+    });
+
+    it("a gate that throws something other than the deadline never makes success: the row ends interrupted, even inside the grace", async () => {
+      mVerify.mockImplementationOnce(async () => {
+        throw new Error("gate exploded");
+      });
+      setStuck([row(3 * MIN)]);
+      relayWith(3 * MIN, [svc("backend")]);
+
+      await recoverStuckDeploys();
+
+      expect(written().status).toBe("interrupted");
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "unknown" });
     });
 
     it("stops the polling of a gate run that lost the race: its sleep between polls works before the deadline and rejects after it", async () => {
@@ -1273,7 +1343,7 @@ describe("recoverStuckDeploys", () => {
       await expect(gateOpts!.sleepImpl(5_000)).rejects.toThrow("deadline");
     });
 
-    it("a gate run that hits the deadline inside its own sleep is the same no-verdict outcome, not an error", async () => {
+    it("a gate run that hits the deadline inside its own sleep is the same no-verdict outcome (interrupted after the grace), not an error", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       // The deadline passes while the gate polls; the timer race has not fired.
       mVerify.mockImplementationOnce(async (opts: any) => {
@@ -1286,7 +1356,7 @@ describe("recoverStuckDeploys", () => {
 
       await recoverStuckDeploys();
 
-      expect(written().status).toBe("success");
+      expect(written().status).toBe("interrupted");
       expect(writtenSteps().at(-2)!.output).toContain("did not finish within 120s");
     });
 
@@ -1362,6 +1432,21 @@ describe("recoverStuckDeploys", () => {
         relayWith(3 * MIN, [svc("backend"), restartingFrontend]);
 
         await recoverStuckDeploys();
+
+        expect(mUpdateMany).not.toHaveBeenCalled();
+        expect(mAppUpdateMany).not.toHaveBeenCalled();
+      });
+
+      it("a gate that gives no verdict after the grace keeps the row interrupted with no write", async () => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        mVerify.mockImplementationOnce(() => new Promise(() => {}));
+        setStuck([]);
+        upgradeRows = [unverified(20 * MIN)];
+        relayWith(20 * MIN, [svc("backend")]);
+
+        const pass = recoverStuckDeploys();
+        await vi.advanceTimersByTimeAsync(120_000);
+        await pass;
 
         expect(mUpdateMany).not.toHaveBeenCalled();
         expect(mAppUpdateMany).not.toHaveBeenCalled();

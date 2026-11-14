@@ -66,17 +66,21 @@ const SWEEP_GATE_GRACE_MS = SELF_DEPLOY_PROOF_GRACE_MS;
  * Upper bound for one health-gate run inside a sweep pass. The gate polls with
  * its own defaults (4 polls, up to 9 more while a healthcheck is still
  * starting, 5 s apart: about 65 s when the relay answers at once); the bound
- * covers a relay or route that answers slowly. A run that exceeds it is
- * neither healthy nor unhealthy: it counts as an unconfirmed verdict (a note
- * "did not finish"), so inside the grace the record waits and after it the
- * deploy passes optimistically, as on the stream path when health stays
- * unresolved. A gate that could not look must not fail a deploy the relay's
- * history has just proven.
+ * covers a relay or route that answers slowly. A run that exceeds it has no
+ * verdict at all, and what it saw before the cap (a service restarting on
+ * earlier polls, say) is not known to the sweep, so it is neither a pass nor a
+ * failure: inside the grace the record waits, after it the deploy ends
+ * `interrupted` with the app `unknown` (no health claim, no failure claim).
+ * That differs from a gate that returned an unconfirmed verdict itself or whose
+ * relay answered with an error on every poll: those are the stream path's
+ * optimistic cases and pass after the grace. A verdict the gate returned before
+ * the cap is used as it is.
  *
  * The run that loses the race is stopped: the gate's sleep between polls
- * rejects once the deadline has passed, so it ends after the poll in flight
- * (one relay request, SWEEP_GATE_RELAY_TIMEOUT_MS, and one route probe, 10 s),
- * about 145 s after its start in the worst case, and it writes nothing. Without
+ * rejects when it starts or ends past the deadline, so the run ends after the
+ * poll in flight (one relay request, SWEEP_GATE_RELAY_TIMEOUT_MS, and one route
+ * probe, 10 s), about 145 s after its start in the worst case, and it writes
+ * nothing. Without
  * the stop, 13 polls of up to 15 s relay, 10 s probe and 5 s sleep could keep
  * polling the relay for about 6.5 minutes. The pass itself waits at most
  * SWEEP_GATE_TIMEOUT_MS per proven deploy. The sweep also runs once at boot,
@@ -119,7 +123,12 @@ interface GateStep {
 type SweepGateOutcome =
   | { kind: "pass"; step: GateStep }
   | { kind: "fail"; step: GateStep; reason: string }
+  // No verdict within SWEEP_GATE_TIMEOUT_MS and the grace is over.
+  | { kind: "undecided"; step: GateStep; reason: string }
   | { kind: "wait" };
+
+/** The race result of a gate run that gave no verdict within the cap. */
+const NO_VERDICT = Symbol("no verdict");
 
 /** Whether a deploy's gate verdict may still change: see SWEEP_GATE_GRACE_MS. */
 function withinSweepGateGrace(deploy: { createdAt: Date; app: { name: string } }): boolean {
@@ -139,15 +148,19 @@ function withinSweepGateGrace(deploy: { createdAt: Date; app: { name: string } }
  *
  * Verdicts:
  * - clean: `pass`, with a gate step shaped like the stream path's.
- * - a gate that is not clean (offenders, a route that is down) or that ended
- *   unconfirmed (a healthcheck still "starting" after its window, or no verdict
- *   within SWEEP_GATE_TIMEOUT_MS) while `withinGrace`: `wait`, the record stays
- *   running and the next pass looks again.
+ * - a gate that is not clean (offenders, a route that is down), that ended
+ *   unconfirmed (a healthcheck still "starting" after its window) or that gave
+ *   no verdict within SWEEP_GATE_TIMEOUT_MS, while `withinGrace`: `wait`, the
+ *   record stays running and the next pass looks again.
  * - not clean after the grace: `fail`, with the gate's offender list as reason.
  * - unconfirmed after the grace: `pass`, as on the stream path (the absence of
  *   bad news, with the gate's note in the step).
+ * - no verdict after the grace: `undecided`; the caller ends the row
+ *   `interrupted` (app `unknown`) or leaves it alone.
  * A relay that cannot be read for compose ps is not a bad signal on its own
- * (optimistic mode): the relay's history entry has just proven the deploy.
+ * (optimistic mode, as on the stream path): the relay's history entry has just
+ * proven the deploy. A cap timeout is different: the gate was cut off, it did
+ * not look and find nothing.
  */
 async function runSweepHealthGate(
   deploy: { appId: string; app: { name: string }; server: { id: string } },
@@ -160,16 +173,10 @@ async function runSweepHealthGate(
     return null;
   });
 
-  // No verdict within the bound: unconfirmed (see SWEEP_GATE_TIMEOUT_MS).
-  const noVerdict: DeployHealthVerdict = {
-    healthy: true,
-    unconfirmed: true,
-    notes: [`the post-deploy health gate did not finish within ${SWEEP_GATE_TIMEOUT_MS / 1000}s`],
-  };
   const deadline = Date.now() + SWEEP_GATE_TIMEOUT_MS;
   const deadlineReached = new Error("sweep health gate deadline reached");
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let verdict: DeployHealthVerdict;
+  let verdict: DeployHealthVerdict | typeof NO_VERDICT;
   try {
     verdict = await Promise.race([
       verifyDeployHealth({
@@ -178,18 +185,28 @@ async function runSweepHealthGate(
         liveUrl: app?.liveUrl ?? null,
         relayRequestImpl: (options) => relayRequest({ ...options, timeoutMs: SWEEP_GATE_RELAY_TIMEOUT_MS }),
         // Stops the polling of a run that has lost the race below.
+        // The deadline is checked when a sleep starts and when it ends.
         sleepImpl: (ms) =>
-          Date.now() >= deadline ? Promise.reject(deadlineReached) : new Promise<void>((resolve) => setTimeout(resolve, ms)),
-      }).catch((err: unknown) => {
-        if (err === deadlineReached) return noVerdict;
+          new Promise<void>((resolve, reject) => {
+            if (Date.now() >= deadline) return reject(deadlineReached);
+            setTimeout(() => (Date.now() >= deadline ? reject(deadlineReached) : resolve()), ms);
+          }),
+      }).catch((err: unknown): DeployHealthVerdict | typeof NO_VERDICT => {
+        if (err === deadlineReached) return NO_VERDICT;
         throw err;
       }),
-      new Promise<DeployHealthVerdict>((resolve) => {
-        timer = setTimeout(() => resolve(noVerdict), SWEEP_GATE_TIMEOUT_MS);
+      new Promise<typeof NO_VERDICT>((resolve) => {
+        timer = setTimeout(() => resolve(NO_VERDICT), SWEEP_GATE_TIMEOUT_MS);
       }),
     ]);
   } finally {
     clearTimeout(timer);
+  }
+
+  if (verdict === NO_VERDICT) {
+    if (withinGrace) return { kind: "wait" };
+    const reason = `the post-deploy health gate did not finish within ${SWEEP_GATE_TIMEOUT_MS / 1000}s`;
+    return { kind: "undecided", reason, step: { name: "post-deploy health gate", status: "failure", durationMs: 0, output: reason } };
   }
 
   const noteSuffix = verdict.notes?.length ? ` [${verdict.notes.join("; ")}]` : "";
@@ -375,11 +392,16 @@ async function recoverStuckRecords(stuckDeploys: StuckDeploy[]): Promise<void> {
                 continue;
               }
               gateStep = gate.step;
-              evidence = target.evidence;
-              if (gate.kind === "pass") {
+              if (gate.kind === "undecided") {
+                // The gate was cut off: no health claim and no failure claim,
+                // and no commits either (the row is not verified).
+                failedCheck = gate.reason;
+              } else if (gate.kind === "pass") {
+                evidence = target.evidence;
                 newStatus = "success";
                 failedCheck = undefined;
               } else {
+                evidence = target.evidence;
                 newStatus = "failed";
                 gateFailed = true;
                 failedCheck = `post-deploy health gate: ${gate.reason}`;
@@ -610,7 +632,9 @@ async function upgradeSelfDeploys(): Promise<void> {
       // the row interrupted with no write; the next pass looks again, within
       // the upgrade window.
       const gate = await runSweepHealthGate(deploy, withinSweepGateGrace(deploy));
-      if (gate.kind === "wait") continue;
+      // `undecided` (the gate was cut off after the grace) keeps the row
+      // interrupted, with no write, as `wait` does.
+      if (gate.kind === "wait" || gate.kind === "undecided") continue;
       const gateFailed = gate.kind === "fail";
       const step = {
         name: "startup-recovery",
