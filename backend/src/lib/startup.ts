@@ -66,11 +66,22 @@ const SWEEP_GATE_GRACE_MS = SELF_DEPLOY_PROOF_GRACE_MS;
  * Upper bound for one health-gate run inside a sweep pass. The gate polls with
  * its own defaults (4 polls, up to 9 more while a healthcheck is still
  * starting, 5 s apart: about 65 s when the relay answers at once); the bound
- * covers a relay or route that answers slowly. A run that exceeds it counts as
- * an unhealthy verdict ("did not finish"), so the grace rules above apply to
- * it. Each relay request inside the gate also gets SWEEP_GATE_RELAY_TIMEOUT_MS
- * instead of the 5 minute default, so a run that outlives the bound ends soon
- * after it on its own.
+ * covers a relay or route that answers slowly. A run that exceeds it is
+ * neither healthy nor unhealthy: it counts as an unconfirmed verdict (a note
+ * "did not finish"), so inside the grace the record waits and after it the
+ * deploy passes optimistically, as on the stream path when health stays
+ * unresolved. A gate that could not look must not fail a deploy the relay's
+ * history has just proven.
+ *
+ * The run that loses the race is stopped: the gate's sleep between polls
+ * rejects once the deadline has passed, so it ends after the poll in flight
+ * (one relay request, SWEEP_GATE_RELAY_TIMEOUT_MS, and one route probe, 10 s),
+ * about 145 s after its start in the worst case, and it writes nothing. Without
+ * the stop, 13 polls of up to 15 s relay, 10 s probe and 5 s sleep could keep
+ * polling the relay for about 6.5 minutes. The pass itself waits at most
+ * SWEEP_GATE_TIMEOUT_MS per proven deploy. The sweep also runs once at boot,
+ * awaited before startScheduler in server.ts, so the first scheduler tick is
+ * delayed by the gate duration of every proven deploy found then.
  */
 const SWEEP_GATE_TIMEOUT_MS = 2 * 60 * 1000;
 const SWEEP_GATE_RELAY_TIMEOUT_MS = 15 * 1000;
@@ -128,9 +139,9 @@ function withinSweepGateGrace(deploy: { createdAt: Date; app: { name: string } }
  *
  * Verdicts:
  * - clean: `pass`, with a gate step shaped like the stream path's.
- * - a gate that is not clean (offenders, a route that is down, or no verdict
- *   within SWEEP_GATE_TIMEOUT_MS) or that ended unconfirmed (a healthcheck still
- *   "starting" after its window) while `withinGrace`: `wait`, the record stays
+ * - a gate that is not clean (offenders, a route that is down) or that ended
+ *   unconfirmed (a healthcheck still "starting" after its window, or no verdict
+ *   within SWEEP_GATE_TIMEOUT_MS) while `withinGrace`: `wait`, the record stays
  *   running and the next pass looks again.
  * - not clean after the grace: `fail`, with the gate's offender list as reason.
  * - unconfirmed after the grace: `pass`, as on the stream path (the absence of
@@ -149,6 +160,14 @@ async function runSweepHealthGate(
     return null;
   });
 
+  // No verdict within the bound: unconfirmed (see SWEEP_GATE_TIMEOUT_MS).
+  const noVerdict: DeployHealthVerdict = {
+    healthy: true,
+    unconfirmed: true,
+    notes: [`the post-deploy health gate did not finish within ${SWEEP_GATE_TIMEOUT_MS / 1000}s`],
+  };
+  const deadline = Date.now() + SWEEP_GATE_TIMEOUT_MS;
+  const deadlineReached = new Error("sweep health gate deadline reached");
   let timer: ReturnType<typeof setTimeout> | undefined;
   let verdict: DeployHealthVerdict;
   try {
@@ -158,12 +177,15 @@ async function runSweepHealthGate(
         appName: deploy.app.name,
         liveUrl: app?.liveUrl ?? null,
         relayRequestImpl: (options) => relayRequest({ ...options, timeoutMs: SWEEP_GATE_RELAY_TIMEOUT_MS }),
+        // Stops the polling of a run that has lost the race below.
+        sleepImpl: (ms) =>
+          Date.now() >= deadline ? Promise.reject(deadlineReached) : new Promise<void>((resolve) => setTimeout(resolve, ms)),
+      }).catch((err: unknown) => {
+        if (err === deadlineReached) return noVerdict;
+        throw err;
       }),
       new Promise<DeployHealthVerdict>((resolve) => {
-        timer = setTimeout(
-          () => resolve({ healthy: false, reason: `the post-deploy health gate did not finish within ${SWEEP_GATE_TIMEOUT_MS / 1000}s` }),
-          SWEEP_GATE_TIMEOUT_MS,
-        );
+        timer = setTimeout(() => resolve(noVerdict), SWEEP_GATE_TIMEOUT_MS);
       }),
     ]);
   } finally {
@@ -442,15 +464,18 @@ async function recoverStuckRecords(stuckDeploys: StuckDeploy[]): Promise<void> {
 
       if (!liveSibling) {
         // Same reference rule as finalizeDeploy (stream-deploy.ts): a deploy
-        // settled as success is a deploy that happened, so the app records it;
-        // every other verdict leaves lastDeployAt alone.
+        // the relay's entry proved is a deploy that happened, so the app
+        // records it, whether the health gate then passed (healthy) or found the
+        // app not serving (unhealthy); every other verdict leaves lastDeployAt
+        // alone.
         await prisma.app.update({
           where: { id: deploy.appId },
           data:
             newStatus === "success"
               ? { status: "healthy", lastDeployAt: new Date() }
-              : // The gate found the app not serving, as it does on the stream path.
-                { status: gateFailed ? "unhealthy" : "unknown" },
+              : gateFailed
+                ? { status: "unhealthy", lastDeployAt: new Date() }
+                : { status: "unknown" },
         });
       }
 
@@ -577,10 +602,14 @@ async function upgradeSelfDeploys(): Promise<void> {
       const target = await checkDeployTargetDetailed(deploy, deploy.server.id, deploy.app.name);
       if (!target.reached || !target.idMatched) continue;
       const evidence = target.evidence;
-      // The same gate as the sweep's own success path. The row was left
-      // `running` for the whole grace window before it ended interrupted, so
-      // the grace is over here: the gate's verdict stands.
-      const gate = await runSweepHealthGate(deploy, false);
+      // The same gate, with the same grace, as the sweep's own success path.
+      // The row is not necessarily past it: it also ends interrupted at once
+      // for a miss that is not "no relay entry yet" (an unreachable relay, a
+      // failed app lookup), and a still-starting service just after the
+      // recreate must not turn a healthy self-deploy failed. A `wait` leaves
+      // the row interrupted with no write; the next pass looks again, within
+      // the upgrade window.
+      const gate = await runSweepHealthGate(deploy, withinSweepGateGrace(deploy));
       if (gate.kind === "wait") continue;
       const gateFailed = gate.kind === "fail";
       const step = {
@@ -602,12 +631,12 @@ async function upgradeSelfDeploys(): Promise<void> {
         },
       });
       if (count === 0) continue;
-      // A row that just became a proven success makes the app record the
-      // deploy (same rule as finalizeDeploy in stream-deploy.ts); one the gate
-      // failed leaves the app unhealthy and lastDeployAt alone.
+      // A row the relay's history proves makes the app record the deploy (same
+      // rule as finalizeDeploy in stream-deploy.ts), healthy when the gate
+      // passed and unhealthy when it failed.
       await prisma.app.updateMany({
         where: { id: deploy.appId, deploys: { none: { status: "running" } } },
-        data: gateFailed ? { status: "unhealthy" } : { status: "healthy", lastDeployAt: new Date() },
+        data: { status: gateFailed ? "unhealthy" : "healthy", lastDeployAt: new Date() },
       });
       console.log(`[stuck-sweep] Self-deploy ${deploy.id} (${deploy.app.name}): upgraded to ${gateFailed ? "failed" : "success"}`);
     } catch (err) {

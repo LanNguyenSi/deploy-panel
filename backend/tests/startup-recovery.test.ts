@@ -1082,7 +1082,7 @@ describe("recoverStuckDeploys", () => {
       // The relay's entry still proved the target: its facts are kept.
       expect(written().commitAfter).toBe("newsha2222222");
       expect(written().duration).toBe(20_000);
-      expect(lastCall(mAppUpdate).data).toEqual({ status: "unhealthy" });
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "unhealthy", lastDeployAt: expect.any(Date) });
       const steps = writtenSteps();
       expect(steps.at(-2)).toMatchObject({ name: "post-deploy health gate", status: "failure" });
       expect(steps.at(-2)!.output).toContain('service "frontend" is restarting (Restarting (1) 3 seconds ago)');
@@ -1139,7 +1139,7 @@ describe("recoverStuckDeploys", () => {
       relayWith(11 * MIN, [svc("backend"), svc("frontend")]);
       await recoverStuckDeploys();
       expect(written().status).toBe("failed");
-      expect(lastCall(mAppUpdate).data).toEqual({ status: "unhealthy" });
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "unhealthy", lastDeployAt: expect.any(Date) });
       expect(writtenSteps().at(-2)!.output).toContain("public route https://panel.example.test returned HTTP 502");
     });
 
@@ -1182,7 +1182,7 @@ describe("recoverStuckDeploys", () => {
       await recoverStuckDeploys();
 
       expect(written().status).toBe("failed");
-      expect(lastCall(mAppUpdate).data).toEqual({ status: "unhealthy" });
+      expect(lastCall(mAppUpdate).data).toEqual({ status: "unhealthy", lastDeployAt: expect.any(Date) });
     });
 
     it("a non-panel app gets the same grace, counted from the row's start", async () => {
@@ -1207,6 +1207,10 @@ describe("recoverStuckDeploys", () => {
     });
 
     it("pins the grace edge: waits one second inside it, is failed exactly at it", async () => {
+      // The edge is a millisecond comparison: freeze the clock so the time
+      // between building the row and sweeping it cannot move it.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-06-01T12:00:00Z"));
       relayWith(10 * MIN - 1000, [restartingFrontend]);
       setStuck([row(10 * MIN - 1000)]);
       await recoverStuckDeploys();
@@ -1223,7 +1227,7 @@ describe("recoverStuckDeploys", () => {
       expect(written().status).toBe("failed");
     });
 
-    it("a gate that does not finish within its bound counts as not clean: the record waits inside the grace and is failed after it", async () => {
+    it("a gate that does not finish within its bound is unconfirmed, not unhealthy: the record waits inside the grace and passes with a note after it", async () => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       // Once per sweep pass below; the default implementation stays for the other tests.
       mVerify.mockImplementationOnce(() => new Promise(() => {}));
@@ -1238,11 +1242,81 @@ describe("recoverStuckDeploys", () => {
 
       setStuck([row(11 * MIN)]);
       relayWith(11 * MIN, [svc("backend")]);
-      const failing = recoverStuckDeploys();
+      const passing = recoverStuckDeploys();
       await vi.advanceTimersByTimeAsync(120_000);
-      await failing;
-      expect(written().status).toBe("failed");
+      await passing;
+      expect(written().status).toBe("success");
+      const gateStep = writtenSteps().at(-2)!;
+      expect(gateStep.status).toBe("success");
+      expect(gateStep.output).toContain("Passed optimistically without positive health confirmation");
+      expect(gateStep.output).toContain("did not finish within 120s");
+    });
+
+    it("stops the polling of a gate run that lost the race: its sleep between polls works before the deadline and rejects after it", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      let gateOpts: { sleepImpl: (ms: number) => Promise<void> } | undefined;
+      mVerify.mockImplementationOnce((opts: any) => {
+        gateOpts = opts;
+        return new Promise(() => {});
+      });
+      setStuck([row(3 * MIN)]);
+      relayWith(3 * MIN, [svc("backend")]);
+
+      const pass = recoverStuckDeploys();
+      await vi.advanceTimersByTimeAsync(0);
+      const early = gateOpts!.sleepImpl(5_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(early).resolves.toBeUndefined();
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      await pass;
+      await expect(gateOpts!.sleepImpl(5_000)).rejects.toThrow("deadline");
+    });
+
+    it("a gate run that hits the deadline inside its own sleep is the same no-verdict outcome, not an error", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      // The deadline passes while the gate polls; the timer race has not fired.
+      mVerify.mockImplementationOnce(async (opts: any) => {
+        vi.setSystemTime(Date.now() + 121_000);
+        await opts.sleepImpl(5_000);
+        return { healthy: true };
+      });
+      setStuck([row(11 * MIN)]);
+      relayWith(11 * MIN, [svc("backend")]);
+
+      await recoverStuckDeploys();
+
+      expect(written().status).toBe("success");
       expect(writtenSteps().at(-2)!.output).toContain("did not finish within 120s");
+    });
+
+    it("a liveUrl lookup that fails is not fatal: the gate runs without a route probe and a clean container check is success", async () => {
+      mAppFindUnique.mockRejectedValue(new Error("db blip"));
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      setStuck([row(3 * MIN)]);
+      relayWith(3 * MIN, [svc("backend"), svc("frontend")]);
+
+      await recoverStuckDeploys();
+
+      expect(mVerify).toHaveBeenCalledWith(expect.objectContaining({ liveUrl: null }));
+      expect(gateEnv.fetch).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("could not load liveUrl for deploy-panel: db blip"));
+      expect(written().status).toBe("success");
+    });
+
+    it("a failed gate step carries the gate's notes next to the offender: a skipped route probe is not lost", async () => {
+      // A literal private address: the route probe is refused (a note), never issued.
+      mAppFindUnique.mockResolvedValue({ liveUrl: "http://10.0.0.5/" });
+      setStuck([row(11 * MIN)]);
+      relayWith(11 * MIN, [svc("backend"), restartingFrontend]);
+
+      await recoverStuckDeploys();
+
+      expect(written().status).toBe("failed");
+      expect(gateEnv.fetch).not.toHaveBeenCalled();
+      const output = writtenSteps().at(-2)!.output!;
+      expect(output).toContain('service "frontend" is restarting');
+      expect(output).toContain("route probe skipped");
     });
 
     it("asks the relay with a short per-request timeout so a slow relay cannot hold the gate for the 5 minute default", async () => {
@@ -1257,10 +1331,10 @@ describe("recoverStuckDeploys", () => {
 
     describe("late relay proof (upgradeSelfDeploys)", () => {
       const MARK = "the panel is up, but this self-deploy is not verified: target not reached: x";
-      const unverified = () => ({
+      const unverified = (startedMsAgo = 20 * MIN) => ({
         id: "g1",
         appId: "ag1",
-        createdAt: ago(20 * MIN),
+        createdAt: ago(startedMsAgo),
         status: "interrupted",
         log: JSON.stringify([{ name: "startup-recovery", status: "failure", durationMs: 0, output: `Marked as interrupted; check failed: ${MARK}` }]),
         app: { name: "deploy-panel" },
@@ -1279,7 +1353,39 @@ describe("recoverStuckDeploys", () => {
         expect(steps.at(-2)).toMatchObject({ name: "post-deploy health gate", status: "failure" });
         expect(steps.at(-1)).toMatchObject({ name: "startup-recovery", status: "failure" });
         expect(steps.at(-1)!.output).toContain("health gate failed");
-        expect(lastCall(mAppUpdateMany)).toEqual({ where: { id: "ag1", deploys: { none: { status: "running" } } }, data: { status: "unhealthy" } });
+        expect(lastCall(mAppUpdateMany)).toEqual({ where: { id: "ag1", deploys: { none: { status: "running" } } }, data: { status: "unhealthy", lastDeployAt: expect.any(Date) } });
+      });
+
+      it("inside the grace a not-clean gate leaves the row interrupted with no write at all (a miss other than 'no entry yet' ends interrupted at once)", async () => {
+        setStuck([]);
+        upgradeRows = [unverified(3 * MIN)];
+        relayWith(3 * MIN, [svc("backend"), restartingFrontend]);
+
+        await recoverStuckDeploys();
+
+        expect(mUpdateMany).not.toHaveBeenCalled();
+        expect(mAppUpdateMany).not.toHaveBeenCalled();
+      });
+
+      it("counts the grace from this process's start when that is later than the row's", async () => {
+        bootedAgo(1 * MIN);
+        setStuck([]);
+        upgradeRows = [unverified(20 * MIN)];
+        relayWith(20 * MIN, [svc("backend"), restartingFrontend]);
+
+        await recoverStuckDeploys();
+
+        expect(mUpdateMany).not.toHaveBeenCalled();
+      });
+
+      it("inside the grace a clean gate still upgrades the row", async () => {
+        setStuck([]);
+        upgradeRows = [unverified(3 * MIN)];
+        relayWith(3 * MIN, [svc("backend"), svc("frontend")]);
+
+        await recoverStuckDeploys();
+
+        expect(written().status).toBe("success");
       });
 
       it("a healthy gate keeps the upgrade to success, with lastDeployAt", async () => {
