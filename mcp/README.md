@@ -7,9 +7,10 @@ Every tool parameter described as "Server name or ID" (`deploy_app`, `deploy_pre
 `deploy_rollback`, and `deploy_list_apps`'s and `deploy_list`'s optional
 `server` filter) resolves either form on the backend the same way
 (`findOwnedServerByIdOrName` in `backend/src/lib/ownership.ts`). `deploy_list`'s
-`app` filter (name or ID) is resolved client-side instead, since the
-backend's `GET /api/v1/deploys` only accepts an app ID (see the note under
-`deploy_list` below).
+`app` filter (name or ID) is resolved client-side instead: the backend's
+`GET /api/v1/deploys` takes the two forms in two separate parameters (`app`
+by name, `app_id` by id), so the tool decides which one it was given before
+querying (see the note under `deploy_list` below).
 
 ## Run it
 
@@ -134,11 +135,19 @@ backend). The MCP server does not classify anything itself. See
 Unlike `server` (name or ID, resolved on the backend for every tool that
 takes it), `deploy_list`'s `app` filter is resolved by the MCP server itself:
 it queries `GET /api/v1/apps` directly (the same endpoint `deploy_list_apps`
-wraps, scoped to `server` when given) and matches on `app`'s name or ID
-before querying `GET /api/v1/deploys`. That backend route's own `app_id`
-query parameter only ever matches an app ID (`backend/src/routes/v1.ts`):
-app names are unique per server, not globally, so a name-based match there
-would be ambiguous without also requiring `server`. If `app` matches more
+wraps, scoped to `server` when given), matches on `app`'s name or ID, and
+queries `GET /api/v1/deploys` with the resolved app id as `app_id`. The
+backend route also has a name filter now (`backend/src/routes/v1.ts`): its
+`app` parameter matches by app name, with `server_id` that is the one app of
+that name on that server (names are unique per server), and without
+`server_id` the match spans every server the caller can see, so the same
+name on several servers matches all of them into one merged list (`app` and
+`app_id` together answer 400; see the `/api/v1/deploys` row in
+`../docs/api.md`). The tool still resolves the name itself because its `app`
+parameter takes a name or an ID while the backend's two parameters each take
+only one form (an app id passed to the name filter is matched as a name and
+finds nothing), and because an ambiguous name must raise the error below
+rather than silently merge the deploys of several same-named apps. If `app` matches more
 than one app by name (no `server` given to narrow it), `deploy_list` throws
 an error naming the servers instead of picking one silently; pass `server`
 to disambiguate. `GET /api/v1/apps` also drops apps tagged `ignored`, so an

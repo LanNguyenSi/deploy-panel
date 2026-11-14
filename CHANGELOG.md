@@ -62,6 +62,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Docs
 
 - The examples in `action/README.md` now pin the composite action to a release tag instead of the moving `main` ref, and a new "Pinning and updates" section explains tag pins (or the tag's commit SHA for a stricter pin) and automatic bumps via Renovate's `github-actions` manager or Dependabot's `github-actions` ecosystem. The dashboard example in `README.md` now mirrors what the dashboard actually renders (the status panel line, the totals line, "Recent Deploys" rows with a time-ago stamp) and points to `/deploys` for commit ranges.
+- `docs/configuration.md` now says a failed migration leaves the rolled-back panel down until the failed `_prisma_migrations` row is resolved, with the repair commands for a stopped backend; its production checklist notes that a prod copy for another domain must also edit the two hard-coded `Host(...)` Traefik router rules (`PANEL_PUBLIC_ORIGIN` does not reach them) and flags the plain `docker-compose.yml` as try-it-out only (no `logging:` or `mem_limit`). The `deploy_list` `app`-filter notes in `mcp/README.md` and `mcp/src/client.ts` describe the backend's current `app` name filter and `app_id` id filter instead of the old id-only wording.
 
 ### Security
 

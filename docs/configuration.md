@@ -85,6 +85,8 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+That plain file is meant for trying the panel out: it sets no `logging:` and no `mem_limit` (see Prod-file hardening below), so without log rotation the Docker json-file logs grow until the disk is full; for a long-running deployment use `docker-compose.prod.yml`, or copy its `logging:` and `mem_limit` blocks.
+
 `docker-compose.yml` forwards `DATABASE_URL`, `PORT`, `SESSION_SECRET`, `APP_SECRETS_KEY`, `CORS_ORIGINS`, `FRONTEND_URL`, `NODE_ENV`, `PANEL_SELF_APP_NAME`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `BACKEND_URL` and `ALLOWED_GITHUB_LOGINS` from `.env` to the backend. The optional ones default to empty (`BACKEND_URL` to `http://localhost:3001`); `ALLOWED_GITHUB_LOGINS` also defaults to empty, which only development and test accept, so a production backend needs it set, and the backend treats an empty `SESSION_SECRET` as unset. `PANEL_TOKEN` is deliberately not forwarded: an empty value fails the startup config check and production requires a token, so an empty default would stop the backend from starting. Add it to the backend's `environment:` in an override file, as `docker-compose.ci.yml` does, or take it from `docker-compose.prod.yml`, which forwards it. Without `PANEL_TOKEN`, a backend in development mode treats every request as admin, and a backend in production mode answers 500 on every authenticated route.
 
 Container behaviour:
@@ -124,7 +126,21 @@ The entrypoint retries only exit 3 ("could not check", typically the database is
 
 **A history table without a finished migration next to tables.** The script prints the table check and stops. Back up, look at the table (`SELECT * FROM _prisma_migrations`). If the tables are a database from before migrations and the table is a leftover, drop it (`DROP TABLE _prisma_migrations`) and start the backend again; the next start compares the tables with `baseline.prisma`.
 
-**A failed migration.** Prisma records it in `_prisma_migrations` and refuses further deploys (`P3009`) until it is resolved. Fix the cause, then mark it with `prisma migrate resolve --rolled-back <name>` (after undoing its partial effects by hand) or `--applied <name>` (when the effects are complete) and start the backend again.
+**A failed migration.** Prisma records it in `_prisma_migrations` and refuses further deploys (`P3009`) until it is resolved. Fix the cause, then mark it with `prisma migrate resolve --rolled-back <name>` (after undoing its partial effects by hand) or `--applied <name>` (when the effects are complete) and start the backend again. For a backend that stays down in its restart loop, in order:
+
+```bash
+# 1. The failed migration's name (the row with no finished_at and no rolled_back_at):
+docker exec deploy-panel-db psql -U deploy_panel -d deploy_panel -Atc "SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NULL AND rolled_back_at IS NULL"
+# 2. Fix the cause (the migration SQL or the database state) before resolving.
+# 3. Resolve <name> from step 1. The backend container is not up and its
+#    entrypoint would re-run the failing migration, so the Prisma CLI runs in
+#    a one-off container from its image (WORKDIR /app, --schema as migrate.sh):
+docker compose -f docker-compose.prod.yml run --rm --entrypoint sh backend -c 'npx --no-install prisma migrate resolve --rolled-back <name> --schema backend/prisma/schema.prisma'
+# 4. Start the backend again:
+docker compose -f docker-compose.prod.yml up -d backend
+```
+
+The backend started in step 4 is the rolled-back release; a corrected migration ships afterwards as a normal deploy.
 
 **One-time step in production.** The first start of a release with migrations finds a database that `db push` filled. If it equals `baseline.prisma` the script baselines it by itself; if not, the backend refuses to start and the relay rolls the code back (the database is untouched). Before that deploy, take a `pg_dump` backup and run these checks against the running container of the release that still runs `db push`:
 
@@ -159,7 +175,7 @@ What that means for a release:
 
 - A migration that only adds (nullable columns, columns with a default, new tables or indexes) is safe to roll back over; the previous code ignores what it does not know.
 - A migration the previous code cannot work with (drop or rename of a column or table, a new NOT NULL column without a default) turns a rollback into a different failure: the old backend meets the new schema. Ship such a change in two releases (expand, then contract once nothing reads the old shape), or plan a manual step: restore the pre-deploy `pg_dump` backup, or write a compensating migration and deploy it.
-- A migration that fails during the deploy leaves the container unhealthy, the relay rolls the code back, and the database stays as the failed migration left it (see "A failed migration" above).
+- A migration that fails during the deploy leaves the container unhealthy, the relay rolls the code back, and the database stays as the failed migration left it (see "A failed migration" above). The rolled-back panel does not come back on its own: the restored backend runs the same migration step on every start, the same failed row makes `prisma migrate deploy` fail with `P3009` again, and the entrypoint exits without retrying, so the backend never binds its port and the container stays in its `restart: unless-stopped` loop, the panel down, until someone resolves the row (the commands are under "A failed migration" above).
 
 The panel's health check, which the relay uses to decide on a rollback, only passes after the migrations applied, because the server binds its port after the entrypoint's migration step.
 
@@ -262,7 +278,7 @@ The install wizard sends the SSH password or private key to the backend with the
 - `NEXT_PUBLIC_API_URL` points at the public backend URL, not `localhost`, and the frontend image was rebuilt after setting it.
 - `BACKEND_URL` is the public backend origin and the base of the GitHub OAuth redirect: the login start sends `${BACKEND_URL}/api/auth/github/callback` to GitHub as its `redirect_uri`, so it must be the callback origin registered on the OAuth App. A backend with `NODE_ENV=production` and both `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` set refuses to start while `BACKEND_URL`'s host is `localhost`, `127.0.0.1` or `[::1]`: every login would otherwise end on GitHub's `redirect_uri_mismatch` page while `/api/health` stays green (the message prints the `redirect_uri` it would have sent). `docker-compose.yml` runs in production mode by default (`NODE_ENV` defaults to `production` there), so OAuth in a `docker-compose.yml` run with a localhost `BACKEND_URL` needs `NODE_ENV=development` or a non-localhost `BACKEND_URL` in the `.env`.
 - `FRONTEND_URL` is the frontend origin the OAuth callback redirects the browser to, after a successful login and on every error.
-- `PANEL_PUBLIC_ORIGIN` is the prod compose file's single public origin: `docker-compose.prod.yml` fills `BACKEND_URL`, `CORS_ORIGINS`, `FRONTEND_URL` and `NEXT_PUBLIC_API_URL` from this one variable (default the template's own domain), so a copy of that file for another domain sets `PANEL_PUBLIC_ORIGIN` in the server `.env` instead of editing the file, and `NEXT_PUBLIC_API_URL` needs a frontend rebuild (`docker compose -f docker-compose.prod.yml up -d --build frontend`); it is not a value in `.env.example`, so a template `.env` cannot override the prod origins.
+- `PANEL_PUBLIC_ORIGIN` is the prod compose file's single public origin: `docker-compose.prod.yml` fills `BACKEND_URL`, `CORS_ORIGINS`, `FRONTEND_URL` and `NEXT_PUBLIC_API_URL` from this one variable (default the template's own domain), so a copy of that file for another domain sets `PANEL_PUBLIC_ORIGIN` in the server `.env` and also edits the two hard-coded `Host(...)` router rules in the file (`traefik.http.routers.deploy-panel-api.rule` on the backend and `traefik.http.routers.deploy-panel.rule` on the frontend: `PANEL_PUBLIC_ORIGIN` does not reach them), and `NEXT_PUBLIC_API_URL` needs a frontend rebuild (`docker compose -f docker-compose.prod.yml up -d --build frontend`); it is not a value in `.env.example`, so a template `.env` cannot override the prod origins.
 - `CORS_ORIGINS` lists exactly the origins you want to allow (comma-separated, no trailing slashes).
 - `PANEL_TOKEN` set: in production every authenticated route and the UI login need it, not only `/api/v1`.
 - `POSTGRES_PASSWORD` set in the server `.env` to the password the database was initialized with (`deploy_panel_prod` on an install that never set it): `docker-compose.prod.yml` has no fallback, so compose fails before starting anything when it is unset or empty, and a different value than the database's locks the backend out (rotate with `ALTER USER` first, see the variables table).
