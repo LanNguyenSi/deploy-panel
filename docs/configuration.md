@@ -140,6 +140,8 @@ docker compose -f docker-compose.prod.yml run --rm --entrypoint sh backend -c 'n
 docker compose -f docker-compose.prod.yml up -d backend
 ```
 
+The backend started in step 4 is the rolled-back release; a corrected migration ships afterwards as a normal deploy.
+
 **One-time step in production.** The first start of a release with migrations finds a database that `db push` filled. If it equals `baseline.prisma` the script baselines it by itself; if not, the backend refuses to start and the relay rolls the code back (the database is untouched). Before that deploy, take a `pg_dump` backup and run these checks against the running container of the release that still runs `db push`:
 
 ```bash
