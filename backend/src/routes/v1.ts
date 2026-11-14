@@ -13,7 +13,7 @@ import {
 } from "../lib/ownership.js";
 import { evaluateRequiredEnv } from "../lib/required-env-gate.js";
 import { APP_NAME_PATTERN } from "../lib/app-name.js";
-import { relayAppPath } from "../lib/relay-path.js";
+import { relayAppPath, InvalidAppNameError } from "../lib/relay-path.js";
 import { denyPrivateServerTargets } from "../lib/target-guard.js";
 import { connectGuardRequired } from "../lib/connect-guard.js";
 import { COMMIT_SHA_PATTERN } from "../lib/deploy-target.js";
@@ -22,6 +22,22 @@ type Env = {
   Variables: { authType: string; apiKeyName?: string; userId?: string; isAdmin?: boolean };
 };
 export const v1Router = new Hono<Env>();
+
+// The v1 routes guard `app` with APP_NAME_PATTERN (lib/app-name.ts), which
+// allows dots; relayAppPath refuses what the relay refuses
+// (RELAY_APP_NAME_PATTERN), so a dotted name passes the guard and is refused
+// by the helper. Every route builds its relay path through this wrapper
+// BEFORE it creates any row or calls the relay, and a refusal answers the
+// same 400 invalid_app_name the /api/servers/:serverId/apps routes answer.
+function relayPathOrNull(appName: string, suffix: string, query = ""): string | null {
+  try {
+    return relayAppPath(appName, suffix, query);
+  } catch (err) {
+    if (err instanceof InvalidAppNameError) return null;
+    throw err;
+  }
+}
+const INVALID_APP_NAME_BODY = { error: "invalid_app_name", message: "Invalid app name" } as const;
 
 // Rollback target guard (same rule in routes/routes/apps.ts): a present `to_commit`
 // must be a string holding a full or abbreviated commit sha
@@ -340,6 +356,12 @@ v1Router.post("/rollback", async (c) => {
   const denied = await denyPrivateServerTargets(c, actor, { relayUrl: srv.relayUrl }, srv.id);
   if (denied) return denied;
 
+  // Build the relay path BEFORE the Deploy row exists: a refused name answers
+  // 400 with no row, no audit entry and no recoverBrokenDeploy (the row would
+  // otherwise be handed to connection-lost recovery by the catch below).
+  const rollbackPath = relayPathOrNull(appName, "/rollback");
+  if (rollbackPath === null) return c.json(INVALID_APP_NAME_BODY, 400);
+
   const appRecord = await prisma.app.findUnique({
     where: { serverId_name: { serverId: srv.id, name: appName } },
   });
@@ -376,7 +398,7 @@ v1Router.post("/rollback", async (c) => {
       >({
         serverId: srv.id,
         actor,
-        path: relayAppPath(appName, "/rollback"),
+        path: rollbackPath,
         method: "POST",
         body: { to_commit },
         headers: { "X-Deploy-Id": deployId },
@@ -492,11 +514,14 @@ v1Router.get("/logs", async (c) => {
   const denied = await denyPrivateServerTargets(c, actor, { relayUrl: srv.relayUrl }, srv.id);
   if (denied) return denied;
 
+  const logsPath = relayPathOrNull(appName, "/logs", `?lines=${lines}`);
+  if (logsPath === null) return c.json(INVALID_APP_NAME_BODY, 400);
+
   try {
     const result = await relayRequest({
       serverId: srv.id,
       actor,
-      path: relayAppPath(appName, "/logs", `?lines=${lines}`),
+      path: logsPath,
     });
     return c.json(result);
   } catch (err) {
@@ -527,11 +552,14 @@ v1Router.post("/preflight", async (c) => {
   const denied = await denyPrivateServerTargets(c, actor, { relayUrl: srv.relayUrl }, srv.id);
   if (denied) return denied;
 
+  const preflightPath = relayPathOrNull(appName, "/preflight");
+  if (preflightPath === null) return c.json(INVALID_APP_NAME_BODY, 400);
+
   try {
     const result = await relayRequest<{ passed?: boolean; checks?: Array<{ name: string; passed: boolean; message: string }> }>({
       serverId: srv.id,
       actor,
-      path: relayAppPath(appName, "/preflight"),
+      path: preflightPath,
     });
 
     // Merge in the panel-side required-env hard-fail check (same gate the

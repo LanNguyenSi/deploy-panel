@@ -5,7 +5,9 @@
 // alphanumeric first character followed by alphanumerics, dots, hyphens or
 // underscores. That rules out path traversal (`../x`), path separators (`a/b`)
 // and any character that would need URL encoding. Every relay call goes
-// through relayAppPath, which enforces this guard; the filesystem path is the
+// through relayAppPath, which enforces the narrower RELAY_APP_NAME_PATTERN
+// (lib/relay-path.ts: the relay's own rule, no dots) and not this guard, so a
+// dotted name passes here and is refused there; the filesystem path is the
 // scheduler's own construction and relies on this guard upstream.
 // `routes/apps.ts` deliberately keeps a stricter pattern of its own for
 // app creation; this one is the shared guard for name forwarding.

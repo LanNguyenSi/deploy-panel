@@ -314,7 +314,7 @@ let appNamesAudited = false;
 /**
  * Report App rows whose `name` the relay path builder refuses: `RELAY_APP_NAME_PATTERN`
  * (lib/relay-path.ts) mirrors the relay's own `APP_NAME` rule, so these are
- * exactly the rows whose app could never be operated at the relay either , 
+ * exactly the rows whose app could never be operated at the relay either:
  * relayAppPath refuses the same names before any request. They are almost
  * always leftovers sync upserted from relay-reported names before name
  * validation existed. This is read-only: it logs one warning line per

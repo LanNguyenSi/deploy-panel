@@ -448,7 +448,7 @@ export async function verifyDeployHealth(opts: VerifyDeployHealthOptions): Promi
     try {
       const detail = await relayReq<{ app?: { containers?: string | null } }>({
         serverId: opts.serverId,
-        // relayAppPath validates the name against the shared app-name guard and
+        // relayAppPath validates the name against RELAY_APP_NAME_PATTERN and
         // encodes it (defense-in-depth): a refused name throws here and lands
         // in the catch below, i.e. "could not inspect this poll", never a
         // crash, so the gate can't be the weak link if a caller forgets to

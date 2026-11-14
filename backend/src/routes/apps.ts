@@ -323,8 +323,8 @@ appsRouter.post("/:name/rollback", async (c) => {
   // Refuse an app name that is not a safe relay path segment BEFORE creating
   // any app or deploy row or calling the relay: same 400 invalid_app_name the
   // sibling :name routes answer, and nothing is stored or sent. This route has
-  // no up-front name pattern of its own, so the shared guard is what stops a
-  // traversal-shaped `:name` here.
+  // no up-front name pattern of its own, so RELAY_APP_NAME_PATTERN (applied by
+  // relayAppPath) is what stops a traversal-shaped `:name` here.
   let rollbackPath: string;
   try {
     rollbackPath = relayAppPath(name, "/rollback");
