@@ -18,6 +18,12 @@ import { join, relative } from "node:path";
 // through an alias, a re-export or a dynamic import of the helper, and a
 // matching `InvalidAppNameError` reference proves a catch exists in the file,
 // not that it sits at the right call; the named behavioural tests prove that.
+// It is a per-file call count, so a count-neutral swap (one handled call
+// replaced by a raw template plus one new unhandled call) passes. It does not
+// follow functions that pass a refusal on (a new caller of the exported
+// provisionAndCheckAppSecrets, or a v1 route that ignores relayPathOrNull's
+// null), and it does not see `relayAppPath.call(` or a hand-built
+// `/api/apps/<name>` template in a new file.
 
 type Handling =
   /** The file itself catches InvalidAppNameError (must reference it). */
@@ -57,7 +63,7 @@ const HANDLED: Record<string, { calls: number } & Handling> = {
     calls: 1,
     kind: "delegated",
     ends: "container state not inspected (the poll's own catch)",
-    pinnedBy: "post-deploy-gate.test.ts",
+    pinnedBy: "post-deploy-gate-relay-name.test.ts",
   },
   "lib/deploy-target.ts": {
     calls: 1,

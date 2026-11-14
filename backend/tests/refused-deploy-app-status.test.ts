@@ -57,6 +57,7 @@ vi.mock("../src/lib/post-deploy-gate.js", () => ({
 import { prisma } from "../src/lib/prisma.js";
 import { streamDeploy } from "../src/lib/stream-deploy.js";
 import { recoverStuckDeploys } from "../src/lib/startup.js";
+import { listActiveDeployIds } from "../src/lib/deploy-recovery.js";
 
 const mAppUpdateMany = prisma.app.updateMany as unknown as ReturnType<typeof vi.fn>;
 const mDeployUpdate = prisma.deploy.update as unknown as ReturnType<typeof vi.fn>;
@@ -117,5 +118,16 @@ describe("a deploy refused for its app name restores the App status", () => {
     expect(db.status).toBe("deploying");
     // The row itself is still finalized failed.
     expect(mDeployUpdate.mock.calls[0][0].data.status).toBe("failed");
+  });
+  it("a failing finalize write is logged, does not reject streamDeploy and still releases the active-deploy registry", async () => {
+    // The finalize runs inside streamDeploy's catch block and every caller
+    // fires streamDeploy without a catch, so a rejecting write must not
+    // escape as an unhandled rejection.
+    mDeployUpdate.mockRejectedValueOnce(new Error("db down"));
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(refusedDeploy("healthy")).resolves.toBeUndefined();
+    expect(errSpy.mock.calls.some((c) => String(c[0]).includes("failed to finalize refused deploy"))).toBe(true);
+    expect(listActiveDeployIds()).toEqual([]);
+    errSpy.mockRestore();
   });
 });

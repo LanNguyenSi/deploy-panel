@@ -29,10 +29,10 @@
  *  routes/v1.ts logs         APP_NAME_PATTERN, dots allowed (yes)            400 invalid_app_name, no relay call
  *  routes/v1.ts preflight    APP_NAME_PATTERN, dots allowed (yes)            400 invalid_app_name, no relay call
  *  routes/apps.ts rollback   none (yes)                                      400 invalid_app_name, before any row
- *  routes/apps.ts logs       none (yes)                                      400 invalid_app_name
- *  routes/apps.ts preflight  none (yes)                                      400 invalid_app_name
- *  routes/apps.ts env GET    none (yes)                                      400 invalid_app_name
- *  routes/apps.ts env PUT    none (yes)                                      400 invalid_app_name
+ *  routes/apps.ts logs       local APP_NAME_PATTERN, same rule (no)          400 invalid_app_name (catch is a backstop)
+ *  routes/apps.ts preflight  local APP_NAME_PATTERN, same rule (no)          400 invalid_app_name (catch is a backstop)
+ *  routes/apps.ts env GET    local APP_NAME_PATTERN, same rule (no)          400 invalid_app_name (catch is a backstop)
+ *  routes/apps.ts env PUT    local APP_NAME_PATTERN, same rule (no)          400 invalid_app_name (catch is a backstop)
  *  lib/required-env-gate.ts  none (yes)                                      failed required-env check
  *  lib/startup.ts            none, rows may predate any guard (yes)          interrupted row naming the refusal
  *  lib/provision-secrets.ts  none (yes)                                      typed throw, caught by streamDeploy
