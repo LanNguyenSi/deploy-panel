@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-17
+
 ### Security
 
 - **`hono` 4.13.18** (GHSA-46wx-v44x-9hh2, GHSA-4h7h-rv7c-7m2v, GHSA-4m76-xfj5-7975, GHSA-h7mg-cq63-vhpq, GHSA-3gg2-335m-rxc6): the lockfile resolves 4.13.18 (was 4.13.13), which fixes `csrf()` ignoring `text/ping` requests, `validator('form')` skipping multipart bodies with extra parameters, `mount()` forwarding paths that bypass scoped middleware, RegExpRouter skipping wildcard middleware, and the `css` helper HTML injection (affected: `< 4.13.16`). Lockfile only, `mcp/package-lock.json`, pulled in through `@modelcontextprotocol/sdk`; the declared ranges are unchanged.
