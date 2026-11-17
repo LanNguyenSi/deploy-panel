@@ -104,7 +104,7 @@ describe("bulkSummary", () => {
 describe("poll budget and unknown entries", () => {
   const entry = (status: string) => ({ app: "a", deployId: "d", status, failures: [] });
 
-  it("the poll budget is about ten minutes, roughly the relay stream timeout", () => {
+  it("the poll budget is about ten minutes, well under a deploy's total ceiling", () => {
     // Last poll lands at BULK_POLL_MS * (BULK_MAX_POLLS - 1) after the 202.
     const lastPollMs = BULK_POLL_MS * (BULK_MAX_POLLS - 1);
     expect(lastPollMs).toBeGreaterThanOrEqual(9.5 * 60 * 1000);

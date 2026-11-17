@@ -34,8 +34,9 @@ const STATUS_FALLBACK_LOOKBACK = 20;
  * only because agent-relay with the SSE heartbeat sends a `: ping` every 15 s
  * (several heartbeats of slack). Step events and other data do not switch to
  * this window: relays without the heartbeat send a few step events early and
- * then stay silent through the whole build. There is no cap on the total
- * length of a deploy.
+ * then stay silent through the whole build. These windows bound silence
+ * only; a stream that never goes quiet is bounded by the total ceiling
+ * (STREAM_TOTAL_CEILING_MS) below.
  */
 export const STREAM_IDLE_TIMEOUT_MS = 90_000;
 
@@ -49,6 +50,20 @@ export const STREAM_IDLE_TIMEOUT_MS = 90_000;
  * headers and again up to 10 minutes for the first chunk.
  */
 export const STREAM_FIRST_BYTE_TIMEOUT_MS = 600_000;
+
+/**
+ * Total wall-clock ceiling of a streamed relay deploy, measured from the
+ * start of the dispatch. The two silence windows above only bound quiet
+ * stretches, so a relay that keeps the stream technically alive forever
+ * (heartbeats, or step events just inside the windows) but never finishes
+ * would otherwise hold the deploy row `running` until the panel restarts.
+ * This ceiling is deliberately generous: dropping a quiet stream is the
+ * silence windows' job, this one only bounds a stream that is alive but
+ * never completes. Like a silence timeout its abort rejects the pending
+ * fetch or read, lands in streamDeploy's catch block (connection-lost
+ * recovery), and carries its own reason so the log can tell the two apart.
+ */
+export const STREAM_TOTAL_CEILING_MS = 4 * 60 * 60 * 1000;
 
 /**
  * The app status a blocked deploy must leave behind. A blocked deploy never
@@ -243,8 +258,8 @@ export async function streamDeploy(opts: {
   relayUrl: string;
   relayToken: string | null;
   body: { branch?: string; force?: boolean };
-  /** Override of the two silence limits; for tests only. */
-  timeouts?: { firstByteMs?: number; idleMs?: number };
+  /** Override of the two silence windows and the total ceiling; for tests only. */
+  timeouts?: { firstByteMs?: number; idleMs?: number; totalCeilingMs?: number };
   /** App status before the dispatch set it to `deploying`; restored if the deploy is blocked by preflight. */
   previousStatus?: string;
   /**
@@ -256,6 +271,7 @@ export async function streamDeploy(opts: {
   const { serverId, deployId, appId, appName, relayUrl, relayToken, body, previousStatus } = opts;
   const firstByteMs = opts.timeouts?.firstByteMs ?? STREAM_FIRST_BYTE_TIMEOUT_MS;
   const idleMs = opts.timeouts?.idleMs ?? STREAM_IDLE_TIMEOUT_MS;
+  const totalCeilingMs = opts.timeouts?.totalCeilingMs ?? STREAM_TOTAL_CEILING_MS;
   const startedAt = Date.now();
   const steps: Array<{ name: string; status: string; durationMs: number; output?: string; kind?: string; message?: string }> = [];
 
@@ -264,6 +280,19 @@ export async function streamDeploy(opts: {
   // periodic stuck-sweep reads this set to tell a genuinely long-running
   // deploy apart from one orphaned by a process restart.
   registerActiveDeploy(deployId);
+
+  // The one AbortController every stream timer aborts, and the total ceiling
+  // (see STREAM_TOTAL_CEILING_MS). The ceiling is armed HERE, at the start of
+  // the dispatch, and is never re-armed or disarmed until the finally: unlike
+  // the idle timer it is wall-clock, so it keeps running while an event is
+  // handled. If it fires before the fetch is issued, the already-aborted
+  // signal rejects that fetch immediately, which lands in the catch block
+  // below like any other abort.
+  const idle = new AbortController();
+  const ceilingTimer = setTimeout(
+    () => idle.abort(new Error(`relay stream exceeded the total ceiling of ${totalCeilingMs / 1000}s`)),
+    totalCeilingMs,
+  );
 
   // Idle timer of the streaming fetch (see STREAM_FIRST_BYTE_TIMEOUT_MS and STREAM_IDLE_TIMEOUT_MS); cleared in
   // the finally on every exit path.
@@ -345,17 +374,17 @@ export async function streamDeploy(opts: {
     const headers: Record<string, string> = { "Content-Type": "application/json", "X-Deploy-Id": deployId };
     if (relayToken) headers["Authorization"] = `Bearer ${relayToken}`;
 
-    // Silence limits instead of a fixed total cap. The timer runs only while
-    // the panel waits on the relay: the fetch until response headers, a body
-    // read of a JSON or error response, and each `reader.read()` of the
-    // stream. It is cleared as soon as a read returns, so time spent
-    // handling an event (a `done` can run the post-deploy health check for
-    // minutes) never counts as relay silence. Until a `: ping`
+    // Silence limits instead of a fixed per-wait cap (the total ceiling, armed
+    // at the start of the dispatch above, bounds the whole deploy). The timer
+    // runs only while the panel waits on the relay: the fetch until response
+    // headers, a body read of a JSON or error response, and each
+    // `reader.read()` of the stream. It is cleared as soon as a read returns,
+    // so time spent handling an event (a `done` can run the post-deploy health
+    // check for minutes) never counts as relay silence. Until a `: ping`
     // comment line has been seen the long window applies (firstByteMs); after
     // it, the short one (idleMs), which relies on the relay's heartbeat. A timeout
     // rejects the fetch or the read and lands in the catch block below
     // (connection-lost recovery), like the old fixed timeout did.
-    const idle = new AbortController();
     const armIdleTimer = (ms: number) => {
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(() => idle.abort(new Error(`no data from the relay for ${ms / 1000}s`)), ms);
@@ -614,6 +643,9 @@ export async function streamDeploy(opts: {
     });
   } finally {
     if (idleTimer) clearTimeout(idleTimer);
+    // The ceiling runs for the whole dispatch; never leave it armed after the
+    // deploy ends, success or failure.
+    clearTimeout(ceilingTimer);
     releaseActiveDeploy(deployId);
   }
 }

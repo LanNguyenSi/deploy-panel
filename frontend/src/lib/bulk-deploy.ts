@@ -28,10 +28,11 @@ export interface BulkResult {
 }
 
 /**
- * First poll fires at once, then every BULK_POLL_MS; about ten minutes in total,
- * roughly the relay stream timeout of a deploy (backend/src/lib/stream-deploy.ts).
- * A deploy that runs into that timeout, or spends long before or after the
- * stream, can still settle after polling stops; it then shows as unknown.
+ * First poll fires at once, then every BULK_POLL_MS; about ten minutes in
+ * total. A streamed deploy can run far longer, up to its total ceiling
+ * (STREAM_TOTAL_CEILING_MS in backend/src/lib/stream-deploy.ts), so a deploy
+ * that has not settled when polling stops shows as unknown until its outcome
+ * lands in the deploy history.
  */
 export const BULK_POLL_MS = 3000;
 export const BULK_MAX_POLLS = 200;
