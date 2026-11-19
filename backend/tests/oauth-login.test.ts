@@ -107,6 +107,57 @@ describe("GET /auth/github/callback", () => {
     expect(mExchange).not.toHaveBeenCalled();
   });
 
+  describe("state cookie is read by exact name", () => {
+    it("ignores a cookie whose name merely ends in dp_oauth_state (state matches the real cookie)", async () => {
+      mExchange.mockRejectedValue(new GitHubAuthError("401"));
+      const res = await authRouter.request("/github/callback?code=abc&state=good", {
+        headers: { Cookie: "xdp_oauth_state=evil; dp_oauth_state=good" },
+      });
+      expect(res.status).toBe(302);
+      // Past the state check: the code exchange ran and failed.
+      expect(mExchange).toHaveBeenCalledTimes(1);
+      expect(res.headers.get("Location")).toContain("error=oauth_failed");
+    });
+
+    it("rejects the value of the prefixed cookie when the real cookie differs", async () => {
+      const res = await authRouter.request("/github/callback?code=abc&state=evil", {
+        headers: { Cookie: "xdp_oauth_state=evil; dp_oauth_state=good" },
+      });
+      expect(res.status).toBe(302);
+      expect(res.headers.get("Location")).toContain("error=state_mismatch");
+      expect(mExchange).not.toHaveBeenCalled();
+    });
+
+    it("rejects a request that only carries the prefixed cookie", async () => {
+      const res = await authRouter.request("/github/callback?code=abc&state=evil", {
+        headers: { Cookie: "xdp_oauth_state=evil" },
+      });
+      expect(res.status).toBe(302);
+      expect(res.headers.get("Location")).toContain("error=state_mismatch");
+      expect(mExchange).not.toHaveBeenCalled();
+    });
+
+    it.each(["x-dp_oauth_state", "__Host-dp_oauth_state", "x.dp_oauth_state"])(
+      "a cookie named %s does not supply the state",
+      async (name) => {
+        const res = await authRouter.request("/github/callback?code=abc&state=evil", {
+          headers: { Cookie: `${name}=evil` },
+        });
+        expect(res.status).toBe(302);
+        expect(res.headers.get("Location")).toContain("error=state_mismatch");
+        expect(mExchange).not.toHaveBeenCalled();
+      },
+    );
+
+    it("still reads the cookie when it is the first of several", async () => {
+      mExchange.mockRejectedValue(new GitHubAuthError("401"));
+      const res = await authRouter.request("/github/callback?code=abc&state=good", {
+        headers: { Cookie: "dp_oauth_state=good; other=1" },
+      });
+      expect(res.headers.get("Location")).toContain("error=oauth_failed");
+    });
+  });
+
   it("redirects with missing_code when code param is absent", async () => {
     const res = await authRouter.request("/github/callback?state=xyz", {
       headers: { Cookie: "dp_oauth_state=xyz" },
