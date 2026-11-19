@@ -35,7 +35,7 @@ their areas; these docs deliberately do not duplicate them.
 - [Auth and ownership model](auth-and-ownership-model.md), the three
   credential shapes `requireAuth` resolves into one `{ userId, isAdmin }`
   actor context, why admin-shared servers are invisible to non-admin broker
-  actors, and the `requirePanelAuth` carve-out on the API-key management
+  actors, and the admin-only `requirePanelAuth` gate on the API-key management
   routes.
 - [Deploy-outcome trust chain](deploy-outcome-trust-chain.md), why a
   relay-reported deploy success is never trusted at face value, the single

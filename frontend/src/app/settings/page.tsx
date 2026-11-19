@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getApiKeys, createApiKey, revokeApiKey, type ApiKeyInfo } from "@/lib/api";
+import { errorStatus, getApiKeys, createApiKey, revokeApiKey, type ApiKeyInfo } from "@/lib/api";
 import { useToast } from "@/components/Toast";
 import { useConfirm } from "@/components/ConfirmDialog";
 
@@ -11,6 +11,9 @@ export default function SettingsPage() {
   const [newKeyName, setNewKeyName] = useState("");
   const [creating, setCreating] = useState(false);
   const [newSecret, setNewSecret] = useState<string | null>(null);
+  // The backend allows API key management for the panel admin only; a signed-in
+  // GitHub user gets 403 on the list call and sees a notice instead of the form.
+  const [forbidden, setForbidden] = useState(false);
   const { toast } = useToast();
   const { confirm } = useConfirm();
 
@@ -19,7 +22,11 @@ export default function SettingsPage() {
       const data = await getApiKeys();
       setKeys(data.keys);
     } catch (err) {
-      console.error("Failed to load API keys:", err);
+      if (errorStatus(err) === 403) {
+        setForbidden(true);
+      } else {
+        console.error("Failed to load API keys:", err);
+      }
     } finally {
       setLoading(false);
     }
@@ -77,6 +84,11 @@ export default function SettingsPage() {
           Create keys for CI/CD pipelines, MCP servers, or external integrations.
         </p>
 
+        {forbidden ? (
+          <p role="status" style={{ color: "var(--muted)", fontSize: "var(--text-sm)" }}>
+            API key management is available to the panel admin only.
+          </p>
+        ) : (<>
         <form onSubmit={handleCreate} style={{ display: "flex", gap: "var(--space-2)", marginBottom: "var(--space-4)" }}>
           <div style={{ flex: 1, display: "grid", gap: "var(--space-1)" }}>
             <label htmlFor="key-name" style={{ fontSize: "var(--text-sm)", color: "var(--text-secondary)" }}>
@@ -164,6 +176,7 @@ export default function SettingsPage() {
             ))}
           </div>
         )}
+        </>)}
       </section>
 
       {/* API usage info */}

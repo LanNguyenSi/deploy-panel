@@ -97,6 +97,20 @@ describe("request() branches (exercised through real exported functions)", () =>
     await expect(api.getHealth()).rejects.toThrow(new Error(expected));
   });
 
+  it("a non-ok answer rejects with an Error whose status errorStatus() reads", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "forbidden", message: "nope" }, 403));
+
+    const err = await api.getHealth().catch((e: unknown) => e);
+    expect((err as Error).message).toBe("nope");
+    expect(api.errorStatus(err)).toBe(403);
+  });
+
+  it("errorStatus is undefined for an error without a numeric status", () => {
+    expect(api.errorStatus(new Error("x"))).toBeUndefined();
+    expect(api.errorStatus({ status: "403" })).toBeUndefined();
+    expect(api.errorStatus(null)).toBeUndefined();
+  });
+
   it("throws 'Request failed' when the not-ok response has no parseable json body", async () => {
     fetchMock.mockResolvedValueOnce(noJsonErrorResponse(500));
 

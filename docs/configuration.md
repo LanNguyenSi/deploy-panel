@@ -255,8 +255,8 @@ CI runs `shellcheck` and the stub-`docker` tests of all three scripts (job `back
 ### Credentials
 
 - `PANEL_TOKEN` is the admin credential. It is accepted as a Bearer token, and the UI login stores it in the `panel_session` cookie (HttpOnly, SameSite=Strict, 24 hours). The cookie holds the token itself, so rotating `PANEL_TOKEN` signs out every admin browser.
-- `dp_` API keys are Bearer credentials. A key bound to a user (the identity broker issues these) acts as that user; a key without a user binding acts as admin.
-- A native GitHub OAuth login creates a non-admin session: a random token in the `user_session` cookie (HttpOnly, SameSite=Lax), stored as a SHA-256 hash in the `sessions` table and valid for 30 days.
+- `dp_` API keys are Bearer credentials. A key bound to a user (the identity broker issues these) acts as that user; a key without a user binding acts as admin. No API key can manage API keys.
+- A native GitHub OAuth login creates a non-admin session: a random token in the `user_session` cookie (HttpOnly, SameSite=Lax), stored as a SHA-256 hash in the `sessions` table and valid for 30 days. It cannot create, list or revoke API keys (`/api/api-keys` answers 403); that is admin only (`PANEL_TOKEN` or the `panel_session` cookie).
 - There is no CSRF token. Cross-site requests are limited by `CORS_ORIGINS` and the cookies' SameSite attribute (Strict for the admin cookie, Lax for GitHub sessions).
 - Every `/api/*` request body is capped at 1 MiB before any route reads it; a larger body answers `413` with `{ error: "payload_too_large", message }` and the login token field is additionally capped at 1024 characters.
 
