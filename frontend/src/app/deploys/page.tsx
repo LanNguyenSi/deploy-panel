@@ -233,7 +233,12 @@ function DurationChart({ deploys }: { deploys: DeployWithRelations[] }) {
           <span>Max: <strong style={{ color: "var(--warning)" }}>{max.toFixed(1)}s</strong></span>
         </div>
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: 80 }}>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        style={{ width: "100%", height: 80 }}
+        role="img"
+        aria-label={`Deploy duration trend, last ${durations.length} deploys, average ${avg.toFixed(1)}s, minimum ${min.toFixed(1)}s, maximum ${max.toFixed(1)}s`}
+      >
         <defs>
           <linearGradient id="duration-fill" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="var(--primary)" stopOpacity="0.2" />
