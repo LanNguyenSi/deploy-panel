@@ -117,7 +117,7 @@ The response includes a deploy id you can poll via `GET /api/v1/deploy/:id` to w
 The backend also exposes endpoints that the panel UI itself uses. They are not part of the stable CI/CD (`/api/v1`) surface and may change:
 
 - `/api/auth/*`: admin token login and logout (`POST /login`, which answers 429 `rate_limited` with a `Retry-After` header after 10 failed attempts from one client within 15 minutes, and `POST /logout`, which also deletes the server-side session of the presented `user_session` cookie), GitHub OAuth (`/github/config`, `/github/start`, `/github/callback`), the identity-broker registration endpoint (`POST /api/auth/register-from-project-pilot`), and `/api/auth/check`. See [configuration.md#authentication](configuration.md#authentication).
-- `/api/api-keys`: create, list, and revoke `dp_` API keys (panel-session auth only; rejects API-key auth).
+- `/api/api-keys`: create, list, and revoke `dp_` API keys (admin only: the `PANEL_TOKEN` Bearer or the `panel_session` cookie; a `dp_` API key or a GitHub-login session gets 403 `forbidden`).
 - `/api/servers/probe-vps` and `/api/servers/:id/update-relay-image`: VPS provisioning helpers used by the server-management UI. `update-relay-image` also streams progress as SSE.
 
 ### Deploy outcome

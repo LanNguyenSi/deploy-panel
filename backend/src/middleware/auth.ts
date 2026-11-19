@@ -98,13 +98,24 @@ export async function requireAuth(c: Context, next: Next) {
 }
 
 /**
- * Rejects API key auth — only panel token or session cookie allowed.
- * Must be used AFTER requireAuth.
+ * Admin-only gate for API key management: only the panel token or the
+ * `panel_session` cookie may pass. Must be used AFTER requireAuth.
+ *
+ * Two checks, because neither alone is enough:
+ *  - `authType === "api_key"` is refused even for a legacy admin key (a key
+ *    must not be able to mint or revoke keys).
+ *  - `isAdmin !== true` is refused for a native GitHub OAuth `user_session`,
+ *    which also has `authType === "session"` but is a non-admin user. Without
+ *    this check such a user could create an ApiKey row with no `userId`,
+ *    which requireAuth treats as a legacy admin key.
  */
 export async function requirePanelAuth(c: Context, next: Next) {
   const authType = (c as any).get("authType");
   if (authType === "api_key") {
     return c.json({ error: "forbidden", message: "API key management requires panel authentication" }, 403);
+  }
+  if ((c as any).get("isAdmin") !== true) {
+    return c.json({ error: "forbidden", message: "API key management requires admin access" }, 403);
   }
   return next();
 }

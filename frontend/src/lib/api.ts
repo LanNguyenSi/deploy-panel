@@ -25,7 +25,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         : typeof err?.error === "string" && err.error
           ? err.error
           : "Request failed";
-    throw new Error(text);
+    throw Object.defineProperty(new Error(text), "status", { value: res.status });
   }
 
   return res.json() as Promise<T>;
@@ -722,4 +722,14 @@ export async function getDeploys(params?: { serverId?: string; appId?: string; s
   if (params?.limit) query.set("limit", String(params.limit));
   if (params?.offset != null) query.set("offset", String(params.offset));
   return request(`/api/deploys?${query}`);
+}
+
+/**
+ * `request` throws a non-2xx answer as an Error carrying the HTTP status
+ * (non-enumerable, so it still compares equal to a bare `Error(text)`);
+ * this reads it back, e.g. to tell a 403 from other failures.
+ */
+export function errorStatus(err: unknown): number | undefined {
+  const status = (err as { status?: unknown } | null)?.status;
+  return typeof status === "number" ? status : undefined;
 }

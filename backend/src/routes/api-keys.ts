@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { hashApiKey } from "../middleware/auth.js";
-import { audit } from "../lib/audit.js";
+import { audit, getActor, getActorUserId } from "../lib/audit.js";
 
 export const apiKeysRouter = new Hono();
 
@@ -35,7 +35,7 @@ apiKeysRouter.post("/", async (c) => {
     data: { name: name.trim(), keyHash, keyPrefix },
   });
 
-  audit("api_key.create", apiKey.name, `prefix: ${keyPrefix}`, "panel");
+  audit("api_key.create", apiKey.name, `prefix: ${keyPrefix}`, getActor(c), getActorUserId(c));
 
   // Return the full key ONCE — it's never shown again
   return c.json({
@@ -56,7 +56,7 @@ apiKeysRouter.delete("/:id", async (c) => {
 
   try {
     const key = await prisma.apiKey.delete({ where: { id } });
-    audit("api_key.revoke", key.name, `prefix: ${key.keyPrefix}`, "panel");
+    audit("api_key.revoke", key.name, `prefix: ${key.keyPrefix}`, getActor(c), getActorUserId(c));
     return c.json({ deleted: true });
   } catch (err) {
     // P2025 = Prisma's "record to delete does not exist" — a genuine

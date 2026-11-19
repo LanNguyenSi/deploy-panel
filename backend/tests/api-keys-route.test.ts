@@ -10,9 +10,12 @@ vi.mock("../src/lib/prisma.js", () => ({
   },
 }));
 
-vi.mock("../src/lib/audit.js", () => ({
-  audit: vi.fn(),
-}));
+// Keep the real getActor/getActorUserId (they only read the request context);
+// only the DB-writing audit() is replaced.
+vi.mock("../src/lib/audit.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/audit.js")>();
+  return { ...actual, audit: vi.fn() };
+});
 
 // api-keys.ts pulls in ../middleware/auth.js for the real hashApiKey() —
 // that module imports config/index.js, which validates process.env and
@@ -100,6 +103,7 @@ describe("api-keys POST / — key creation", () => {
       "github-actions-prod",
       expect.stringContaining(createArgs.data.keyPrefix),
       "panel",
+      null,
     );
   });
 
@@ -175,7 +179,7 @@ describe("api-keys DELETE /:id — revoke", () => {
     expect(body.deleted).toBe(true);
     expect(mApiKey.delete).toHaveBeenCalledOnce();
     expect(mApiKey.delete).toHaveBeenCalledWith({ where: { id: "key-1" } });
-    expect(audit).toHaveBeenCalledWith("api_key.revoke", "github-actions-prod", "prefix: dp_abcdefgh", "panel");
+    expect(audit).toHaveBeenCalledWith("api_key.revoke", "github-actions-prod", "prefix: dp_abcdefgh", "panel", null);
   });
 
   it("prisma rejects with P2025 (record not found): returns 404", async () => {
@@ -223,6 +227,43 @@ describe("api-keys DELETE /:id — revoke", () => {
 
     expect(res.status).toBe(500);
     expect(audit).not.toHaveBeenCalled();
+  });
+});
+
+describe("api-keys — audit actor comes from the request context", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // The admin gate keeps non-admin actors away, so these inject the context
+  // directly: the handlers must report the actor they were given, not a
+  // hard-coded one.
+  function appWithActor(vars: Record<string, string>) {
+    const app = new Hono();
+    app.use("*", async (c, next) => {
+      for (const [k, v] of Object.entries(vars)) (c as any).set(k, v);
+      await next();
+    });
+    app.route("/", apiKeysRouter as any);
+    return app;
+  }
+
+  it("create: session actor and its user id are passed to audit", async () => {
+    mApiKey.create.mockImplementation(async ({ data }: { data: { name: string; keyHash: string; keyPrefix: string } }) => ({
+      id: "key-9", name: data.name, keyHash: data.keyHash, keyPrefix: data.keyPrefix, createdAt: new Date(),
+    }));
+    await appWithActor({ authType: "session", userId: "user-7" }).request("/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "x" }),
+    });
+    expect(audit).toHaveBeenCalledWith("api_key.create", "x", expect.any(String), "session", "user-7");
+  });
+
+  it("revoke: session actor and its user id are passed to audit", async () => {
+    mApiKey.delete.mockResolvedValue({ id: "key-1", name: "n", keyPrefix: "dp_abcdefgh" });
+    await appWithActor({ authType: "session", userId: "user-7" }).request("/key-1", { method: "DELETE" });
+    expect(audit).toHaveBeenCalledWith("api_key.revoke", "n", "prefix: dp_abcdefgh", "session", "user-7");
   });
 });
 
