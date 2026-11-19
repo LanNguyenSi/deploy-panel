@@ -196,6 +196,41 @@ a:hover { color: var(--primary-hover); }
   margin-left: 220px;
 }
 
+/* ── Skip link (WCAG 2.4.1) ─────────────────────────────────────── */
+
+/* First focusable element of every shell page. Hidden by clipping it to
+   1px, not by display/visibility: it stays in the tab order and the
+   accessibility tree, and being position:fixed it can never shift the
+   layout. On focus it paints over the sidebar (which sits at z-index
+   200) with the app's focus ring; --text on --bg-iron is ~14:1. */
+.skip-link {
+  position: fixed;
+  top: var(--space-2);
+  left: var(--space-2);
+  z-index: 300;
+  padding: var(--space-2) var(--space-4);
+  background: var(--bg-iron);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-decoration: none;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.skip-link:focus {
+  width: auto;
+  height: auto;
+  clip-path: none;
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
 /* ── Layout ─────────────────────────────────────────────────────── */
 
 .page-shell {

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Keyboard users can now bypass the sidebar on every page, and the deploy trend chart is now announced to screen readers: the app shell renders a visually hidden `Skip to main content` link as its first focusable element (it paints above the sidebar on focus and moves focus into the content wrapper, `frontend/src/components/AppShell.tsx`), and the Deploy Duration Trend chart carries `role="img"` with an `aria-label` stating the same average, minimum and maximum durations and plotted deploy count its header shows. Tests: `frontend/src/components/AppShell.test.tsx`, `frontend/src/app/deploys/chart-a11y.test.tsx`.
+
 ## [0.9.0] - 2026-11-17
 
 ### Security
