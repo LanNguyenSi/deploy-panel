@@ -137,6 +137,18 @@ describe("GET /auth/github/callback", () => {
       expect(mExchange).not.toHaveBeenCalled();
     });
 
+    it.each(["x-dp_oauth_state", "__Host-dp_oauth_state", "x.dp_oauth_state"])(
+      "a cookie named %s does not supply the state",
+      async (name) => {
+        const res = await authRouter.request("/github/callback?code=abc&state=evil", {
+          headers: { Cookie: `${name}=evil` },
+        });
+        expect(res.status).toBe(302);
+        expect(res.headers.get("Location")).toContain("error=state_mismatch");
+        expect(mExchange).not.toHaveBeenCalled();
+      },
+    );
+
     it("still reads the cookie when it is the first of several", async () => {
       mExchange.mockRejectedValue(new GitHubAuthError("401"));
       const res = await authRouter.request("/github/callback?code=abc&state=good", {

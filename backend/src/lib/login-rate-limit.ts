@@ -12,14 +12,29 @@
  * private address is the RIGHTMOST `X-Forwarded-For` entry used instead (the
  * hop the proxy itself saw). Left entries are client-supplied and never read.
  * A missing, empty or malformed header falls back to the peer.
+ *
+ * IPv6 clients are keyed by their /64 prefix (one subscriber normally holds a
+ * whole /64, so per-address keys would hand an attacker unlimited budgets);
+ * IPv4 and IPv4-mapped addresses are keyed per address. The key map is
+ * bounded by LOGIN_RATE_MAX_KEYS: when a new key arrives at the cap, expired
+ * keys are pruned first and, if it is still full, the key with the oldest
+ * last failure is evicted, so the limiter never refuses a new client.
  */
 import { BlockList, isIP, isIPv4, isIPv6 } from "node:net";
 
 export const LOGIN_RATE_WINDOW_MS = 15 * 60 * 1000;
 export const LOGIN_RATE_MAX = 10;
+export const LOGIN_RATE_MAX_KEYS = 10_000;
 const LOGIN_PRUNE_EVERY = 100;
 
-/** Key used when the socket address cannot be read (no node adapter env). */
+/**
+ * Key used when the socket address cannot be read: `getConnInfo` throws
+ * without the node adapter env (direct `app.request()` calls), and the real
+ * adapter reports no `remoteAddress` once the connection has been reset.
+ * Sharing one key is harmless there: a request on a dead connection has no
+ * client left to answer, and X-Forwarded-For is never consulted without a
+ * peer, so no one can pick this key on a live connection.
+ */
 export const UNKNOWN_CLIENT_KEY = "unknown";
 
 const failureHistory = new Map<string, number[]>();
@@ -33,16 +48,49 @@ trustedPeers.addSubnet("192.168.0.0", 16, "ipv4");
 trustedPeers.addAddress("::1", "ipv6");
 trustedPeers.addSubnet("fc00::", 7, "ipv6");
 
-/** Lowercase, and fold a dotted IPv4-mapped IPv6 address to plain IPv4. */
-function normalizeAddress(addr: string): string {
+/** The eight 16-bit groups of an IPv6 literal (zone id and dotted tail accepted), or null. */
+function ipv6Groups(addr: string): number[] | null {
+  let s = addr.replace(/%.*$/, "");
+  if (!isIPv6(s)) return null;
+  const dotted = s.match(/^(.*:)(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (dotted) {
+    const o = dotted[2].split(".").map(Number);
+    s = `${dotted[1]}${((o[0] << 8) | o[1]).toString(16)}:${((o[2] << 8) | o[3]).toString(16)}`;
+  }
+  const halves = s.split("::");
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const fill = 8 - head.length - tail.length;
+  if (fill < 0) return null;
+  const groups = [...head, ...Array<string>(fill).fill("0"), ...tail].map((g) => parseInt(g, 16));
+  return groups.length === 8 && groups.every((g) => !Number.isNaN(g)) ? groups : null;
+}
+
+/**
+ * Canonical spelling: lowercase; IPv4-mapped IPv6 (dotted or hex form) folded
+ * to dotted IPv4; other IPv6 as eight hex groups. Anything unparsable comes
+ * back lowercased and unchanged.
+ */
+function canonicalAddress(addr: string): string {
   const lower = addr.trim().toLowerCase();
-  const mapped = lower.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
-  return mapped && isIPv4(mapped[1]) ? mapped[1] : lower;
+  if (isIPv4(lower)) return lower;
+  const g = ipv6Groups(lower);
+  if (!g) return lower;
+  if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) {
+    return `${g[6] >> 8}.${g[6] & 0xff}.${g[7] >> 8}.${g[7] & 0xff}`;
+  }
+  return g.map((x) => x.toString(16)).join(":");
+}
+
+/** Rate-limit bucket of a canonical address: the /64 prefix for IPv6, the address otherwise. */
+function bucketKey(canonical: string): string {
+  if (!isIPv6(canonical)) return canonical;
+  return `${canonical.split(":").slice(0, 4).join(":")}::/64`;
 }
 
 /** True when `addr` is a loopback, RFC1918 or fc00::/7 address (mapped forms included). */
 export function isTrustedProxyPeer(addr: string): boolean {
-  const a = normalizeAddress(addr);
+  const a = canonicalAddress(addr);
   if (isIPv4(a)) return trustedPeers.check(a, "ipv4");
   if (isIPv6(a)) return trustedPeers.check(a, "ipv6");
   return false;
@@ -57,12 +105,11 @@ export function resolveLoginClientKey(
   forwardedFor: string | undefined | null,
 ): string {
   if (!peer) return UNKNOWN_CLIENT_KEY;
-  const peerKey = normalizeAddress(peer);
-  if (!isTrustedProxyPeer(peerKey)) return peerKey;
-  if (!forwardedFor) return peerKey;
+  const peerAddr = canonicalAddress(peer);
+  if (!isTrustedProxyPeer(peerAddr) || !forwardedFor) return bucketKey(peerAddr);
   const rightmost = forwardedFor.split(",").pop()?.trim() ?? "";
-  if (!rightmost || isIP(rightmost) === 0) return peerKey;
-  return normalizeAddress(rightmost);
+  if (!rightmost || isIP(rightmost.replace(/%.*$/, "")) === 0) return bucketKey(peerAddr);
+  return bucketKey(canonicalAddress(rightmost));
 }
 
 function pruneHistory(now: number): void {
@@ -71,6 +118,20 @@ function pruneHistory(now: number): void {
     const last = stamps[stamps.length - 1];
     if (last === undefined || last <= cutoff) failureHistory.delete(key);
   }
+}
+
+/** Drop the key whose most recent failure is the oldest. */
+function evictOldest(): void {
+  let oldestKey: string | undefined;
+  let oldestLast = Infinity;
+  for (const [key, stamps] of failureHistory) {
+    const last = stamps[stamps.length - 1] ?? -Infinity;
+    if (last < oldestLast) {
+      oldestLast = last;
+      oldestKey = key;
+    }
+  }
+  if (oldestKey !== undefined) failureHistory.delete(oldestKey);
 }
 
 /**
@@ -99,6 +160,10 @@ export function checkLoginBlocked(
 
 /** Record one failed login attempt for `key`. */
 export function recordLoginFailure(key: string, now: number = Date.now()): void {
+  if (!failureHistory.has(key) && failureHistory.size >= LOGIN_RATE_MAX_KEYS) {
+    pruneHistory(now);
+    if (failureHistory.size >= LOGIN_RATE_MAX_KEYS) evictOldest();
+  }
   const cutoff = now - LOGIN_RATE_WINDOW_MS;
   const recent = (failureHistory.get(key) ?? []).filter((t) => t > cutoff);
   recent.push(now);
@@ -109,6 +174,11 @@ export function recordLoginFailure(key: string, now: number = Date.now()): void 
 export function _resetLoginRateLimit(): void {
   failureHistory.clear();
   callCount = 0;
+}
+
+/** Test-only: whether `key` is currently tracked. */
+export function _loginRateLimitHas(key: string): boolean {
+  return failureHistory.has(key);
 }
 
 /** Test-only: number of keys currently tracked. */

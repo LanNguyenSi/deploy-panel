@@ -43,8 +43,12 @@ const loginSchema = z.object({
 /**
  * Rate-limit key for a request: the TCP peer, or the rightmost
  * X-Forwarded-For entry when the peer is a loopback/private proxy.
- * `getConnInfo` throws when the node adapter env is absent (direct
- * `app.request()` calls); the request then lands in the shared "unknown" key.
+ * Without a readable peer (`getConnInfo` throws when the node adapter env is
+ * absent, as in direct `app.request()` calls, and the real adapter reports no
+ * address once the connection has been reset) the request lands in the shared
+ * "unknown" key and X-Forwarded-For is ignored. That is harmless: a reset
+ * connection has no client left to answer, and nobody can pick this key on a
+ * live connection.
  */
 function loginClientKey(c: Context): string {
   let peer: string | undefined;

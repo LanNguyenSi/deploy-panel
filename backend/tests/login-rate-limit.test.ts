@@ -26,8 +26,10 @@ vi.mock("../src/config/index.js", () => ({
 import { authRouter } from "../src/routes/auth.js";
 import {
   LOGIN_RATE_MAX,
+  LOGIN_RATE_MAX_KEYS,
   LOGIN_RATE_WINDOW_MS,
   UNKNOWN_CLIENT_KEY,
+  _loginRateLimitHas,
   _loginRateLimitSize,
   _resetLoginRateLimit,
   checkLoginBlocked,
@@ -222,7 +224,23 @@ describe("POST /auth/login rate limit", () => {
       expect((await login(BAD, { peer: "::ffff:172.18.0.2", xff: "198.51.100.2" })).status).toBe(401);
     });
 
-    it("no socket info (no node adapter env): one shared key", async () => {
+    it("no readable peer: rotating X-Forwarded-For does not buy fresh budgets", async () => {
+      for (let i = 0; i < LOGIN_RATE_MAX; i++) {
+        expect((await login(BAD, { peer: null, xff: `198.51.100.${i}` })).status).toBe(401);
+      }
+      expect((await login(BAD, { peer: null, xff: "198.51.100.200" })).status).toBe(429);
+      expect((await login(BAD, { peer: null })).status).toBe(429);
+    });
+
+    it("an IPv6 peer is limited per /64: rotating the interface id does not help", async () => {
+      for (let i = 0; i < LOGIN_RATE_MAX; i++) {
+        expect((await login(BAD, { peer: `2001:db8:1:2::${i + 1}` })).status).toBe(401);
+      }
+      expect((await login(BAD, { peer: "2001:db8:1:2:aaaa:bbbb:cccc:dddd" })).status).toBe(429);
+      expect((await login(BAD, { peer: "2001:db8:1:3::1" })).status).toBe(401);
+    });
+
+    it("no readable peer (no node adapter env, or a reset connection): one shared key", async () => {
       for (let i = 0; i < LOGIN_RATE_MAX; i++) {
         expect((await login(BAD, { peer: null })).status).toBe(401);
       }
@@ -258,8 +276,36 @@ describe("resolveLoginClientKey", () => {
     expect(resolveLoginClientKey("10.0.0.1", "unknown")).toBe("10.0.0.1");
   });
 
-  it("IPv6 rightmost entries are accepted and lowercased", () => {
-    expect(resolveLoginClientKey("10.0.0.1", "2001:DB8::1")).toBe("2001:db8::1");
+  it("IPv6 rightmost entries are accepted, lowercased and keyed by /64", () => {
+    expect(resolveLoginClientKey("10.0.0.1", "2001:DB8::1")).toBe("2001:db8:0:0::/64");
+  });
+
+  it("IPv6 peers share a bucket inside one /64 and not across /64s", () => {
+    const a = resolveLoginClientKey("2001:db8:1:2::1", undefined);
+    expect(resolveLoginClientKey("2001:db8:1:2:ffff:ffff:ffff:ffff", undefined)).toBe(a);
+    expect(resolveLoginClientKey("2001:DB8:1:2:0:0:0:9", undefined)).toBe(a);
+    expect(resolveLoginClientKey("2001:db8:1:3::1", undefined)).not.toBe(a);
+    expect(resolveLoginClientKey("2001:db8:2:2::1", undefined)).not.toBe(a);
+    expect(a).toBe("2001:db8:1:2::/64");
+  });
+
+  it("IPv6 forwarded entries share a bucket inside one /64 and not across /64s", () => {
+    const a = resolveLoginClientKey("10.0.0.1", "2001:db8:1:2::1");
+    expect(resolveLoginClientKey("10.0.0.1", "2001:db8:1:2::abcd")).toBe(a);
+    expect(resolveLoginClientKey("10.0.0.1", "2001:db8:1:3::1")).not.toBe(a);
+  });
+
+  it("IPv4-mapped IPv6 stays per IPv4 address, in dotted and hex spelling", () => {
+    expect(resolveLoginClientKey("::ffff:203.0.113.7", undefined)).toBe("203.0.113.7");
+    expect(resolveLoginClientKey("::ffff:cb00:7107", undefined)).toBe("203.0.113.7");
+    expect(resolveLoginClientKey("::ffff:203.0.113.8", undefined)).toBe("203.0.113.8");
+    expect(resolveLoginClientKey("10.0.0.1", "::ffff:c633:6409")).toBe("198.51.100.9");
+  });
+
+  it("IPv4 peers stay per address", () => {
+    expect(resolveLoginClientKey("203.0.113.7", undefined)).not.toBe(
+      resolveLoginClientKey("203.0.113.8", undefined),
+    );
   });
 
   it("a dotted IPv4-mapped address is folded to plain IPv4 on both sides", () => {
@@ -308,6 +354,119 @@ describe("isTrustedProxyPeer", () => {
 
 describe("login failure window", () => {
   beforeEach(() => _resetLoginRateLimit());
+
+  it("pins the limits at 10 failures per 15 minutes", () => {
+    expect(LOGIN_RATE_MAX).toBe(10);
+    expect(LOGIN_RATE_WINDOW_MS).toBe(900_000);
+    expect(LOGIN_RATE_MAX_KEYS).toBe(10_000);
+  });
+
+  it("a blocked key stays blocked across prune passes triggered by other keys", () => {
+    const t0 = 1_000_000;
+    for (let i = 0; i < LOGIN_RATE_MAX; i++) recordLoginFailure("k", t0);
+    // 250 checks trigger the periodic prune twice.
+    for (let i = 0; i < 250; i++) expect(checkLoginBlocked("other", t0 + 5).blocked).toBe(false);
+    expect(checkLoginBlocked("k", t0 + 10).blocked).toBe(true);
+    expect(_loginRateLimitHas("k")).toBe(true);
+  });
+
+  it("a live key with a few failures survives a prune pass", () => {
+    const t0 = 1_000_000;
+    recordLoginFailure("live", t0);
+    for (let i = 0; i < 100; i++) checkLoginBlocked("other", t0 + 5);
+    expect(_loginRateLimitHas("live")).toBe(true);
+  });
+
+  it("Retry-After is measured from the oldest failure when failures are spread over time", () => {
+    const t0 = 1_000_000;
+    for (let i = 0; i < LOGIN_RATE_MAX; i++) recordLoginFailure("k", t0 + i * 60_000);
+    // Oldest leaves at t0 + 15 min; now = t0 + 9 min + 0.5 s: 359.5 s, rounded up.
+    const r = checkLoginBlocked("k", t0 + 9 * 60_000 + 500);
+    expect(r.blocked).toBe(true);
+    expect(r.retryAfterSec).toBe(360);
+  });
+
+  it("Retry-After rounds a fractional remainder up, not down", () => {
+    const t0 = 1_000_000;
+    for (let i = 0; i < LOGIN_RATE_MAX; i++) recordLoginFailure("k", t0);
+    expect(checkLoginBlocked("k", t0 + LOGIN_RATE_WINDOW_MS - 1_500).retryAfterSec).toBe(2);
+    expect(checkLoginBlocked("k", t0 + LOGIN_RATE_WINDOW_MS - 1_000).retryAfterSec).toBe(1);
+    expect(checkLoginBlocked("k", t0 + LOGIN_RATE_WINDOW_MS - 1).retryAfterSec).toBe(1);
+  });
+
+  describe("key cap", () => {
+    const fill = (n: number, at: (i: number) => number, prefix = "k") => {
+      for (let i = 0; i < n; i++) recordLoginFailure(`${prefix}${i}`, at(i));
+    };
+
+    it("never tracks more than LOGIN_RATE_MAX_KEYS keys", () => {
+      const t0 = 1_000_000;
+      fill(LOGIN_RATE_MAX_KEYS, () => t0);
+      expect(_loginRateLimitSize()).toBe(LOGIN_RATE_MAX_KEYS);
+      recordLoginFailure("newcomer", t0 + 1);
+      expect(_loginRateLimitSize()).toBe(LOGIN_RATE_MAX_KEYS);
+      fill(50, () => t0 + 2, "more");
+      expect(_loginRateLimitSize()).toBe(LOGIN_RATE_MAX_KEYS);
+    });
+
+    it("a new key is never refused: it is tracked and can be blocked at the cap", () => {
+      const t0 = 1_000_000;
+      fill(LOGIN_RATE_MAX_KEYS, () => t0);
+      for (let i = 0; i < LOGIN_RATE_MAX; i++) recordLoginFailure("newcomer", t0 + 1 + i);
+      expect(_loginRateLimitHas("newcomer")).toBe(true);
+      expect(checkLoginBlocked("newcomer", t0 + 100).blocked).toBe(true);
+    });
+
+    it("evicts the key with the oldest last failure", () => {
+      const t0 = 1_000_000;
+      // k0 is the oldest, k(N-1) the newest.
+      fill(LOGIN_RATE_MAX_KEYS, (i) => t0 + i);
+      recordLoginFailure("newcomer", t0 + LOGIN_RATE_MAX_KEYS);
+      expect(_loginRateLimitHas("k0")).toBe(false);
+      expect(_loginRateLimitHas("k1")).toBe(true);
+      expect(_loginRateLimitHas(`k${LOGIN_RATE_MAX_KEYS - 1}`)).toBe(true);
+      expect(_loginRateLimitHas("newcomer")).toBe(true);
+    });
+
+    it("the oldest is judged by the last failure, not the first", () => {
+      const t0 = 1_000_000;
+      fill(LOGIN_RATE_MAX_KEYS, (i) => t0 + i);
+      // k0 fails again: it is now the newest, k1 is the oldest.
+      recordLoginFailure("k0", t0 + LOGIN_RATE_MAX_KEYS);
+      recordLoginFailure("newcomer", t0 + LOGIN_RATE_MAX_KEYS + 1);
+      expect(_loginRateLimitHas("k0")).toBe(true);
+      expect(_loginRateLimitHas("k1")).toBe(false);
+    });
+
+    it("a blocked key newer than the evicted one stays blocked", () => {
+      const t0 = 1_000_000;
+      fill(LOGIN_RATE_MAX_KEYS - 1, () => t0);
+      for (let i = 0; i < LOGIN_RATE_MAX; i++) recordLoginFailure("blocked", t0 + 1000);
+      expect(_loginRateLimitSize()).toBe(LOGIN_RATE_MAX_KEYS);
+      recordLoginFailure("newcomer", t0 + 2000);
+      expect(_loginRateLimitSize()).toBe(LOGIN_RATE_MAX_KEYS);
+      expect(checkLoginBlocked("blocked", t0 + 3000).blocked).toBe(true);
+    });
+
+    it("an update of a tracked key at the cap evicts nothing", () => {
+      const t0 = 1_000_000;
+      fill(LOGIN_RATE_MAX_KEYS, (i) => t0 + i);
+      recordLoginFailure("k5", t0 + LOGIN_RATE_MAX_KEYS);
+      expect(_loginRateLimitSize()).toBe(LOGIN_RATE_MAX_KEYS);
+      expect(_loginRateLimitHas("k0")).toBe(true);
+    });
+
+    it("prunes expired keys first and keeps live ones instead of evicting", () => {
+      const t0 = 1_000_000;
+      recordLoginFailure("live", t0 + LOGIN_RATE_WINDOW_MS / 2);
+      fill(LOGIN_RATE_MAX_KEYS - 1, () => t0, "old");
+      expect(_loginRateLimitSize()).toBe(LOGIN_RATE_MAX_KEYS);
+      recordLoginFailure("newcomer", t0 + LOGIN_RATE_WINDOW_MS + 1);
+      expect(_loginRateLimitHas("live")).toBe(true);
+      expect(_loginRateLimitHas("newcomer")).toBe(true);
+      expect(_loginRateLimitSize()).toBe(2);
+    });
+  });
 
   it("blocks at exactly LOGIN_RATE_MAX failures, not before", () => {
     const t0 = 1_000_000;
