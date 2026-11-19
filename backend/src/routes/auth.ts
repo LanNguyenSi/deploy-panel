@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { validatedJson } from "../lib/validator.js";
 import { randomBytes } from "node:crypto";
+import { getConnInfo } from "@hono/node-server/conninfo";
+import type { Context } from "hono";
 import {
   config,
   hasGitHubOAuthConfigured,
@@ -22,7 +24,14 @@ import { isAllowedGitHubLogin, normalizeGitHubLogin } from "../lib/github-login.
 import {
   buildUserSessionCookie,
   createSession,
+  deleteSession,
+  readUserSessionCookie,
 } from "../lib/session.js";
+import {
+  checkLoginBlocked,
+  recordLoginFailure,
+  resolveLoginClientKey,
+} from "../lib/login-rate-limit.js";
 import { audit } from "../lib/audit.js";
 
 export const authRouter = new Hono();
@@ -31,11 +40,39 @@ const loginSchema = z.object({
   token: z.string().min(1).max(1024),
 });
 
-// POST /api/auth/login — set session cookie
+/**
+ * Rate-limit key for a request: the TCP peer, or the rightmost
+ * X-Forwarded-For entry when the peer is a loopback/private proxy.
+ * `getConnInfo` throws when the node adapter env is absent (direct
+ * `app.request()` calls); the request then lands in the shared "unknown" key.
+ */
+function loginClientKey(c: Context): string {
+  let peer: string | undefined;
+  try {
+    peer = getConnInfo(c).remote.address;
+  } catch {
+    peer = undefined;
+  }
+  return resolveLoginClientKey(peer, c.req.header("X-Forwarded-For"));
+}
+
+// POST /api/auth/login: set session cookie. Failed attempts are counted per
+// client key; a key over the limit gets 429 before any token comparison.
 authRouter.post("/login", validatedJson(loginSchema), async (c) => {
   const { token } = c.req.valid("json");
 
+  const clientKey = loginClientKey(c);
+  const limit = checkLoginBlocked(clientKey);
+  if (limit.blocked) {
+    c.header("Retry-After", String(limit.retryAfterSec));
+    return c.json(
+      { error: "rate_limited", message: "too many failed login attempts; retry later" },
+      429,
+    );
+  }
+
   if (!config.PANEL_TOKEN || !safeCompare(token, config.PANEL_TOKEN)) {
+    recordLoginFailure(clientKey);
     return c.json({ error: "unauthorized", message: "Invalid token" }, 401);
   }
 
@@ -48,8 +85,18 @@ authRouter.post("/login", validatedJson(loginSchema), async (c) => {
   return c.json({ success: true });
 });
 
-// POST /api/auth/logout — clear all session cookies (panel + user)
+// POST /api/auth/logout: revoke the presented user session and clear all
+// session cookies (panel + user). Reachable without auth: it only revokes what
+// the caller presents. The panel_session cookie holds the raw PANEL_TOKEN and
+// is not revocable; only its cookie is cleared. A malformed cookie or a DB
+// error is logged and never turns logout into a failure.
 authRouter.post("/logout", async (c) => {
+  try {
+    const rawSession = readUserSessionCookie(c.req.header("Cookie"));
+    if (rawSession) await deleteSession(rawSession);
+  } catch (err) {
+    console.error("Logout session revoke failed:", (err as Error).message);
+  }
   c.header("Set-Cookie", "panel_session=; Path=/; HttpOnly; Max-Age=0", { append: true });
   c.header(
     "Set-Cookie",
@@ -120,7 +167,7 @@ authRouter.get("/github/callback", async (c) => {
   const code = c.req.query("code");
   const state = c.req.query("state");
   const cookieHeader = c.req.header("Cookie") ?? "";
-  const storedStateMatch = cookieHeader.match(new RegExp(`${OAUTH_STATE_COOKIE}=([^;]+)`));
+  const storedStateMatch = cookieHeader.match(new RegExp(`(?:^|;\\s*)${OAUTH_STATE_COOKIE}=([^;]+)`));
   const storedState = storedStateMatch ? storedStateMatch[1] : null;
 
   // Always clear the transient state cookie regardless of outcome.

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- Auth hardening in `backend/src/routes/auth.ts`. (1) `POST /api/auth/logout` now deletes the `sessions` row of the presented `user_session` cookie, so a copied cookie no longer works for the rest of its 30 days; the cookies are still cleared and the call still answers 200 without a cookie, with a malformed cookie, when the row is already gone, and when the delete fails (logged). The `panel_session` cookie carries the raw `PANEL_TOKEN` and stays non-revocable by design (rotate `PANEL_TOKEN`). (2) `POST /api/auth/login` is rate-limited on failures: 10 failed token comparisons within 15 minutes per client answer 429 `rate_limited` with `Retry-After`, decided before the comparison; successful logins are never counted. The client key is the TCP peer address, or, only when the peer is a loopback or private address (the reverse proxy), the rightmost `X-Forwarded-For` entry; the in-memory window and constants live in the new `backend/src/lib/login-rate-limit.ts`, with no new environment variable. (3) The OAuth callback reads the `dp_oauth_state` cookie with an anchored pattern, so a cookie whose name merely ends in `dp_oauth_state` can no longer supply the stored state. Tests: `backend/tests/auth-logout-revoke.test.ts`, `backend/tests/login-rate-limit.test.ts`, `backend/tests/oauth-login.test.ts`.
+
 ## [0.9.0] - 2026-11-17
 
 ### Security

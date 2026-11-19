@@ -43,7 +43,11 @@ The admin login is the `PANEL_TOKEN`: the login page posts it to `POST /api/auth
 
 `ALLOWED_GITHUB_LOGINS` applies to both paths: if set, the verified GitHub login must appear in the comma-separated list, otherwise the broker request is rejected with 403 and the OAuth callback redirects to `/login?error=forbidden_github_login`. The comparison ignores case (GitHub logins are case-insensitive): entries and the verified login are compared normalised (trimmed, lowercased), so an entry `alice` admits the GitHub login `Alice`. Leave it empty in development and test to allow any verified user (back-compat); with `NODE_ENV=production` the backend refuses to start while the list is empty.
 
-Both paths resolve to the same User row (matched by GitHub id), so a user ends up on one account either way. To sign out admin cookies, rotate `PANEL_TOKEN`; to revoke GitHub sessions, delete the user's rows from the `sessions` table.
+Both paths resolve to the same User row (matched by GitHub id), so a user ends up on one account either way.
+
+`POST /api/auth/logout` deletes the `sessions` row of the presented `user_session` cookie, so a copied GitHub-session cookie stops working at logout (it answers 200 and clears both cookies also when there is no cookie, the cookie is malformed or the row is already gone). The `panel_session` cookie holds the raw `PANEL_TOKEN` and is not revocable: logout only clears the cookie, and to sign out admin cookies everywhere you rotate `PANEL_TOKEN`. To revoke a GitHub session without the user's cooperation, delete their rows from the `sessions` table.
+
+`POST /api/auth/login` limits failed attempts: after 10 failed token comparisons within 15 minutes from the same client, further attempts answer 429 `rate_limited` with a `Retry-After` header (seconds) and are refused before the token is compared, so a correct token is refused too until the window frees up; successful logins are never counted. The client is the TCP peer address; only when that peer is a loopback or private address (the reverse proxy in front of the backend, for example Traefik) is the rightmost `X-Forwarded-For` entry used instead, and a missing or malformed header falls back to the peer. The counters are in memory (single instance, cleared on restart) and the limits are fixed in code, not configurable.
 
 ## Local development
 
