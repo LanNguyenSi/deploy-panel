@@ -302,6 +302,37 @@ describe("resolveLoginClientKey", () => {
     expect(resolveLoginClientKey("10.0.0.1", "::ffff:c633:6409")).toBe("198.51.100.9");
   });
 
+  it("an address that is not ::ffff:a.b.c.d is not folded to IPv4", () => {
+    const zeros = "0:0:0:0::/64";
+    // A non-zero fifth group before ffff keeps the IPv6 /64 key.
+    expect(resolveLoginClientKey("::1:ffff:cb00:7107", undefined)).toBe(zeros);
+    expect(resolveLoginClientKey("10.0.0.1", "::1:ffff:c633:6409")).toBe(zeros);
+    // A non-zero group anywhere in the first four does too.
+    expect(resolveLoginClientKey("1::ffff:cb00:7107", undefined)).toBe("1:0:0:0::/64");
+    expect(resolveLoginClientKey("0:0:0:1:0:ffff:cb00:7107", undefined)).toBe("0:0:0:1::/64");
+    // The sixth group must be ffff.
+    expect(resolveLoginClientKey("::fffe:cb00:7107", undefined)).toBe(zeros);
+  });
+
+  it("an IPv6 zone id never reaches the key", () => {
+    expect(resolveLoginClientKey("10.0.0.1", "fe80::1%eth0")).toBe("fe80:0:0:0::/64");
+    expect(resolveLoginClientKey("10.0.0.1", "fe80::%eth0")).toBe("fe80:0:0:0::/64");
+    expect(resolveLoginClientKey("10.0.0.1", "2001:db8::1%25eth0")).toBe("2001:db8:0:0::/64");
+    expect(resolveLoginClientKey("fe80::1%lo0", undefined)).toBe("fe80:0:0:0::/64");
+    expect(resolveLoginClientKey("fe80::%lo0", undefined)).toBe("fe80:0:0:0::/64");
+  });
+
+  it("a zone id is accepted on an IPv6 literal only: an IPv4 entry with % falls back to the peer", () => {
+    expect(resolveLoginClientKey("10.0.0.1", "198.51.100.1%x")).toBe("10.0.0.1");
+    expect(resolveLoginClientKey("10.0.0.1", `198.51.100.1%${"a".repeat(200)}`)).toBe("10.0.0.1");
+    expect(resolveLoginClientKey("10.0.0.1", "not-an-ip%eth0")).toBe("10.0.0.1");
+    expect(resolveLoginClientKey("10.0.0.1", "%eth0")).toBe("10.0.0.1");
+  });
+
+  it("a forwarded IPv4 entry without % is still used", () => {
+    expect(resolveLoginClientKey("10.0.0.1", "198.51.100.1")).toBe("198.51.100.1");
+  });
+
   it("IPv4 peers stay per address", () => {
     expect(resolveLoginClientKey("203.0.113.7", undefined)).not.toBe(
       resolveLoginClientKey("203.0.113.8", undefined),

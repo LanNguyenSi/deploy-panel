@@ -48,9 +48,10 @@ trustedPeers.addSubnet("192.168.0.0", 16, "ipv4");
 trustedPeers.addAddress("::1", "ipv6");
 trustedPeers.addSubnet("fc00::", 7, "ipv6");
 
-/** The eight 16-bit groups of an IPv6 literal (zone id and dotted tail accepted), or null. */
+/** The eight 16-bit groups of an IPv6 literal (zone id and dotted tail accepted), or null. Not an IPv6 literal (IPv4 included): null. */
 function ipv6Groups(addr: string): number[] | null {
-  let s = addr.replace(/%.*$/, "");
+  // A zone id (`fe80::1%eth0`) is dropped here and never reaches a key.
+  let s = addr.split("%")[0];
   if (!isIPv6(s)) return null;
   const dotted = s.match(/^(.*:)(\d{1,3}(?:\.\d{1,3}){3})$/);
   if (dotted) {
@@ -73,7 +74,6 @@ function ipv6Groups(addr: string): number[] | null {
  */
 function canonicalAddress(addr: string): string {
   const lower = addr.trim().toLowerCase();
-  if (isIPv4(lower)) return lower;
   const g = ipv6Groups(lower);
   if (!g) return lower;
   if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) {
@@ -108,7 +108,9 @@ export function resolveLoginClientKey(
   const peerAddr = canonicalAddress(peer);
   if (!isTrustedProxyPeer(peerAddr) || !forwardedFor) return bucketKey(peerAddr);
   const rightmost = forwardedFor.split(",").pop()?.trim() ?? "";
-  if (!rightmost || isIP(rightmost.replace(/%.*$/, "")) === 0) return bucketKey(peerAddr);
+  // isIP accepts a zone id only on an IPv6 literal, so `198.51.100.1%x` and
+  // other junk fall back to the peer.
+  if (isIP(rightmost) === 0) return bucketKey(peerAddr);
   return bucketKey(canonicalAddress(rightmost));
 }
 
