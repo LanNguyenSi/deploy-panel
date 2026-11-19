@@ -184,3 +184,16 @@ describe("unauthenticated", () => {
     expect((await revoke({})).status).toBe(401);
   });
 });
+
+describe("requirePanelAuth on its own", () => {
+  it("fails closed when no auth middleware set isAdmin", async () => {
+    const { Hono } = await import("hono");
+    const { requirePanelAuth } = await import("../src/middleware/auth.js");
+    const app = new Hono();
+    app.use("*", requirePanelAuth);
+    app.get("/", (c) => c.json({ ok: true }));
+    const res = await app.request("/");
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ error: "forbidden" });
+  });
+});

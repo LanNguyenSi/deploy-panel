@@ -90,7 +90,7 @@ export function createApp(corsOrigins: string) {
   app.use("/api/v1/*", requireAuth);
   app.route("/api/v1", v1Router);
 
-  // API key management (panel token or session only — NOT api keys)
+  // API key management: admin only (panel token or panel_session cookie); no API key, no GitHub user session
   app.use("/api/api-keys/*", requireAuth, requirePanelAuth);
   app.use("/api/api-keys", requireAuth, requirePanelAuth);
   app.route("/api/api-keys", apiKeysRouter);
