@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - Keyboard users can now bypass the sidebar on every page, and the deploy trend chart is now announced to screen readers: the app shell renders a visually hidden `Skip to main content` link as its first focusable element (it paints above the sidebar on focus and moves focus into the content wrapper, `frontend/src/components/AppShell.tsx`), and the Deploy Duration Trend chart carries `role="img"` with an `aria-label` stating the same average, minimum and maximum durations and plotted deploy count its header shows. Tests: `frontend/src/components/AppShell.test.tsx`, `frontend/src/app/deploys/chart-a11y.test.tsx`.
 
+### Docs
+
+- Documentation drift fixes: the `action/README.md` examples now pin the action at `@v0.9.0` (they still showed `@v0.8.0`, and no workflow uses the action, so no dependency bot saw the pins); the `backend/src/lib/secret-crypto.ts` doc comment states the config-import reason in place instead of citing a nonexistent `AGENTS.md` ("no silent errors" appears nowhere in the repo), pointing at `docs/okf/app-secrets-config-footgun.md`, whose body sentence now says the module's doc comment explains the exception instead of claiming that convention exists elsewhere; and `docs/configuration.md` (project-names paragraph) and the README `make docker-up` comment now say the plain `docker-compose.yml` is development-only and must never be run in the prod app directory, where it would start a second, uncapped stack whose frontend publishes port 3000 on all interfaces.
+
 ## [0.9.0] - 2026-11-17
 
 ### Security
