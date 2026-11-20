@@ -3,7 +3,7 @@ type: invariant
 title: Auth and ownership model — three credential shapes, one actor context
 description: requireAuth resolves API key / PANEL_TOKEN / session cookie into a single { userId, isAdmin } actor context that lib/ownership.ts uses to gate every server-scoped route; admin-shared servers (userId = null) are invisible to non-admin broker actors by design, and requirePanelAuth restricts the api-keys management routes to admin actors (panel token or panel_session), refusing API keys and non-admin GitHub sessions.
 tags: [auth, authz, ownership, security]
-timestamp: 2026-11-20T07:51:41Z
+timestamp: 2026-11-20T09:52:10Z
 sources:
   - backend/src/middleware/auth.ts
   - backend/src/lib/ownership.ts
@@ -23,6 +23,8 @@ One middleware, `requireAuth` (`backend/src/middleware/auth.ts:77-179`), resolve
 3. **`user_session` cookie** from native GitHub OAuth (auth.ts:163-176, `readUserSessionCookie` + `validateSession`). Always non-admin, `userId` from the `Session` row. `POST /api/auth/logout` deletes that row (`deleteSession`), so a copied cookie stops validating; the `panel_session` cookie holds the raw `PANEL_TOKEN`, so logout can only clear it and rotating `PANEL_TOKEN` is the revocation.
 
 With no `PANEL_TOKEN` configured, `requireAuth` rejects every request with 500 in production, but in development falls through as admin (auth.ts:79-87) — a dev-only convenience, not a security boundary.
+
+A credential that fails does not just draw a 401: each failed presentation (an unknown or revoked `dp_` key, a non-`dp_` Bearer that is not the `PANEL_TOKEN`, a `panel_session` cookie that is not the `PANEL_TOKEN`, a `user_session` cookie without a valid session) records one failure against the same per-client budget as `POST /api/auth/login` and `GET /api/auth/check` (`backend/src/lib/login-rate-limit.ts`, `backend/src/middleware/auth.ts:105-114` for the check, 139/149/159/174 for the records). A blocked client gets 429 `rate_limited` before any credential is looked up, valid ones included.
 
 ## Where it's enforced
 
