@@ -21,8 +21,8 @@ import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:
  * but wrong for a leaf crypto module that apps.ts/v1.ts/stream-deploy.ts now
  * pull in transitively. A test suite that mocks relay/prisma but leaves the
  * env half-configured must be able to import this file without the whole
- * process exiting. See AGENTS.md "no silent errors" — this reads env
- * directly rather than swallowing the config-import problem.
+ * process exiting. Reading env directly rather than importing config is the
+ * deliberate exception documented in docs/okf/app-secrets-config-footgun.md.
  */
 
 const DEV_FALLBACK_KEY_MATERIAL =

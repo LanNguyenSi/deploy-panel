@@ -90,7 +90,7 @@ curl -X POST https://panel.example.com/api/v1/deploy \
 make dev            # backend + frontend, hot reload (see Quick start above for one-time setup)
 make build          # build both workspaces (needs prisma generate first)
 make setup          # full Docker stack instead of make dev: needs APP_SECRETS_KEY in .env and .env exported; its frontend container conflicts with make dev on port 3000
-make docker-up      # bring up the full Docker stack (db + backend + frontend)
+make docker-up      # bring up the full Docker stack (development; db + backend + frontend)
 make docker-down    # stop the Docker stack
 make db-generate    # prisma generate
 make db-migrate     # apply the committed Prisma migrations (migrate deploy); export .env first

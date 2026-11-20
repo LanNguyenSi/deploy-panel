@@ -13,7 +13,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: LanNguyenSi/deploy-panel/action@v0.8.0
+      - uses: LanNguyenSi/deploy-panel/action@v0.9.0
         with:
           url: https://panel.example.com
           api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
@@ -54,7 +54,7 @@ When `wait` is true the status poll treats a transient failure as a hiccup rathe
 ### Deploy with preflight
 
 ```yaml
-- uses: LanNguyenSi/deploy-panel/action@v0.8.0
+- uses: LanNguyenSi/deploy-panel/action@v0.9.0
   with:
     url: ${{ vars.DEPLOY_PANEL_URL }}
     api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
@@ -68,7 +68,7 @@ When `wait` is true the status poll treats a transient failure as a hiccup rathe
 The preflight step still runs and prints its checks, but a failed preflight no longer fails the job. `force: true` is also sent with the deploy request.
 
 ```yaml
-- uses: LanNguyenSi/deploy-panel/action@v0.8.0
+- uses: LanNguyenSi/deploy-panel/action@v0.9.0
   with:
     url: ${{ vars.DEPLOY_PANEL_URL }}
     api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
@@ -80,7 +80,7 @@ The preflight step still runs and prints its checks, but a failed preflight no l
 ### Skip preflight
 
 ```yaml
-- uses: LanNguyenSi/deploy-panel/action@v0.8.0
+- uses: LanNguyenSi/deploy-panel/action@v0.9.0
   with:
     url: ${{ vars.DEPLOY_PANEL_URL }}
     api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
@@ -92,7 +92,7 @@ The preflight step still runs and prints its checks, but a failed preflight no l
 ### Fire and forget
 
 ```yaml
-- uses: LanNguyenSi/deploy-panel/action@v0.8.0
+- uses: LanNguyenSi/deploy-panel/action@v0.9.0
   with:
     url: ${{ vars.DEPLOY_PANEL_URL }}
     api-key: ${{ secrets.DEPLOY_PANEL_KEY }}
