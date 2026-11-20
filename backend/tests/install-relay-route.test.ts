@@ -20,6 +20,15 @@ vi.mock("node:dns", () => ({
   },
 }));
 
+// The SSH executor is mocked so the stream tests below can drive stdout,
+// stderr and the exit code of the install command.
+vi.mock("../src/services/ssh-executor.js", async () => {
+  const actual = await vi.importActual<
+    typeof import("../src/services/ssh-executor.js")
+  >("../src/services/ssh-executor.js");
+  return { ...actual, executeSshCommand: vi.fn() };
+});
+
 vi.mock("../src/config/index.js", () => ({
   config: {
     NODE_ENV: "test",
@@ -34,6 +43,7 @@ vi.mock("../src/config/index.js", () => ({
 
 import { prisma } from "../src/lib/prisma.js";
 import { serversRouter } from "../src/routes/servers.js";
+import { executeSshCommand } from "../src/services/ssh-executor.js";
 import { Hono } from "hono";
 
 const mServer = prisma.server as unknown as {
@@ -178,5 +188,147 @@ describe("POST /servers/install-relay (pre-SSE gates)", () => {
       message:
         "Invalid email address; exactly one of sshPassword or sshPrivateKey must be provided",
     });
+  });
+});
+
+const installOkOutput = (token: string) =>
+  `\n  Mode:  greenfield\n  URL:   https://relay.example.com\n  Token: ${token}\n`;
+
+function mockSsh({
+  stdout = "",
+  stderr,
+  exitCode = 0,
+  finished = true,
+}: {
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number;
+  finished?: boolean;
+}) {
+  vi.mocked(executeSshCommand).mockImplementation(async (opts) => {
+    if (stdout && opts.onStdout) {
+      for (const line of stdout.split("\n")) opts.onStdout(line);
+    }
+    if (stderr && opts.onStderr) {
+      for (const line of stderr.split("\n")) opts.onStderr(line);
+    }
+    return { exitCode, finished };
+  });
+}
+
+async function readSse(res: Response): Promise<Array<{ event: string; data: any }>> {
+  const text = await res.text();
+  const events: Array<{ event: string; data: any }> = [];
+  for (const block of text.split("\n\n")) {
+    let event = "message";
+    let dataStr = "";
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) dataStr += line.slice(5).trim();
+    }
+    if (dataStr) events.push({ event, data: JSON.parse(dataStr) });
+  }
+  return events;
+}
+
+describe("POST /servers/install-relay (stream): exit code of the install command", () => {
+  const FETCH_LINE = "curl: (22) The requested URL returned error: 404";
+  const run = async () => {
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/install-relay",
+      asJson(validBody),
+    );
+    expect(res.status).toBe(200);
+    return readSse(res);
+  };
+  const errorEvents = (events: Array<{ event: string; data: any }>) =>
+    events.filter((e) => e.event === "error");
+  const auditActions = () =>
+    vi.mocked(prisma.auditLog.create).mock.calls.map((c) => [c[0].data.action, c[0].data.detail]);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mServer.findUnique.mockResolvedValue(null);
+    mServer.create.mockResolvedValue({
+      id: "srv-new",
+      name: "vps-1",
+      host: "1.2.3.4",
+      relayUrl: "https://relay.example.com",
+    });
+  });
+
+  it("sends the fetch-first command: download, then run the file as root, no pipe", async () => {
+    mockSsh({ stdout: installOkOutput("tok") });
+    await run();
+    const command = vi.mocked(executeSshCommand).mock.calls[0]?.[0]?.command ?? "";
+    expect(command).toContain("curl -fsSL");
+    expect(command).toContain("|| exit 97;");
+    expect(command).not.toContain("| sudo");
+    expect(command).not.toContain("sudo rm");
+    expect(command.indexOf("curl -fsSL")).toBeLessThan(command.indexOf('sudo -E bash "$f"'));
+  });
+
+  it("empty output + exit 97: installer_fetch_failed with curl's line, no row", async () => {
+    mockSsh({ stderr: FETCH_LINE, exitCode: 97 });
+    const events = await run();
+    expect(errorEvents(events)).toEqual([
+      {
+        event: "error",
+        data: { kind: "installer_fetch_failed", message: `could not download the installer: ${FETCH_LINE}` },
+      },
+    ]);
+    expect(events.some((e) => e.event === "done")).toBe(false);
+    expect(mServer.create).not.toHaveBeenCalled();
+    expect(auditActions()).toEqual([["server.install-relay.failed", "installer_fetch_failed"]]);
+  });
+
+  it("empty output + exit 1: installer_failed with the exit code, not url_not_found", async () => {
+    mockSsh({ exitCode: 1 });
+    const events = await run();
+    const [err] = errorEvents(events);
+    expect(err.data.kind).toBe("installer_failed");
+    expect(err.data.message).toContain("code 1");
+    expect(mServer.create).not.toHaveBeenCalled();
+    expect(auditActions()).toEqual([["server.install-relay.failed", "installer_failed"]]);
+  });
+
+  it("complete URL/Token block + exit 1 is still an error, no row", async () => {
+    mockSsh({ stdout: installOkOutput("late-fail-tok"), exitCode: 1 });
+    const events = await run();
+    expect(errorEvents(events).map((e) => e.data.kind)).toEqual(["installer_failed"]);
+    expect(events.some((e) => e.event === "done")).toBe(false);
+    expect(mServer.create).not.toHaveBeenCalled();
+  });
+
+  it("no exit code reported (-1) is a failed installer", async () => {
+    mockSsh({ stdout: installOkOutput("t"), exitCode: -1 });
+    const events = await run();
+    expect(errorEvents(events).map((e) => e.data.kind)).toEqual(["installer_failed"]);
+    expect(mServer.create).not.toHaveBeenCalled();
+  });
+
+  it("a command that did not finish keeps the timeout mapping", async () => {
+    mockSsh({ exitCode: -1, finished: false });
+    const events = await run();
+    expect(errorEvents(events).map((e) => e.data.kind)).toEqual(["timeout"]);
+    expect(mServer.create).not.toHaveBeenCalled();
+    expect(auditActions()).toEqual([["server.install-relay.failed", "timeout"]]);
+  });
+
+  it("exit 0 + valid output is unchanged: the row is created and done is sent", async () => {
+    mockSsh({ stdout: installOkOutput("good-tok") });
+    const events = await run();
+    expect(errorEvents(events)).toEqual([]);
+    expect(events.some((e) => e.event === "done")).toBe(true);
+    expect(mServer.create).toHaveBeenCalledTimes(1);
+    expect(mServer.create.mock.calls[0]?.[0].data.relayToken).toBe("good-tok");
+    expect(auditActions()[0]?.[0]).toBe("server.install-relay.success");
+  });
+
+  it("exit 0 + output without a URL keeps today's parse error", async () => {
+    mockSsh({ stdout: "nothing useful\n" });
+    const events = await run();
+    expect(errorEvents(events).map((e) => e.data.kind)).toEqual(["url_not_found"]);
+    expect(mServer.create).not.toHaveBeenCalled();
   });
 });

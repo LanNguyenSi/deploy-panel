@@ -65,22 +65,58 @@ function shellEscape(value: string): string {
 }
 
 /**
+ * Exit code the remote command uses when it could not download the
+ * installer. The download happens before anything else on the VPS is
+ * touched, so this code means "nothing ran". Any other non-zero exit
+ * means the installer itself (or a step after the download) failed.
+ */
+export const INSTALLER_FETCH_FAILED_EXIT_CODE = 97;
+
+export interface BuildInstallCommandOptions {
+  /**
+   * Absolute path of a file to remove with `sudo rm -f` after the
+   * installer was downloaded and before it runs (token rotation: the
+   * installer keeps the token of an existing `.env`). The removal sits
+   * behind the download, so a failed download leaves the file alone.
+   */
+  removeBeforeRun?: string;
+}
+
+// Same shape the route schema enforces for `relayDir`. Checked again here
+// because the path goes into the remote script without quoting.
+const SAFE_ABSOLUTE_PATH = /^\/[A-Za-z0-9._/-]*$/;
+
+/**
  * Build the command that runs on the VPS. Structured as:
  *
- *   env VAR='…' VAR='…' bash -c 'set -o pipefail; curl -fsSL … | sudo -E bash'
+ *   env VAR='…' VAR='…' bash -c '<script>'
+ *
+ * where the script downloads the installer to a temp file first and only
+ * then runs it as root:
+ *
+ *   set -euo pipefail
+ *   f=$(mktemp); trap 'rm -f "$f"' EXIT
+ *   curl -fsSL <url> -o "$f" || exit 97
+ *   [sudo rm -f <removeBeforeRun>]
+ *   sudo -E bash "$f"
  *
  * User-supplied env values are single-quote-escaped so no value can
- * break out of its quoting. The inner bash -c runs a FIXED string —
- * the installer URL is compile-time and has no user-controlled parts.
+ * break out of its quoting. The script is a FIXED string: the installer
+ * URL is compile-time and has no user-controlled parts.
  *
- * `curl -f` plus `pipefail` make a 404 or a network error end the
- * install with a non-zero exit instead of piping an error page (or
- * nothing) into a root shell.
+ * Fetching to a file keeps a failed download apart from a failed
+ * installer (exit 97 versus the installer's own code) and lets the
+ * caller order destructive steps behind the download. `curl -f` makes a
+ * 404 or a network error a failure instead of a body to execute, so
+ * nothing is ever piped into a root shell.
  *
  * `sudo -E bash` preserves the env vars we set; install.sh reads
  * RELAY_DOMAIN, TRAEFIK_EMAIL, APPS_DIR from its process env.
  */
-export function buildInstallCommand(env: InstallEnvVars): string {
+export function buildInstallCommand(
+  env: InstallEnvVars,
+  opts: BuildInstallCommandOptions = {},
+): string {
   const envPairs: string[] = [];
   if (env.relayDomain !== undefined) {
     envPairs.push(`RELAY_DOMAIN=${shellEscape(env.relayDomain)}`);
@@ -107,10 +143,26 @@ export function buildInstallCommand(env: InstallEnvVars): string {
     envPairs.push(`RELAY_DIR=${shellEscape(env.relayDir)}`);
   }
   const envPrefix = envPairs.length > 0 ? `env ${envPairs.join(" ")} ` : "";
-  // INSTALL_SCRIPT_URL is a compile-time constant — not exposed to the
-  // caller — so no interpolation risk here. The `|` pipe is shell
-  // metasyntax by design; that's why we use bash -c explicitly.
-  return `${envPrefix}bash -c 'set -o pipefail; curl -fsSL ${INSTALL_SCRIPT_URL} | sudo -E bash'`;
+  const removeStep =
+    opts.removeBeforeRun !== undefined
+      ? `sudo rm -f ${assertSafeAbsolutePath(opts.removeBeforeRun)}; `
+      : "";
+  // INSTALL_SCRIPT_URL is a compile-time constant, not exposed to the
+  // caller, so no interpolation risk here. The script is one fixed
+  // string, quoted as a whole so the `$f` and the trap's inner quotes
+  // reach the remote bash untouched.
+  const script =
+    `set -euo pipefail; f=$(mktemp); trap 'rm -f "$f"' EXIT; ` +
+    `curl -fsSL ${INSTALL_SCRIPT_URL} -o "$f" || exit ${INSTALLER_FETCH_FAILED_EXIT_CODE}; ` +
+    `${removeStep}sudo -E bash "$f"`;
+  return `${envPrefix}bash -c ${shellEscape(script)}`;
+}
+
+function assertSafeAbsolutePath(p: string): string {
+  if (!SAFE_ABSOLUTE_PATH.test(p) || p.split("/").includes("..")) {
+    throw new Error("refusing to build an install command with an unsafe path");
+  }
+  return p;
 }
 
 /**
@@ -201,5 +253,51 @@ export function parseInstallOutput(
       relayToken: tokenMatch[1],
       ...(relayMode ? { relayMode } : {}),
     },
+  };
+}
+
+export interface InstallExitError {
+  kind: "installer_fetch_failed" | "installer_failed";
+  message: string;
+}
+
+const STDERR_MESSAGE_MAX = 200;
+
+/**
+ * Reduce one stderr line from the VPS to text that is safe to put into an
+ * error message: no escape sequences, no control characters, bounded
+ * length. The line is output of a host the caller may control.
+ */
+function sanitizeStderrLine(line: string): string {
+  // eslint-disable-next-line no-control-regex
+  const bare = stripAnsi(line).replace(/[\x00-\x1f\x7f]/g, " ").trim();
+  return bare.length > STDERR_MESSAGE_MAX ? `${bare.slice(0, STDERR_MESSAGE_MAX)}…` : bare;
+}
+
+/**
+ * Classify the exit code of the install command. Returns null for exit 0
+ * (the caller then parses stdout). Exit 97 means the installer download
+ * failed before anything ran; any other non-zero exit (including -1, no
+ * code reported) means the installer or a step after the download failed,
+ * whatever stdout contains: a complete URL/Token block printed before a
+ * late failure is not a success.
+ */
+export function classifyInstallExit(
+  exitCode: number,
+  lastStderrLine?: string,
+): InstallExitError | null {
+  if (exitCode === 0) return null;
+  const detail = lastStderrLine ? sanitizeStderrLine(lastStderrLine) : "";
+  if (exitCode === INSTALLER_FETCH_FAILED_EXIT_CODE) {
+    return {
+      kind: "installer_fetch_failed",
+      message: detail
+        ? `could not download the installer: ${detail}`
+        : "could not download the installer",
+    };
+  }
+  return {
+    kind: "installer_failed",
+    message: `the installer exited with code ${exitCode}${detail ? `: ${detail}` : ""}`,
   };
 }

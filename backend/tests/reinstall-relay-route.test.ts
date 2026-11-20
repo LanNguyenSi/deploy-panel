@@ -53,9 +53,13 @@ const installOkOutput = (token: string) =>
 // without a real ssh2 server.
 function mockSshOk({
   stdout,
+  stderr,
+  exitCode = 0,
   hostKeySha256,
 }: {
   stdout: string;
+  stderr?: string;
+  exitCode?: number;
   hostKeySha256?: string;
 }) {
   vi.mocked(executeSshCommand).mockImplementation(async (opts) => {
@@ -65,7 +69,10 @@ function mockSshOk({
     if (opts.onStdout) {
       for (const line of stdout.split("\n")) opts.onStdout(line);
     }
-    return { exitCode: 0, finished: true };
+    if (stderr && opts.onStderr) {
+      for (const line of stderr.split("\n")) opts.onStderr(line);
+    }
+    return { exitCode, finished: true };
   });
 }
 
@@ -325,7 +332,7 @@ describe("POST /servers/:id/install-relay (re-install)", () => {
     await readSse(res);
   });
 
-  it("rotateToken=true prepends a `sudo rm -f /opt/agent-relay/.env` to the install command", async () => {
+  it("rotateToken=true removes /opt/agent-relay/.env inside the install command, after the download and before the installer", async () => {
     mServer.findUnique.mockResolvedValue({
       id: "srv-a",
       userId: null,
@@ -349,7 +356,30 @@ describe("POST /servers/:id/install-relay (re-install)", () => {
     expect(res.status).toBe(200);
     await readSse(res);
     const sshCall = vi.mocked(executeSshCommand).mock.calls[0]?.[0];
-    expect(sshCall?.command).toMatch(/^sudo rm -f \/opt\/agent-relay\/\.env && /);
+    const command = sshCall?.command ?? "";
+    // One remote command: nothing runs ahead of it, so the removal cannot
+    // happen before the download inside it.
+    expect(command).not.toMatch(/^sudo rm/);
+    const fetchAt = command.indexOf("curl -fsSL");
+    const removeAt = command.indexOf("sudo rm -f /opt/agent-relay/.env");
+    const runAt = command.indexOf('sudo -E bash "$f"');
+    expect(fetchAt).toBeGreaterThan(-1);
+    expect(removeAt).toBeGreaterThan(fetchAt);
+    expect(runAt).toBeGreaterThan(removeAt);
+    expect(command).toContain("|| exit 97;");
+  });
+
+  it("rotateToken=true follows a stored relayDir for the removal", async () => {
+    mServer.findUnique.mockResolvedValue({ ...ROW, relayDir: "/srv/relay" });
+    mockSshOk({ stdout: installOkOutput("new-tok") });
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-a/install-relay",
+      asJson({ ...validBody, rotateToken: true }),
+    );
+    await readSse(res);
+    const command = vi.mocked(executeSshCommand).mock.calls[0]?.[0]?.command ?? "";
+    expect(command).toContain("sudo rm -f /srv/relay/.env; ");
+    expect(command).not.toContain("/opt/agent-relay/.env");
   });
 
   it("rotateToken=false sends the bare install command (no rm)", async () => {
@@ -377,6 +407,9 @@ describe("POST /servers/:id/install-relay (re-install)", () => {
     await readSse(res);
     const sshCall = vi.mocked(executeSshCommand).mock.calls[0]?.[0];
     expect(sshCall?.command).not.toMatch(/sudo rm/);
+    // Still one fetch-then-run command.
+    expect(sshCall?.command).toContain('curl -fsSL');
+    expect(sshCall?.command).toContain('sudo -E bash "$f"');
   });
 
   it("does NOT update relayToken in the steady state (rotateToken=false + emitted equals DB)", async () => {
@@ -504,6 +537,137 @@ describe("POST /servers/:id/install-relay (re-install)", () => {
     // route because re-install has no expectedHostKeySha256 field —
     // it pulls from DB.)
     expect(true).toBe(true);
+  });
+});
+
+const ROW = {
+  id: "srv-a",
+  userId: null,
+  name: "a",
+  host: "a.example",
+  relayUrl: "http://a:8222",
+  relayToken: "old-tok",
+  hostKeySha256: "fp==".padEnd(44, "="),
+  relayMode: "greenfield",
+  relayDir: null,
+  relayComposeFile: null,
+  status: "online",
+};
+
+describe("POST /servers/:id/install-relay (re-install): exit code of the install command", () => {
+  const ADMIN = { userId: null, isAdmin: true };
+  const FETCH_LINE = "curl: (22) The requested URL returned error: 404";
+  const run = async (body: Record<string, unknown> = {}) => {
+    const res = await appFor(ADMIN).request("/servers/srv-a/install-relay", asJson({ ...validBody, ...body }));
+    expect(res.status).toBe(200);
+    return readSse(res);
+  };
+  const errorEvents = (events: Array<{ event: string; data: any }>) => events.filter((e) => e.event === "error");
+  const auditActions = () =>
+    vi.mocked(prisma.auditLog.create).mock.calls.map((c) => [c[0].data.action, c[0].data.detail]);
+  const noRowWrite = () => {
+    for (const call of vi.mocked(prisma.server.update).mock.calls) {
+      const data = call[0].data as Record<string, unknown>;
+      expect(data).not.toHaveProperty("relayToken");
+      expect(data).not.toHaveProperty("relayUrl");
+      expect(data).not.toHaveProperty("status");
+    }
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    config.TRUSTED_RELAY_SERVER_IDS.length = 0;
+    mServer.findUnique.mockResolvedValue(ROW);
+  });
+
+  it("empty output + exit 97: installer_fetch_failed with curl's line, nothing stored", async () => {
+    mockSshOk({ stdout: "", stderr: FETCH_LINE, exitCode: 97 });
+    const events = await run({ rotateToken: true });
+    expect(errorEvents(events)).toEqual([
+      {
+        event: "error",
+        data: { kind: "installer_fetch_failed", message: `could not download the installer: ${FETCH_LINE}` },
+      },
+    ]);
+    expect(events.some((e) => e.event === "done")).toBe(false);
+    expect(mServer.update).not.toHaveBeenCalled();
+    expect(auditActions()).toEqual([["server.reinstall-relay.failed", "installer_fetch_failed"]]);
+  });
+
+  it("empty output + exit 1: installer_failed with the exit code, not url_not_found", async () => {
+    mockSshOk({ stdout: "", exitCode: 1 });
+    const events = await run();
+    const [err] = errorEvents(events);
+    expect(err.data.kind).toBe("installer_failed");
+    expect(err.data.message).toContain("code 1");
+    expect(mServer.update).not.toHaveBeenCalled();
+    expect(auditActions()).toEqual([["server.reinstall-relay.failed", "installer_failed"]]);
+  });
+
+  it("complete URL/Token block + exit 1 is still an error and stores nothing", async () => {
+    mockSshOk({ stdout: installOkOutput("late-fail-tok"), exitCode: 1 });
+    const events = await run({ rotateToken: true });
+    expect(errorEvents(events).map((e) => e.data.kind)).toEqual(["installer_failed"]);
+    expect(events.some((e) => e.event === "done")).toBe(false);
+    expect(mServer.update).not.toHaveBeenCalled();
+  });
+
+  it("complete URL/Token block + exit 97 reports the fetch failure", async () => {
+    mockSshOk({ stdout: installOkOutput("t"), exitCode: 97 });
+    const events = await run();
+    expect(errorEvents(events).map((e) => e.data.kind)).toEqual(["installer_fetch_failed"]);
+    expect(mServer.update).not.toHaveBeenCalled();
+  });
+
+  it("no exit code reported (-1) is a failed installer", async () => {
+    mockSshOk({ stdout: installOkOutput("t"), exitCode: -1 });
+    const events = await run();
+    expect(errorEvents(events).map((e) => e.data.kind)).toEqual(["installer_failed"]);
+    expect(mServer.update).not.toHaveBeenCalled();
+  });
+
+  it("a command that did not finish keeps the timeout mapping", async () => {
+    vi.mocked(executeSshCommand).mockResolvedValue({ exitCode: -1, finished: false });
+    const events = await run();
+    expect(errorEvents(events).map((e) => e.data.kind)).toEqual(["timeout"]);
+    expect(mServer.update).not.toHaveBeenCalled();
+    expect(auditActions()).toEqual([["server.reinstall-relay.failed", "timeout"]]);
+  });
+
+  it("exit 0 + valid output is unchanged: done event, token and status stored", async () => {
+    mockSshOk({ stdout: installOkOutput("new-tok") });
+    const events = await run({ rotateToken: true });
+    expect(errorEvents(events)).toEqual([]);
+    expect(events.some((e) => e.event === "done")).toBe(true);
+    const data = vi.mocked(prisma.server.update).mock.calls[0]?.[0].data as Record<string, unknown>;
+    expect(data.relayToken).toBe("new-tok");
+    expect(data.status).toBe("online");
+    expect(auditActions()[0]?.[0]).toBe("server.reinstall-relay.success");
+  });
+
+  it("exit 0 + output without a URL keeps today's parse error (exit code does not mask it)", async () => {
+    mockSshOk({ stdout: "nothing useful\n" });
+    const events = await run();
+    expect(errorEvents(events).map((e) => e.data.kind)).toEqual(["url_not_found"]);
+    expect(mServer.update).not.toHaveBeenCalled();
+  });
+
+  it("only the last non-empty stderr line reaches the message", async () => {
+    mockSshOk({ stdout: "", stderr: `warming up\n${FETCH_LINE}\n\n`, exitCode: 97 });
+    const events = await run();
+    expect(errorEvents(events)[0]?.data.message).toBe(`could not download the installer: ${FETCH_LINE}`);
+  });
+
+  it("a legacy row still gets its observed fingerprint pinned on a failed install, and nothing else", async () => {
+    mServer.findUnique.mockResolvedValue({ ...ROW, hostKeySha256: null });
+    mockSshOk({ stdout: "", exitCode: 97, hostKeySha256: "AAAAB3NzaC1yc2EAAAADAQABAAABAQDxxxxxxxxxxxx=" });
+    const events = await run({ rotateToken: true });
+    expect(errorEvents(events).map((e) => e.data.kind)).toEqual(["installer_fetch_failed"]);
+    expect(vi.mocked(prisma.server.update).mock.calls).toHaveLength(1);
+    expect(vi.mocked(prisma.server.update).mock.calls[0]?.[0].data).toEqual({
+      hostKeySha256: "AAAAB3NzaC1yc2EAAAADAQABAAABAQDxxxxxxxxxxxx=",
+    });
+    noRowWrite();
   });
 });
 
