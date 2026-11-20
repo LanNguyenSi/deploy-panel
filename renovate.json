@@ -1,4 +1,18 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>LanNguyenSi/renovate-config"]
+  "extends": ["github>LanNguyenSi/renovate-config"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Bump the agent-relay release tag the relay installer URL is pinned to",
+      "managerFilePatterns": [
+        "/^backend/src/services/install-relay\\.ts$/"
+      ],
+      "matchStrings": [
+        "https://raw\\.githubusercontent\\.com/LanNguyenSi/agent-relay/refs/tags/(?<currentValue>v\\d+\\.\\d+\\.\\d+)/install\\.sh"
+      ],
+      "datasourceTemplate": "github-tags",
+      "depNameTemplate": "LanNguyenSi/agent-relay"
+    }
+  ]
 }
