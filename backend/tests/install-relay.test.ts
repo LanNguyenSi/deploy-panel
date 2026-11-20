@@ -60,9 +60,8 @@ describe("buildInstallCommand", () => {
     // this feature and must never become a runtime input. The URL names
     // a release tag through `refs/tags/`, so a push to a branch cannot
     // change what runs as root on the VPS.
-    expect(INSTALL_SCRIPT_URL).toBe(
-      "https://raw.githubusercontent.com/LanNguyenSi/agent-relay/refs/tags/v0.9.0/install.sh",
-    );
+    // The tag itself is deliberately not pinned here: a Renovate bump edits
+    // only the constant, so the shape is what this test guards.
     expect(INSTALL_SCRIPT_URL).toMatch(
       /^https:\/\/raw\.githubusercontent\.com\/LanNguyenSi\/agent-relay\/refs\/tags\/v\d+\.\d+\.\d+\/install\.sh$/,
     );

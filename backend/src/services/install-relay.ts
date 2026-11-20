@@ -16,14 +16,18 @@
  * via request body) so a malicious caller cannot redirect the install
  * to a lookalike script.
  *
- * Pinned to an agent-relay release tag instead of the `main` branch, so
- * a push to `main` cannot change what runs as root on a VPS. The
- * `refs/tags/` form means a branch that happens to share the tag's name
- * cannot shadow it. Renovate proposes bumps through the regex manager
- * in `renovate.json`, which reads the tag out of the line below: keep
- * the URL on one line and in this shape. A git tag can still be moved
- * by an agent-relay admin, and the installer itself pulls the relay
- * image by `:latest`.
+ * The installer script is pinned to an agent-relay release tag instead
+ * of the `main` branch, so a push to `main` cannot change the script
+ * that runs as root on a VPS. The `refs/tags/` form means a branch that
+ * happens to share the tag's name cannot shadow it. Renovate proposes
+ * bumps through the regex manager in `renovate.json`, which reads the
+ * tag out of the line below: keep the URL on one line and in this
+ * shape. Every bump waits for approval on the Dependency Dashboard
+ * while agent-relay is 0.x. Not pinned: the script's own fetches. It
+ * deploys `ghcr.io/lannguyensi/agent-relay:latest` (follows agent-relay
+ * `main`, runs with the Docker socket mounted) and runs
+ * `curl -fsSL https://get.docker.com | bash` when Docker is missing.
+ * A git tag can also be moved by an agent-relay admin.
  */
 export const INSTALL_SCRIPT_URL =
   "https://raw.githubusercontent.com/LanNguyenSi/agent-relay/refs/tags/v0.9.0/install.sh";

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { INSTALL_SCRIPT_URL } from "../src/services/install-relay.js";
 
 // The relay installer URL is pinned to a tag. Renovate can only propose a
@@ -36,7 +36,11 @@ function patternToRegExp(pattern: string): RegExp {
 }
 
 describe("renovate regex manager for the relay installer pin", () => {
-  const manager = loadManager();
+  let manager: RegexManager;
+
+  beforeAll(() => {
+    manager = loadManager();
+  });
 
   it("targets exactly the install-relay source file and the github-tags datasource", () => {
     expect(manager.managerFilePatterns).toHaveLength(1);
@@ -44,6 +48,9 @@ describe("renovate regex manager for the relay installer pin", () => {
     expect(filePattern.test(SOURCE_PATH)).toBe(true);
     expect(filePattern.test("backend/src/services/install-relay.test.ts")).toBe(false);
     expect(filePattern.test("backend/src/services/other.ts")).toBe(false);
+    // Anchored: a path that merely ends in or contains the file name is not it.
+    expect(filePattern.test("x/backend/src/services/install-relay.ts")).toBe(false);
+    expect(filePattern.test("frontend/src/install-relay.ts")).toBe(false);
     expect(manager.datasourceTemplate).toBe("github-tags");
   });
 
@@ -60,10 +67,20 @@ describe("renovate regex manager for the relay installer pin", () => {
     expect(INSTALL_SCRIPT_URL).toContain(`/refs/tags/${currentValue}/install.sh`);
   });
 
-  it("does not match a branch URL", () => {
+  it("does not match a branch URL, a short-form URL or a non-version ref under refs/tags", () => {
     const base = patternToRegExp(manager.matchStrings![0]);
-    const branchUrl =
-      '"https://raw.githubusercontent.com/LanNguyenSi/agent-relay/main/install.sh"';
-    expect(base.test(branchUrl)).toBe(false);
+    const prefix = "https://raw.githubusercontent.com/LanNguyenSi/agent-relay";
+    const notPins = [
+      `${prefix}/main/install.sh`,
+      `${prefix}/refs/heads/main/install.sh`,
+      // Without refs/tags a branch named like the tag could shadow the tag.
+      `${prefix}/v0.9.0/install.sh`,
+      `${prefix}/refs/tags/main/install.sh`,
+      `${prefix}/refs/tags/latest/install.sh`,
+      `${prefix}/refs/tags/v0.9/install.sh`,
+    ];
+    for (const url of notPins) {
+      expect(base.test(`"${url}"`), url).toBe(false);
+    }
   });
 });
