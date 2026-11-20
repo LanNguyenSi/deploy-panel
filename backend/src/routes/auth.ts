@@ -7,7 +7,7 @@ import {
   hasGitHubOAuthConfigured,
 } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
-import { CLEAR_PANEL_SESSION_COOKIE, hashApiKey } from "../middleware/auth.js";
+import { CLEAR_PANEL_SESSION_COOKIE, clearUserSessionCookie, hashApiKey } from "../middleware/auth.js";
 import { parsePanelSessionCookie, safeCompare } from "../lib/panel-token.js";
 import {
   buildAuthorizationUrl,
@@ -372,7 +372,8 @@ authRouter.post(
 // failed presentation (Bearer, then panel_session cookie) records one
 // failure, also when the other one succeeds. A failed panel_session cookie
 // is cleared, so a stale cookie after a PANEL_TOKEN rotation stops costing
-// attempts.
+// attempts. A user_session cookie is not evaluated here (neither accepted nor
+// counted), so it is cleared only on the 429, like every carried cookie.
 authRouter.get("/check", async (c) => {
   const token = config.PANEL_TOKEN;
   if (!token) return c.json({ authenticated: true }); // no auth configured
@@ -382,6 +383,9 @@ authRouter.get("/check", async (c) => {
   const limit = checkLoginBlocked(clientKey);
   if (limit.blocked) {
     if (panelCookie !== null) c.header("Set-Cookie", CLEAR_PANEL_SESSION_COOKIE, { append: true });
+    if (readUserSessionCookie(c.req.header("Cookie")) !== null) {
+      c.header("Set-Cookie", clearUserSessionCookie(), { append: true });
+    }
     c.header("Retry-After", String(limit.retryAfterSec));
     return c.json(
       { error: "rate_limited", message: "too many failed authentication attempts; retry later" },

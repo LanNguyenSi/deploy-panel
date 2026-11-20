@@ -2,12 +2,21 @@ import { Context, Next } from "hono";
 import { createHash } from "node:crypto";
 import { config } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
-import { readUserSessionCookie, validateSession } from "../lib/session.js";
+import { buildClearUserSessionCookie, readUserSessionCookie, validateSession } from "../lib/session.js";
 import { parsePanelSessionCookie, safeCompare } from "../lib/panel-token.js";
 import { checkLoginBlocked, loginClientKey, recordLoginFailure } from "../lib/login-rate-limit.js";
 
 /** Set-Cookie value that clears `panel_session` (same attributes as logout). */
 export const CLEAR_PANEL_SESSION_COOKIE = "panel_session=; Path=/; HttpOnly; Max-Age=0";
+
+/**
+ * Set-Cookie value that clears `user_session`, with the attributes of the
+ * cookie the OAuth callback issues (`buildUserSessionCookie`: HttpOnly,
+ * SameSite=Lax, Path=/, no Domain, Secure in production).
+ */
+export function clearUserSessionCookie(): string {
+  return `${buildClearUserSessionCookie()}${config.NODE_ENV === "production" ? "; Secure" : ""}`;
+}
 
 export function hashApiKey(key: string): string {
   return createHash("sha256").update(key).digest("hex");
@@ -37,9 +46,10 @@ export function hashApiKey(key: string): string {
  * non-`dp_` Bearer that is not the PANEL_TOKEN (also when a cookie then
  * succeeds), a `panel_session` cookie that is not the PANEL_TOKEN, and a
  * `user_session` cookie without a valid session. Successful presentations
- * never record. A failed `panel_session` cookie is cleared with a
- * Set-Cookie on the response (and on the 429), so a browser holding a stale
- * cookie after a PANEL_TOKEN rotation stops spending the budget.
+ * never record. A failed `panel_session` or `user_session` cookie is cleared
+ * with a Set-Cookie on the response (and on the 429 when the request carried
+ * it), so a browser holding a stale cookie (a rotated PANEL_TOKEN, a revoked
+ * or expired GitHub session) stops spending the budget.
  */
 export async function requireAuth(c: Context, next: Next) {
   const token = config.PANEL_TOKEN;
@@ -63,12 +73,16 @@ export async function requireAuth(c: Context, next: Next) {
   const clientKey = loginClientKey(c);
   const cookie = c.req.header("Cookie");
   const panelCookie = parsePanelSessionCookie(cookie);
+  const userSessionToken = readUserSessionCookie(cookie);
   const clearPanelCookie = () =>
     c.header("Set-Cookie", CLEAR_PANEL_SESSION_COOKIE, { append: true });
+  const clearUserCookie = () =>
+    c.header("Set-Cookie", clearUserSessionCookie(), { append: true });
 
   const limit = checkLoginBlocked(clientKey);
   if (limit.blocked) {
     if (panelCookie !== null) clearPanelCookie();
+    if (userSessionToken !== null) clearUserCookie();
     c.header("Retry-After", String(limit.retryAfterSec));
     return c.json(
       { error: "rate_limited", message: "too many failed authentication attempts; retry later" },
@@ -125,7 +139,6 @@ export async function requireAuth(c: Context, next: Next) {
 
   // Check user_session cookie (native GitHub OAuth login). Non-admin;
   // userId comes from the session row.
-  const userSessionToken = readUserSessionCookie(cookie);
   if (userSessionToken) {
     const userId = await validateSession(userSessionToken);
     if (userId) {
@@ -135,6 +148,7 @@ export async function requireAuth(c: Context, next: Next) {
       return next();
     }
     recordLoginFailure(clientKey);
+    clearUserCookie();
   }
 
   return c.json({ error: "unauthorized", message: "Authentication required" }, 401);

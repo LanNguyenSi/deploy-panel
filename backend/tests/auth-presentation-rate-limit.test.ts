@@ -13,8 +13,9 @@
  * - a successful presentation never records and never clears other failures;
  * - a blocked key gets 429 rate_limited with Retry-After before any
  *   comparison or lookup, valid credentials included;
- * - a failed panel_session cookie is cleared with a Set-Cookie (also on the
- *   429), a request without one gets no clearing header;
+ * - a failed panel_session or user_session cookie is cleared with a
+ *   Set-Cookie (also on the 429 when carried), a request without one or with
+ *   a valid one gets no clearing header;
  * - a stale cookie after a PANEL_TOKEN rotation costs one failure per request
  *   (no dedupe), so one dashboard load with its two parallel requests costs 2.
  *
@@ -62,6 +63,9 @@ import {
 const PANEL = "panel-token-must-be-16chars";
 const OLD_PANEL = "old-panel-token-before-rotation";
 const CLEAR = "panel_session=; Path=/; HttpOnly; Max-Age=0";
+// Attributes of the cookie the OAuth callback issues (buildUserSessionCookie),
+// Secure only in production.
+const CLEAR_USER = "user_session=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/";
 
 const mApiKey = prisma.apiKey as unknown as { findUnique: ReturnType<typeof vi.fn> };
 const mSession = prisma.session as unknown as { findUnique: ReturnType<typeof vi.fn> };
@@ -79,6 +83,7 @@ const block = () => {
 beforeEach(() => {
   vi.clearAllMocks();
   config.PANEL_TOKEN = PANEL;
+  config.NODE_ENV = "test";
   _resetLoginRateLimit();
   mApiKey.findUnique.mockResolvedValue(null);
   mSession.findUnique.mockResolvedValue(null);
@@ -141,6 +146,21 @@ describe("GET /api/auth/check records failed presentations", () => {
     expect(Number(res.headers.get("Retry-After"))).toBeGreaterThan(0);
     expect(failures()).toBe(LOGIN_RATE_MAX);
     expect(setCookies(res)).toEqual([]);
+  });
+
+  it("a blocked key answers 429 and clears a carried user_session", async () => {
+    block();
+    const res = await check({ Cookie: "user_session=live" });
+    expect(res.status).toBe(429);
+    expect(setCookies(res)).toEqual([CLEAR_USER]);
+  });
+
+  it("a user_session is not evaluated on /check: 401, nothing recorded, nothing cleared", async () => {
+    const res = await check({ Cookie: "user_session=gone" });
+    expect(res.status).toBe(401);
+    expect(failures()).toBe(0);
+    expect(setCookies(res)).toEqual([]);
+    expect(mSession.findUnique).not.toHaveBeenCalled();
   });
 
   it("a blocked key answers 429 for the correct cookie and clears it", async () => {
@@ -207,10 +227,25 @@ describe("requireAuth records failed presentations (GET /api/servers)", () => {
     expect(failures()).toBe(0);
   });
 
-  it("a user_session without a valid session answers 401 and records one failure", async () => {
+  it("a user_session without a valid session answers 401, records one failure and clears the cookie", async () => {
     const res = await servers({ Cookie: "user_session=gone" });
     expect(res.status).toBe(401);
     expect(failures()).toBe(1);
+    expect(setCookies(res)).toEqual([CLEAR_USER]);
+  });
+
+  it("in production the user_session clearing cookie carries Secure, like the issued cookie", async () => {
+    config.NODE_ENV = "production" as typeof config.NODE_ENV;
+    const res = await servers({ Cookie: "user_session=gone" });
+    expect(res.status).toBe(401);
+    expect(setCookies(res)).toEqual([`${CLEAR_USER}; Secure`]);
+  });
+
+  it("a user_session lookup that throws records nothing and clears nothing", async () => {
+    mSession.findUnique.mockRejectedValue(new Error("db down"));
+    const res = await servers({ Cookie: "user_session=live" });
+    expect(res.status).toBe(500);
+    expect(failures()).toBe(0);
     expect(setCookies(res)).toEqual([]);
   });
 
@@ -219,6 +254,7 @@ describe("requireAuth records failed presentations (GET /api/servers)", () => {
     const res = await servers({ Cookie: "user_session=expired" });
     expect(res.status).toBe(401);
     expect(failures()).toBe(1);
+    expect(setCookies(res)).toEqual([CLEAR_USER]);
   });
 
   it("a valid user_session passes and records nothing", async () => {
@@ -226,6 +262,7 @@ describe("requireAuth records failed presentations (GET /api/servers)", () => {
     const res = await servers({ Cookie: "user_session=live" });
     expect(res.status).toBe(200);
     expect(failures()).toBe(0);
+    expect(setCookies(res)).toEqual([]);
   });
 
   it("a wrong panel_session next to a valid user_session passes, records one failure and clears the panel cookie", async () => {
@@ -285,11 +322,18 @@ describe("requireAuth on a blocked key answers 429 before any comparison", () =>
     expect(mApiKey.findUnique).not.toHaveBeenCalled();
   });
 
-  it("a valid user_session, without looking it up", async () => {
+  it("a valid user_session, without looking it up, which is cleared", async () => {
     mSession.findUnique.mockResolvedValue({ userId: "u1", expiresAt: new Date(Date.now() + 60_000) });
     const res = await servers({ Cookie: "user_session=live" });
     expect(res.status).toBe(429);
     expect(mSession.findUnique).not.toHaveBeenCalled();
+    expect(setCookies(res)).toEqual([CLEAR_USER]);
+  });
+
+  it("both carried cookies are cleared", async () => {
+    const res = await servers({ Cookie: `panel_session=${PANEL}; user_session=live` });
+    expect(res.status).toBe(429);
+    expect(setCookies(res)).toEqual([CLEAR, CLEAR_USER]);
   });
 
   it("does not record the blocked requests", async () => {
@@ -318,6 +362,43 @@ describe("stale panel_session cookie after a PANEL_TOKEN rotation", () => {
       body: JSON.stringify({ token: PANEL }),
     });
     expect(login.status).toBe(200);
+    expect(failures()).toBe(2);
+  });
+});
+
+describe("stale user_session (revoked or expired GitHub session)", () => {
+  // Minimal cookie jar: a Set-Cookie with Max-Age=0 drops the cookie.
+  const applySetCookies = (jar: Map<string, string>, res: Response) => {
+    for (const sc of setCookies(res)) {
+      const [pair, ...attrs] = sc.split(";").map((p) => p.trim());
+      const name = pair.slice(0, pair.indexOf("="));
+      if (attrs.some((a) => a.toLowerCase() === "max-age=0")) jar.delete(name);
+      else jar.set(name, pair.slice(name.length + 1));
+    }
+  };
+  const header = (jar: Map<string, string>) =>
+    [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+
+  it("the first dashboard load costs 2 failures and clears the cookie, the second sends none and costs nothing", async () => {
+    const jar = new Map([["user_session", "revoked"]]);
+    const load = () => {
+      const h: Record<string, string> = jar.size ? { Cookie: header(jar) } : {};
+      return Promise.all([
+        app.request("/api/servers", { headers: h }),
+        app.request("/api/deploys", { headers: h }),
+      ]);
+    };
+
+    const first = await load();
+    expect(first.map((r) => r.status)).toEqual([401, 401]);
+    first.forEach((r) => expect(setCookies(r)).toEqual([CLEAR_USER]));
+    expect(failures()).toBe(2);
+    first.forEach((r) => applySetCookies(jar, r));
+    expect(jar.has("user_session")).toBe(false);
+
+    const second = await load();
+    expect(second.map((r) => r.status)).toEqual([401, 401]);
+    second.forEach((r) => expect(setCookies(r)).toEqual([]));
     expect(failures()).toBe(2);
   });
 });
