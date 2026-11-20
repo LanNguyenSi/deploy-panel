@@ -32,6 +32,5 @@ server entrypoint, but wrong for a leaf crypto module that other modules
 in. A test suite that mocks Prisma/relay but leaves the env half-configured
 must be able to import `secret-crypto.ts` without the whole process
 exiting under it. The module's own doc comment (secret-crypto.ts:17-25)
-cross-references the same "no silent errors" convention this footgun note
-does: reading `process.env` directly here is a deliberate, documented
-exception, not an oversight to "fix" by switching it to `config.APP_SECRETS_KEY`.
+explains the exception itself: reading `process.env` directly here is
+deliberate, not an oversight to "fix" by switching it to `config.APP_SECRETS_KEY`.
