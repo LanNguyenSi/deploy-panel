@@ -38,6 +38,7 @@ vi.mock("../src/config/index.js", () => ({
 
 import { config } from "../src/config/index.js";
 import { createApp } from "../src/app.js";
+import { _resetLoginRateLimit } from "../src/lib/login-rate-limit.js";
 
 // base64 of "panel-token-with-pad": a token that legitimately contains "=",
 // so the two gates can be tested for agreement on it.
@@ -55,6 +56,7 @@ const check = (headers: Record<string, string>) =>
 describe("requireAuth panel-token gate (GET /api/servers)", () => {
   beforeEach(() => {
     config.PANEL_TOKEN = PADDED;
+    _resetLoginRateLimit();
   });
 
   it("correct Bearer token passes the gate", async () => {

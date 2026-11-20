@@ -2,14 +2,17 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { validatedJson } from "../lib/validator.js";
 import { randomBytes } from "node:crypto";
-import { getConnInfo } from "@hono/node-server/conninfo";
-import type { Context } from "hono";
 import {
   config,
   hasGitHubOAuthConfigured,
 } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
-import { hashApiKey } from "../middleware/auth.js";
+import {
+  CLEAR_PANEL_SESSION_COOKIE,
+  clearUserSessionCookie,
+  hashApiKey,
+  presentedUserSession,
+} from "../middleware/auth.js";
 import { parsePanelSessionCookie, safeCompare } from "../lib/panel-token.js";
 import {
   buildAuthorizationUrl,
@@ -30,8 +33,8 @@ import {
 } from "../lib/session.js";
 import {
   checkLoginBlocked,
+  loginClientKey,
   recordLoginFailure,
-  resolveLoginClientKey,
 } from "../lib/login-rate-limit.js";
 import { audit } from "../lib/audit.js";
 
@@ -40,26 +43,6 @@ export const authRouter = new Hono();
 const loginSchema = z.object({
   token: z.string().min(1).max(1024),
 });
-
-/**
- * Rate-limit key for a request: the TCP peer, or the rightmost
- * X-Forwarded-For entry when the peer is a loopback/private proxy.
- * Without a readable peer (`getConnInfo` throws when the node adapter env is
- * absent, as in direct `app.request()` calls, and the real adapter reports no
- * address once the connection has been reset) the request lands in the shared
- * "unknown" key and X-Forwarded-For is ignored. That is harmless: a reset
- * connection has no client left to answer, and nobody can pick this key on a
- * live connection.
- */
-function loginClientKey(c: Context): string {
-  let peer: string | undefined;
-  try {
-    peer = getConnInfo(c).remote.address;
-  } catch {
-    peer = undefined;
-  }
-  return resolveLoginClientKey(peer, c.req.header("X-Forwarded-For"));
-}
 
 // POST /api/auth/login: set session cookie. Failed attempts are counted per
 // client key; a key over the limit gets 429 before any token comparison.
@@ -389,19 +372,42 @@ authRouter.post(
   },
 );
 
-// GET /api/auth/check — check if authenticated
+// GET /api/auth/check: check if authenticated. Shares the failure budget of
+// /login: a blocked client key gets 429 before any comparison, and every
+// failed presentation (Bearer, then panel_session cookie) records one
+// failure, also when the other one succeeds. A failed panel_session cookie
+// is cleared, so a stale cookie after a PANEL_TOKEN rotation stops costing
+// attempts. A user_session cookie is not evaluated here (neither accepted nor
+// counted), so it is cleared only on the 429, like every carried cookie.
 authRouter.get("/check", async (c) => {
   const token = config.PANEL_TOKEN;
   if (!token) return c.json({ authenticated: true }); // no auth configured
 
+  const clientKey = loginClientKey(c);
   const panelCookie = parsePanelSessionCookie(c.req.header("Cookie"));
-  if (panelCookie !== null && safeCompare(panelCookie, token)) {
-    return c.json({ authenticated: true });
+  const limit = checkLoginBlocked(clientKey);
+  if (limit.blocked) {
+    if (panelCookie !== null) c.header("Set-Cookie", CLEAR_PANEL_SESSION_COOKIE, { append: true });
+    if (presentedUserSession(c.req.header("Cookie")).carried) {
+      c.header("Set-Cookie", clearUserSessionCookie(), { append: true });
+    }
+    c.header("Retry-After", String(limit.retryAfterSec));
+    return c.json(
+      { error: "rate_limited", message: "too many failed authentication attempts; retry later" },
+      429,
+    );
   }
 
   const auth = c.req.header("Authorization");
-  if (auth?.startsWith("Bearer ") && safeCompare(auth.slice(7), token)) {
-    return c.json({ authenticated: true });
+  if (auth?.startsWith("Bearer ")) {
+    if (safeCompare(auth.slice(7), token)) return c.json({ authenticated: true });
+    recordLoginFailure(clientKey);
+  }
+
+  if (panelCookie !== null) {
+    if (safeCompare(panelCookie, token)) return c.json({ authenticated: true });
+    recordLoginFailure(clientKey);
+    c.header("Set-Cookie", CLEAR_PANEL_SESSION_COOKIE, { append: true });
   }
 
   return c.json({ authenticated: false }, 401);

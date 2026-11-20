@@ -2,8 +2,39 @@ import { Context, Next } from "hono";
 import { createHash } from "node:crypto";
 import { config } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
-import { readUserSessionCookie, validateSession } from "../lib/session.js";
+import { buildClearUserSessionCookie, readUserSessionCookie, validateSession } from "../lib/session.js";
 import { parsePanelSessionCookie, safeCompare } from "../lib/panel-token.js";
+import { checkLoginBlocked, loginClientKey, recordLoginFailure } from "../lib/login-rate-limit.js";
+
+/** Set-Cookie value that clears `panel_session` (same attributes as logout). */
+export const CLEAR_PANEL_SESSION_COOKIE = "panel_session=; Path=/; HttpOnly; Max-Age=0";
+
+/**
+ * The `user_session` cookie a request presents. `carried` is true when the
+ * header holds one; `token` is its decoded value, or null when the value is
+ * malformed (readUserSessionCookie throws URIError on bad percent-encoding,
+ * for example `user_session=%`). A malformed cookie counts as carried but
+ * invalid, and reading it never throws.
+ */
+export function presentedUserSession(
+  cookieHeader: string | undefined,
+): { carried: boolean; token: string | null } {
+  try {
+    const token = readUserSessionCookie(cookieHeader);
+    return { carried: token !== null, token };
+  } catch {
+    return { carried: true, token: null };
+  }
+}
+
+/**
+ * Set-Cookie value that clears `user_session`, with the attributes of the
+ * cookie the OAuth callback issues (`buildUserSessionCookie`: HttpOnly,
+ * SameSite=Lax, Path=/, no Domain, Secure in production).
+ */
+export function clearUserSessionCookie(): string {
+  return `${buildClearUserSessionCookie()}${config.NODE_ENV === "production" ? "; Secure" : ""}`;
+}
 
 export function hashApiKey(key: string): string {
   return createHash("sha256").update(key).digest("hex");
@@ -25,6 +56,23 @@ export function hashApiKey(key: string): string {
  *                  userId (legacy admin keys). Admin sees all resources;
  *                  non-admin actors only see rows where Server.userId matches
  *                  their own.
+ *
+ * Failed presentations share the failure budget of POST /api/auth/login
+ * (lib/login-rate-limit.ts, same client key and constants): a blocked key
+ * gets 429 `rate_limited` with Retry-After before any credential is
+ * compared or looked up, valid ones included. Each presented credential that
+ * fails records one failure: a `dp_` key that is unknown or revoked, a
+ * non-`dp_` Bearer that is not the PANEL_TOKEN (also when a cookie then
+ * succeeds), a `panel_session` cookie that is not the PANEL_TOKEN, and a
+ * `user_session` cookie without a valid session (a malformed value
+ * included). Successful presentations
+ * never record. A failed `panel_session` or `user_session` cookie is cleared
+ * with a Set-Cookie on the response (and on the 429 when the request carried
+ * it), so a browser holding a stale cookie (a rotated PANEL_TOKEN, a revoked
+ * or expired GitHub session) stops spending the budget. Requests already
+ * past the blocked check when the limit is reached are still evaluated, so
+ * concurrent `dp_` and `user_session` lookups can each record a failure
+ * beyond the limit.
  */
 export async function requireAuth(c: Context, next: Next) {
   const token = config.PANEL_TOKEN;
@@ -36,6 +84,33 @@ export async function requireAuth(c: Context, next: Next) {
     // Dev fallback: treat as admin so local-dev tooling keeps working.
     c.set("isAdmin", true);
     return next();
+  }
+
+  // app.ts mounts this middleware on both "/api/servers" and "/api/servers/*"
+  // (likewise deploys, scheduled and api-keys), and Hono matches both patterns for the
+  // bare path, so it can run twice on one request. Once a credential has been
+  // accepted, the second run passes without evaluating the credentials again,
+  // so a failed credential next to the accepted one is recorded only once.
+  if ((c as any).get("authType") !== undefined) return next();
+
+  const clientKey = loginClientKey(c);
+  const cookie = c.req.header("Cookie");
+  const panelCookie = parsePanelSessionCookie(cookie);
+  const userSession = presentedUserSession(cookie);
+  const clearPanelCookie = () =>
+    c.header("Set-Cookie", CLEAR_PANEL_SESSION_COOKIE, { append: true });
+  const clearUserCookie = () =>
+    c.header("Set-Cookie", clearUserSessionCookie(), { append: true });
+
+  const limit = checkLoginBlocked(clientKey);
+  if (limit.blocked) {
+    if (panelCookie !== null) clearPanelCookie();
+    if (userSession.carried) clearUserCookie();
+    c.header("Retry-After", String(limit.retryAfterSec));
+    return c.json(
+      { error: "rate_limited", message: "too many failed authentication attempts; retry later" },
+      429,
+    );
   }
 
   // Check Authorization header
@@ -61,6 +136,7 @@ export async function requireAuth(c: Context, next: Next) {
         }
         return next();
       }
+      recordLoginFailure(clientKey);
       return c.json({ error: "unauthorized", message: "Invalid or revoked API key" }, 401);
     }
 
@@ -70,28 +146,33 @@ export async function requireAuth(c: Context, next: Next) {
       c.set("isAdmin", true);
       return next();
     }
+    recordLoginFailure(clientKey);
   }
 
   // Check panel_session cookie (legacy admin path — contains raw PANEL_TOKEN).
-  const cookie = c.req.header("Cookie");
-  const panelCookie = parsePanelSessionCookie(cookie);
-  if (panelCookie !== null && safeCompare(panelCookie, token)) {
-    c.set("authType", "session");
-    c.set("isAdmin", true);
-    return next();
+  if (panelCookie !== null) {
+    if (safeCompare(panelCookie, token)) {
+      c.set("authType", "session");
+      c.set("isAdmin", true);
+      return next();
+    }
+    recordLoginFailure(clientKey);
+    clearPanelCookie();
   }
 
   // Check user_session cookie (native GitHub OAuth login). Non-admin;
-  // userId comes from the session row.
-  const userSessionToken = readUserSessionCookie(cookie);
-  if (userSessionToken) {
-    const userId = await validateSession(userSessionToken);
+  // userId comes from the session row. A malformed cookie is not looked up
+  // and fails like an unknown session.
+  if (userSession.carried) {
+    const userId = userSession.token ? await validateSession(userSession.token) : null;
     if (userId) {
       c.set("authType", "session");
       c.set("userId", userId);
       c.set("isAdmin", false);
       return next();
     }
+    recordLoginFailure(clientKey);
+    clearUserCookie();
   }
 
   return c.json({ error: "unauthorized", message: "Authentication required" }, 401);

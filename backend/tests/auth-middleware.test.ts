@@ -20,6 +20,7 @@ vi.mock("../src/config/index.js", () => ({
 
 import { prisma } from "../src/lib/prisma.js";
 import { requireAuth } from "../src/middleware/auth.js";
+import { _resetLoginRateLimit } from "../src/lib/login-rate-limit.js";
 
 const findUnique = prisma.apiKey.findUnique as unknown as ReturnType<typeof vi.fn>;
 
@@ -33,6 +34,7 @@ function probeApp() {
 describe("requireAuth — ApiKey revoked handling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    _resetLoginRateLimit();
   });
 
   it("rejects a revoked dp_ API key with 401", async () => {
