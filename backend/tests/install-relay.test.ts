@@ -13,7 +13,8 @@ import {
 const scriptFor = (removeStep = "") =>
   `set -euo pipefail; f=$(mktemp); trap 'rm -f "$f"' EXIT; ` +
   `curl -fsSL ${INSTALL_SCRIPT_URL} -o "$f" || exit 97; ` +
-  `${removeStep}sudo -E bash "$f"`;
+  `${removeStep}sudo -E bash "$f" </dev/null || ` +
+  `{ rc=$?; [ "$rc" -ne 97 ] || rc=1; exit "$rc"; }`;
 // The script reaches the remote shell as one single-quoted word.
 const quoted = (script: string) => `'${script.replace(/'/g, `'"'"'`)}'`;
 
@@ -102,7 +103,19 @@ describe("buildInstallCommand", () => {
   it("downloads to a temp file that is removed on every exit, then runs that file as root", () => {
     const cmd = buildInstallCommand({});
     expect(cmd).toContain(`f=$(mktemp); trap 'rm -f "$f"' EXIT;`.replace(/'/g, `'"'"'`));
-    expect(cmd.endsWith(`sudo -E bash "$f"'`)).toBe(true);
+    expect(cmd.endsWith(`sudo -E bash "$f" </dev/null || { rc=$?; [ "$rc" -ne 97 ] || rc=1; exit "$rc"; }'`)).toBe(true);
+  });
+
+  it("runs the installer with stdin from /dev/null and never lets it exit 97", () => {
+    const cmd = buildInstallCommand({});
+    // The installer must not read the ssh channel's stdin.
+    expect(cmd).toContain(`sudo -E bash "$f" </dev/null`);
+    // Only the download step may end the command with 97: an installer
+    // exit of 97 is rewritten to 1 (all other codes pass through).
+    expect(cmd).toContain(`rc=$?; [ "$rc" -ne 97 ] || rc=1; exit "$rc";`);
+    expect(cmd.indexOf('sudo -E bash "$f"')).toBeLessThan(cmd.indexOf("rc=$?"));
+    // The only literal 97 outside the rewrite is the download's own exit.
+    expect(cmd.match(/exit 97/g)).toHaveLength(1);
   });
 
   it("adds no removal step unless asked", () => {
@@ -458,6 +471,14 @@ describe("classifyInstallExit", () => {
     expect(classifyInstallExit(97, "   ")?.message).toBe("could not download the installer");
   });
 
+  it("carries the stderr line into the installer_failed message", () => {
+    expect(classifyInstallExit(1, "some line")).toEqual({
+      kind: "installer_failed",
+      message: "the installer exited with code 1: some line",
+    });
+    expect(classifyInstallExit(5, "")?.message).toBe("the installer exited with code 5");
+  });
+
   it("maps any other non-zero exit, including -1, to installer_failed with the code", () => {
     expect(classifyInstallExit(1)).toEqual({
       kind: "installer_failed",
@@ -472,11 +493,15 @@ describe("classifyInstallExit", () => {
   });
 
   it("sanitises the stderr line: escapes and control characters out, length bounded", () => {
-    const dirty = "\x1b[31mcurl: (6) Could not resolve host\x1b[0m\r\x07\ttail";
+    const dirty = "\x1b[31mcurl: (6) Could not resolve host\x1b[0m\r\x07\ttail\x7fend";
     const res = classifyInstallExit(97, dirty);
-    expect(res?.message).toBe("could not download the installer: curl: (6) Could not resolve host   tail");
-    const long = classifyInstallExit(97, "x".repeat(5000));
-    expect(long?.message.length).toBeLessThan(260);
-    expect(long?.message.endsWith("…")).toBe(true);
+    expect(res?.message).toBe("could not download the installer: curl: (6) Could not resolve host   tail end");
+    expect(res?.message).not.toContain("\x7f");
+    // The cap is exactly 200 characters of the line plus an ellipsis.
+    const prefix = "could not download the installer: ";
+    expect(classifyInstallExit(97, "x".repeat(5000))?.message).toBe(`${prefix}${"x".repeat(200)}…`);
+    // A line of exactly 200 characters is kept whole, 201 is cut.
+    expect(classifyInstallExit(97, "y".repeat(200))?.message).toBe(`${prefix}${"y".repeat(200)}`);
+    expect(classifyInstallExit(97, "z".repeat(201))?.message).toBe(`${prefix}${"z".repeat(200)}…`);
   });
 });

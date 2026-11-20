@@ -98,7 +98,11 @@ const SAFE_ABSOLUTE_PATH = /^\/[A-Za-z0-9._/-]*$/;
  *   f=$(mktemp); trap 'rm -f "$f"' EXIT
  *   curl -fsSL <url> -o "$f" || exit 97
  *   [sudo rm -f <removeBeforeRun>]
- *   sudo -E bash "$f"
+ *   sudo -E bash "$f" </dev/null || { rc=$?; [ "$rc" -ne 97 ] || rc=1; exit "$rc"; }
+ *
+ * The installer reads no stdin (the ssh channel's stdin is closed off), and
+ * an installer exit of 97 is rewritten to 1 so that 97 can only come from
+ * the download step.
  *
  * User-supplied env values are single-quote-escaped so no value can
  * break out of its quoting. The script is a FIXED string: the installer
@@ -154,7 +158,8 @@ export function buildInstallCommand(
   const script =
     `set -euo pipefail; f=$(mktemp); trap 'rm -f "$f"' EXIT; ` +
     `curl -fsSL ${INSTALL_SCRIPT_URL} -o "$f" || exit ${INSTALLER_FETCH_FAILED_EXIT_CODE}; ` +
-    `${removeStep}sudo -E bash "$f"`;
+    `${removeStep}sudo -E bash "$f" </dev/null || ` +
+    `{ rc=$?; [ "$rc" -ne ${INSTALLER_FETCH_FAILED_EXIT_CODE} ] || rc=1; exit "$rc"; }`;
   return `${envPrefix}bash -c ${shellEscape(script)}`;
 }
 

@@ -266,6 +266,7 @@ describe("POST /servers/install-relay (stream): exit code of the install command
     expect(command).not.toContain("| sudo");
     expect(command).not.toContain("sudo rm");
     expect(command.indexOf("curl -fsSL")).toBeLessThan(command.indexOf('sudo -E bash "$f"'));
+    expect(command).toContain('sudo -E bash "$f" </dev/null || ');
   });
 
   it("empty output + exit 97: installer_fetch_failed with curl's line, no row", async () => {
@@ -313,6 +314,23 @@ describe("POST /servers/install-relay (stream): exit code of the install command
     expect(errorEvents(events).map((e) => e.data.kind)).toEqual(["timeout"]);
     expect(mServer.create).not.toHaveBeenCalled();
     expect(auditActions()).toEqual([["server.install-relay.failed", "timeout"]]);
+  });
+
+  it("only the last non-empty stderr line reaches the message", async () => {
+    mockSsh({ stderr: `warming up\n${FETCH_LINE}\n\n`, exitCode: 97 });
+    const events = await run();
+    expect(errorEvents(events)[0]?.data.message).toBe(`could not download the installer: ${FETCH_LINE}`);
+  });
+
+  it("installer_failed carries the last stderr line too", async () => {
+    mockSsh({ stderr: "warming up\nboom: disk full\n", exitCode: 1 });
+    const events = await run();
+    expect(errorEvents(events)).toEqual([
+      {
+        event: "error",
+        data: { kind: "installer_failed", message: "the installer exited with code 1: boom: disk full" },
+      },
+    ]);
   });
 
   it("exit 0 + valid output is unchanged: the row is created and done is sent", async () => {

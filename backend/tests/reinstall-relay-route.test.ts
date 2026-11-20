@@ -367,6 +367,7 @@ describe("POST /servers/:id/install-relay (re-install)", () => {
     expect(removeAt).toBeGreaterThan(fetchAt);
     expect(runAt).toBeGreaterThan(removeAt);
     expect(command).toContain("|| exit 97;");
+    expect(command).toContain('sudo -E bash "$f" </dev/null || ');
   });
 
   it("rotateToken=true follows a stored relayDir for the removal", async () => {
@@ -656,6 +657,17 @@ describe("POST /servers/:id/install-relay (re-install): exit code of the install
     mockSshOk({ stdout: "", stderr: `warming up\n${FETCH_LINE}\n\n`, exitCode: 97 });
     const events = await run();
     expect(errorEvents(events)[0]?.data.message).toBe(`could not download the installer: ${FETCH_LINE}`);
+  });
+
+  it("installer_failed carries the last stderr line too", async () => {
+    mockSshOk({ stdout: "", stderr: "warming up\nboom: disk full\n", exitCode: 1 });
+    const events = await run();
+    expect(errorEvents(events)).toEqual([
+      {
+        event: "error",
+        data: { kind: "installer_failed", message: "the installer exited with code 1: boom: disk full" },
+      },
+    ]);
   });
 
   it("a legacy row still gets its observed fingerprint pinned on a failed install, and nothing else", async () => {
