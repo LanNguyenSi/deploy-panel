@@ -42,6 +42,13 @@ describe("renovate regex manager for the relay installer pin", () => {
     manager = loadManager();
   });
 
+  it("pins both patterns literally, so a loosened file pattern or tag regex fails here", () => {
+    expect(manager.managerFilePatterns).toEqual(["/^backend/src/services/install-relay\\.ts$/"]);
+    expect(manager.matchStrings).toEqual([
+      "https://raw\\.githubusercontent\\.com/LanNguyenSi/agent-relay/refs/tags/(?<currentValue>v\\d+\\.\\d+\\.\\d+)/install\\.sh",
+    ]);
+  });
+
   it("targets exactly the install-relay source file and the github-tags datasource", () => {
     expect(manager.managerFilePatterns).toHaveLength(1);
     const filePattern = patternToRegExp(manager.managerFilePatterns![0]);
