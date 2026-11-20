@@ -87,7 +87,7 @@ export async function requireAuth(c: Context, next: Next) {
   }
 
   // app.ts mounts this middleware on both "/api/servers" and "/api/servers/*"
-  // (likewise deploys and scheduled), and Hono matches both patterns for the
+  // (likewise deploys, scheduled and api-keys), and Hono matches both patterns for the
   // bare path, so it can run twice on one request. Once a credential has been
   // accepted, the second run passes without evaluating the credentials again,
   // so a failed credential next to the accepted one is recorded only once.
