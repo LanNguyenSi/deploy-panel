@@ -4,6 +4,10 @@ import { config } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
 import { readUserSessionCookie, validateSession } from "../lib/session.js";
 import { parsePanelSessionCookie, safeCompare } from "../lib/panel-token.js";
+import { checkLoginBlocked, loginClientKey, recordLoginFailure } from "../lib/login-rate-limit.js";
+
+/** Set-Cookie value that clears `panel_session` (same attributes as logout). */
+export const CLEAR_PANEL_SESSION_COOKIE = "panel_session=; Path=/; HttpOnly; Max-Age=0";
 
 export function hashApiKey(key: string): string {
   return createHash("sha256").update(key).digest("hex");
@@ -24,7 +28,18 @@ export function hashApiKey(key: string): string {
  *   isAdmin      — true for panel/session auth AND for ApiKey rows without
  *                  userId (legacy admin keys). Admin sees all resources;
  *                  non-admin actors only see rows where Server.userId matches
- *                  their own.
+ *                  their own. *
+ * Failed presentations share the failure budget of POST /api/auth/login
+ * (lib/login-rate-limit.ts, same client key and constants): a blocked key
+ * gets 429 `rate_limited` with Retry-After before any credential is
+ * compared or looked up, valid ones included. Each presented credential that
+ * fails records one failure: a `dp_` key that is unknown or revoked, a
+ * non-`dp_` Bearer that is not the PANEL_TOKEN (also when a cookie then
+ * succeeds), a `panel_session` cookie that is not the PANEL_TOKEN, and a
+ * `user_session` cookie without a valid session. Successful presentations
+ * never record. A failed `panel_session` cookie is cleared with a
+ * Set-Cookie on the response (and on the 429), so a browser holding a stale
+ * cookie after a PANEL_TOKEN rotation stops spending the budget.
  */
 export async function requireAuth(c: Context, next: Next) {
   const token = config.PANEL_TOKEN;
@@ -36,6 +51,29 @@ export async function requireAuth(c: Context, next: Next) {
     // Dev fallback: treat as admin so local-dev tooling keeps working.
     c.set("isAdmin", true);
     return next();
+  }
+
+  // app.ts mounts this middleware on both "/api/servers" and "/api/servers/*"
+  // (likewise deploys and scheduled), and Hono matches both patterns for the
+  // bare path, so it can run twice on one request. Once a credential has been
+  // accepted, the second run passes without evaluating the credentials again,
+  // so a failed credential next to the accepted one is recorded only once.
+  if ((c as any).get("authType") !== undefined) return next();
+
+  const clientKey = loginClientKey(c);
+  const cookie = c.req.header("Cookie");
+  const panelCookie = parsePanelSessionCookie(cookie);
+  const clearPanelCookie = () =>
+    c.header("Set-Cookie", CLEAR_PANEL_SESSION_COOKIE, { append: true });
+
+  const limit = checkLoginBlocked(clientKey);
+  if (limit.blocked) {
+    if (panelCookie !== null) clearPanelCookie();
+    c.header("Retry-After", String(limit.retryAfterSec));
+    return c.json(
+      { error: "rate_limited", message: "too many failed authentication attempts; retry later" },
+      429,
+    );
   }
 
   // Check Authorization header
@@ -61,6 +99,7 @@ export async function requireAuth(c: Context, next: Next) {
         }
         return next();
       }
+      recordLoginFailure(clientKey);
       return c.json({ error: "unauthorized", message: "Invalid or revoked API key" }, 401);
     }
 
@@ -70,15 +109,18 @@ export async function requireAuth(c: Context, next: Next) {
       c.set("isAdmin", true);
       return next();
     }
+    recordLoginFailure(clientKey);
   }
 
   // Check panel_session cookie (legacy admin path — contains raw PANEL_TOKEN).
-  const cookie = c.req.header("Cookie");
-  const panelCookie = parsePanelSessionCookie(cookie);
-  if (panelCookie !== null && safeCompare(panelCookie, token)) {
-    c.set("authType", "session");
-    c.set("isAdmin", true);
-    return next();
+  if (panelCookie !== null) {
+    if (safeCompare(panelCookie, token)) {
+      c.set("authType", "session");
+      c.set("isAdmin", true);
+      return next();
+    }
+    recordLoginFailure(clientKey);
+    clearPanelCookie();
   }
 
   // Check user_session cookie (native GitHub OAuth login). Non-admin;
@@ -92,6 +134,7 @@ export async function requireAuth(c: Context, next: Next) {
       c.set("isAdmin", false);
       return next();
     }
+    recordLoginFailure(clientKey);
   }
 
   return c.json({ error: "unauthorized", message: "Authentication required" }, 401);

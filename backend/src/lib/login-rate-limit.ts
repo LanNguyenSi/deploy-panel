@@ -1,11 +1,13 @@
 /**
- * Failed-login limiter for `POST /api/auth/login`.
+ * Failed-credential limiter for `POST /api/auth/login`, `GET /api/auth/check`
+ * and the `requireAuth` middleware.
  *
  * In-memory sliding window (single instance, same style as the probe quota
- * in services/probe-guard.ts): every failed token comparison is recorded
- * against a client key, and once a key holds LOGIN_RATE_MAX failures inside
- * LOGIN_RATE_WINDOW_MS the endpoint answers 429 before it compares anything.
- * Successful logins are never recorded.
+ * in services/probe-guard.ts): every failed credential presentation is
+ * recorded against a client key, and once a key holds LOGIN_RATE_MAX
+ * failures inside LOGIN_RATE_WINDOW_MS those paths answer 429 before they
+ * compare anything. Successful presentations are never recorded. All three
+ * paths share one budget per key.
  *
  * Client key: the TCP peer address. In production the backend sits behind
  * Traefik, so the peer is the proxy; only when the peer is a loopback or
@@ -21,6 +23,8 @@
  * last failure is evicted, so the limiter never refuses a new client.
  */
 import { BlockList, isIP, isIPv4, isIPv6 } from "node:net";
+import { getConnInfo } from "@hono/node-server/conninfo";
+import type { Context } from "hono";
 
 export const LOGIN_RATE_WINDOW_MS = 15 * 60 * 1000;
 export const LOGIN_RATE_MAX = 10;
@@ -114,6 +118,26 @@ export function resolveLoginClientKey(
   return bucketKey(canonicalAddress(rightmost));
 }
 
+/**
+ * Rate-limit key for a request: the TCP peer, or the rightmost
+ * X-Forwarded-For entry when the peer is a loopback/private proxy.
+ * Without a readable peer (`getConnInfo` throws when the node adapter env is
+ * absent, as in direct `app.request()` calls, and the real adapter reports no
+ * address once the connection has been reset) the request lands in the shared
+ * "unknown" key and X-Forwarded-For is ignored. That is harmless: a reset
+ * connection has no client left to answer, and nobody can pick this key on a
+ * live connection.
+ */
+export function loginClientKey(c: Context): string {
+  let peer: string | undefined;
+  try {
+    peer = getConnInfo(c).remote.address;
+  } catch {
+    peer = undefined;
+  }
+  return resolveLoginClientKey(peer, c.req.header("X-Forwarded-For"));
+}
+
 function pruneHistory(now: number): void {
   const cutoff = now - LOGIN_RATE_WINDOW_MS;
   for (const [key, stamps] of failureHistory) {
@@ -160,7 +184,7 @@ export function checkLoginBlocked(
   return { blocked: false, retryAfterSec: 0 };
 }
 
-/** Record one failed login attempt for `key`. */
+/** Record one failed credential presentation for `key`. */
 export function recordLoginFailure(key: string, now: number = Date.now()): void {
   if (!failureHistory.has(key) && failureHistory.size >= LOGIN_RATE_MAX_KEYS) {
     pruneHistory(now);
@@ -186,4 +210,9 @@ export function _loginRateLimitHas(key: string): boolean {
 /** Test-only: number of keys currently tracked. */
 export function _loginRateLimitSize(): number {
   return failureHistory.size;
+}
+
+/** Test-only: number of failures recorded for `key` (expired ones included until the next check prunes them). */
+export function _loginFailureCount(key: string): number {
+  return failureHistory.get(key)?.length ?? 0;
 }

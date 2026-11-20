@@ -36,6 +36,7 @@ vi.mock("../src/config/index.js", () => ({
 
 import { createHash } from "node:crypto";
 import { authRouter } from "../src/routes/auth.js";
+import { _resetLoginRateLimit } from "../src/lib/login-rate-limit.js";
 
 const TOKEN = "panel-token-must-be-16chars";
 // Same string length as TOKEN (27 chars) but a different UTF-8 byte length
@@ -58,6 +59,7 @@ function expectDigests(calls: number) {
 
 describe("GET /auth/check — constant-time credential comparison", () => {
   beforeEach(() => {
+    _resetLoginRateLimit();
     vi.mocked(createHash).mockClear();
   });
 
@@ -125,6 +127,10 @@ describe("GET /auth/check — constant-time credential comparison", () => {
 });
 
 describe("POST /auth/login — same helper", () => {
+  beforeEach(() => {
+    _resetLoginRateLimit();
+  });
+
   it("rejects a multi-byte token (equal string length, different byte length) with 401, not 500", async () => {
     const res = await authRouter.request("/login", {
       method: "POST",
