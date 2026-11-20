@@ -15,9 +15,18 @@
  * URL the installer is pulled from. Hardcoded (not user-configurable
  * via request body) so a malicious caller cannot redirect the install
  * to a lookalike script.
+ *
+ * Pinned to an agent-relay release tag instead of the `main` branch, so
+ * a push to `main` cannot change what runs as root on a VPS. The
+ * `refs/tags/` form means a branch that happens to share the tag's name
+ * cannot shadow it. Renovate proposes bumps through the regex manager
+ * in `renovate.json`, which reads the tag out of the line below: keep
+ * the URL on one line and in this shape. A git tag can still be moved
+ * by an agent-relay admin, and the installer itself pulls the relay
+ * image by `:latest`.
  */
 export const INSTALL_SCRIPT_URL =
-  "https://raw.githubusercontent.com/LanNguyenSi/agent-relay/main/install.sh";
+  "https://raw.githubusercontent.com/LanNguyenSi/agent-relay/refs/tags/v0.9.0/install.sh";
 
 export type RelayMode = "auto" | "greenfield" | "existing-traefik" | "port-only";
 
@@ -54,11 +63,15 @@ function shellEscape(value: string): string {
 /**
  * Build the command that runs on the VPS. Structured as:
  *
- *   env VAR='…' VAR='…' bash -c 'curl … | sudo -E bash'
+ *   env VAR='…' VAR='…' bash -c 'set -o pipefail; curl -fsSL … | sudo -E bash'
  *
  * User-supplied env values are single-quote-escaped so no value can
  * break out of its quoting. The inner bash -c runs a FIXED string —
  * the installer URL is compile-time and has no user-controlled parts.
+ *
+ * `curl -f` plus `pipefail` make a 404 or a network error end the
+ * install with a non-zero exit instead of piping an error page (or
+ * nothing) into a root shell.
  *
  * `sudo -E bash` preserves the env vars we set; install.sh reads
  * RELAY_DOMAIN, TRAEFIK_EMAIL, APPS_DIR from its process env.
@@ -93,7 +106,7 @@ export function buildInstallCommand(env: InstallEnvVars): string {
   // INSTALL_SCRIPT_URL is a compile-time constant — not exposed to the
   // caller — so no interpolation risk here. The `|` pipe is shell
   // metasyntax by design; that's why we use bash -c explicitly.
-  return `${envPrefix}bash -c 'curl -sSL ${INSTALL_SCRIPT_URL} | sudo -E bash'`;
+  return `${envPrefix}bash -c 'set -o pipefail; curl -fsSL ${INSTALL_SCRIPT_URL} | sudo -E bash'`;
 }
 
 /**

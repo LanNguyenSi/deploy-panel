@@ -276,7 +276,7 @@ Non-admin actors (GitHub sessions and user-bound API keys) see only the servers 
 
 ### Relay install
 
-The install wizard sends the SSH password or private key to the backend with the request; the backend uses it for that connection and does not store it. On the target, the wizard runs agent-relay's `install.sh` from that repository's `main` branch with `sudo -E bash`. Details: [okf/vps-onboarding-relay-provisioning.md](okf/vps-onboarding-relay-provisioning.md).
+The install wizard sends the SSH password or private key to the backend with the request; the backend uses it for that connection and does not store it. On the target, the wizard runs agent-relay's `install.sh` with `sudo -E bash`, fetched from a release tag of that repository (`INSTALL_SCRIPT_URL` in `backend/src/services/install-relay.ts`, currently `v0.9.0`), not from `main`, and the fetch fails closed (`curl -f` with `pipefail`), so a missing tag or a network error ends the install instead of running an error page. Renovate proposes a bump of the tag through the regex manager in `renovate.json`; a bump of a `0.x` minor waits for approval on the Dependency Dashboard. Not covered: a git tag can be moved by an agent-relay maintainer (only a commit SHA or a checksum would pin the content), and the installer itself pulls the relay image as `:latest`. Details: [okf/vps-onboarding-relay-provisioning.md](okf/vps-onboarding-relay-provisioning.md).
 
 ## Production checklist
 

