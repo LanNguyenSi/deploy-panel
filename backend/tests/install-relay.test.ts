@@ -1,14 +1,27 @@
 import { describe, expect, it } from "vitest";
 import {
   buildInstallCommand,
+  classifyInstallExit,
   parseInstallOutput,
   INSTALL_SCRIPT_URL,
+  INSTALLER_FETCH_FAILED_EXIT_CODE,
 } from "../src/services/install-relay.js";
+
+// The fixed script every command carries: download to a temp file (exit 97
+// when that fails), then run it as root. `removeStep` is empty unless the
+// caller asked for a removal.
+const scriptFor = (removeStep = "") =>
+  `set -euo pipefail; f=$(mktemp); trap 'rm -f "$f"' EXIT; ` +
+  `curl -fsSL ${INSTALL_SCRIPT_URL} -o "$f" || exit 97; ` +
+  `${removeStep}sudo -E bash "$f" </dev/null || ` +
+  `{ rc=$?; [ "$rc" -ne 97 ] || rc=1; exit "$rc"; }`;
+// The script reaches the remote shell as one single-quoted word.
+const quoted = (script: string) => `'${script.replace(/'/g, `'"'"'`)}'`;
 
 describe("buildInstallCommand", () => {
   it("produces a bare bash -c invocation when no env vars are set", () => {
     const cmd = buildInstallCommand({});
-    expect(cmd).toBe(`bash -c 'set -o pipefail; curl -fsSL ${INSTALL_SCRIPT_URL} | sudo -E bash'`);
+    expect(cmd).toBe(`bash -c ${quoted(scriptFor())}`);
   });
 
   it("prefixes single-quoted env assignments when values are given", () => {
@@ -19,7 +32,7 @@ describe("buildInstallCommand", () => {
     });
     expect(cmd).toBe(
       `env RELAY_DOMAIN='relay.example.com' TRAEFIK_EMAIL='ops@example.com' APPS_DIR='/root/git' ` +
-        `bash -c 'set -o pipefail; curl -fsSL ${INSTALL_SCRIPT_URL} | sudo -E bash'`,
+        `bash -c ${quoted(scriptFor())}`,
     );
   });
 
@@ -37,7 +50,7 @@ describe("buildInstallCommand", () => {
     // Proof: the whole command still has exactly one `bash -c '…'`
     // quoted region AFTER the env prefix, meaning the apostrophe
     // injection stays inside the env-value quoting.
-    expect(cmd.endsWith(`bash -c 'set -o pipefail; curl -fsSL ${INSTALL_SCRIPT_URL} | sudo -E bash'`)).toBe(true);
+    expect(cmd.endsWith(`bash -c ${quoted(scriptFor())}`)).toBe(true);
   });
 
   it("accepts shell metacharacters in values without escaping them at the metachar level", () => {
@@ -69,14 +82,62 @@ describe("buildInstallCommand", () => {
     expect(cmd).toContain(INSTALL_SCRIPT_URL);
   });
 
-  it("fails closed: pipefail and curl -f keep a 404 or a network error from reaching the root shell", () => {
+  it("fails closed: set -e and curl -f keep a 404 or a network error from reaching the root shell", () => {
     const cmd = buildInstallCommand({});
-    expect(cmd).toContain("set -o pipefail;");
+    expect(cmd).toContain("set -euo pipefail;");
     // -f: an HTTP error status is a curl failure, not a body to execute.
     expect(cmd).toMatch(/curl -[a-zA-Z]*f[a-zA-Z]* /);
-    // pipefail must be set before the pipeline runs.
-    expect(cmd.indexOf("set -o pipefail")).toBeLessThan(cmd.indexOf("curl"));
-    expect(cmd.indexOf("curl")).toBeLessThan(cmd.indexOf("| sudo -E bash"));
+    // Nothing is piped into the root shell.
+    expect(cmd).not.toContain("| sudo");
+    // set -e must be in force before the download, and the download must
+    // end the script before the root shell is reached.
+    expect(cmd.indexOf("set -euo pipefail")).toBeLessThan(cmd.indexOf("curl"));
+    expect(cmd.indexOf("curl")).toBeLessThan(cmd.indexOf("sudo -E bash"));
+    expect(cmd).toContain(`-o "$f" || exit ${INSTALLER_FETCH_FAILED_EXIT_CODE};`);
+  });
+
+  it("uses exit code 97 for a failed download", () => {
+    expect(INSTALLER_FETCH_FAILED_EXIT_CODE).toBe(97);
+  });
+
+  it("downloads to a temp file that is removed when the command exits, then runs that file as root", () => {
+    const cmd = buildInstallCommand({});
+    expect(cmd).toContain(`f=$(mktemp); trap 'rm -f "$f"' EXIT;`.replace(/'/g, `'"'"'`));
+    expect(cmd.endsWith(`sudo -E bash "$f" </dev/null || { rc=$?; [ "$rc" -ne 97 ] || rc=1; exit "$rc"; }'`)).toBe(true);
+  });
+
+  it("runs the installer with stdin from /dev/null and never lets it exit 97", () => {
+    const cmd = buildInstallCommand({});
+    // The installer must not read the ssh channel's stdin.
+    expect(cmd).toContain(`sudo -E bash "$f" </dev/null`);
+    // Only the download step may end the command with 97: an installer
+    // exit of 97 is rewritten to 1 (all other codes pass through).
+    expect(cmd).toContain(`rc=$?; [ "$rc" -ne 97 ] || rc=1; exit "$rc";`);
+    expect(cmd.indexOf('sudo -E bash "$f"')).toBeLessThan(cmd.indexOf("rc=$?"));
+    // The only literal 97 outside the rewrite is the download's own exit.
+    expect(cmd.match(/exit 97/g)).toHaveLength(1);
+  });
+
+  it("adds no removal step unless asked", () => {
+    expect(buildInstallCommand({})).not.toContain("rm -f /");
+    expect(buildInstallCommand({}, {})).not.toContain("sudo rm");
+  });
+
+  it("puts the requested removal after the download and before the installer runs", () => {
+    const cmd = buildInstallCommand({}, { removeBeforeRun: "/opt/agent-relay/.env" });
+    expect(cmd).toBe(`bash -c ${quoted(scriptFor("sudo rm -f /opt/agent-relay/.env; "))}`);
+    const fetchAt = cmd.indexOf("curl -fsSL");
+    const removeAt = cmd.indexOf("sudo rm -f /opt/agent-relay/.env");
+    const runAt = cmd.indexOf('sudo -E bash "$f"');
+    expect(fetchAt).toBeGreaterThan(-1);
+    expect(removeAt).toBeGreaterThan(fetchAt);
+    expect(runAt).toBeGreaterThan(removeAt);
+  });
+
+  it("refuses a removal path that is not a plain absolute path", () => {
+    for (const bad of ["relative/.env", "/opt/a b/.env", "/opt/x;reboot/.env", "/opt/../etc/.env", "/opt/$(id)/.env", "/opt/a'b/.env"]) {
+      expect(() => buildInstallCommand({}, { removeBeforeRun: bad })).toThrow(/unsafe path/);
+    }
   });
 
   it("emits the v0.2.0 env vars when they are supplied", () => {
@@ -386,5 +447,61 @@ describe("parseInstallOutput", () => {
       expect(r.value.relayUrl).toBe("http://147.93.126.206:8222");
       expect(r.value.relayToken).toBe("port-only-loop-tok-111");
     }
+  });
+});
+
+describe("classifyInstallExit", () => {
+  it("returns null for exit 0 (the caller parses the output)", () => {
+    expect(classifyInstallExit(0)).toBeNull();
+    expect(classifyInstallExit(0, "curl: (22) The requested URL returned error: 404")).toBeNull();
+  });
+
+  it("maps exit 97 to installer_fetch_failed and carries curl's line", () => {
+    expect(classifyInstallExit(97, "curl: (22) The requested URL returned error: 404")).toEqual({
+      kind: "installer_fetch_failed",
+      message: "could not download the installer: curl: (22) The requested URL returned error: 404",
+    });
+  });
+
+  it("maps exit 97 without a stderr line to installer_fetch_failed with a plain message", () => {
+    expect(classifyInstallExit(97)).toEqual({
+      kind: "installer_fetch_failed",
+      message: "could not download the installer",
+    });
+    expect(classifyInstallExit(97, "   ")?.message).toBe("could not download the installer");
+  });
+
+  it("carries the stderr line into the installer_failed message", () => {
+    expect(classifyInstallExit(1, "some line")).toEqual({
+      kind: "installer_failed",
+      message: "the installer exited with code 1: some line",
+    });
+    expect(classifyInstallExit(5, "")?.message).toBe("the installer exited with code 5");
+  });
+
+  it("maps any other non-zero exit, including -1, to installer_failed with the code", () => {
+    expect(classifyInstallExit(1)).toEqual({
+      kind: "installer_failed",
+      message: "the installer exited with code 1",
+    });
+    expect(classifyInstallExit(96)?.kind).toBe("installer_failed");
+    expect(classifyInstallExit(98)?.kind).toBe("installer_failed");
+    expect(classifyInstallExit(-1)).toEqual({
+      kind: "installer_failed",
+      message: "the installer exited with code -1",
+    });
+  });
+
+  it("sanitises the stderr line: escapes and control characters out, length bounded", () => {
+    const dirty = "\x1b[31mcurl: (6) Could not resolve host\x1b[0m\r\x07\ttail\x7fend";
+    const res = classifyInstallExit(97, dirty);
+    expect(res?.message).toBe("could not download the installer: curl: (6) Could not resolve host   tail end");
+    expect(res?.message).not.toContain("\x7f");
+    // The cap is exactly 200 characters of the line plus an ellipsis.
+    const prefix = "could not download the installer: ";
+    expect(classifyInstallExit(97, "x".repeat(5000))?.message).toBe(`${prefix}${"x".repeat(200)}…`);
+    // A line of exactly 200 characters is kept whole, 201 is cut.
+    expect(classifyInstallExit(97, "y".repeat(200))?.message).toBe(`${prefix}${"y".repeat(200)}`);
+    expect(classifyInstallExit(97, "z".repeat(201))?.message).toBe(`${prefix}${"z".repeat(200)}…`);
   });
 });

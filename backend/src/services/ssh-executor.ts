@@ -291,8 +291,8 @@ function makeLineStream(hook?: (line: string) => void): (chunk: Buffer) => void 
  * compose commands from user input (e.g. the install.sh URL + env
  * vars) MUST do it via argv-style helpers and never via template
  * strings on user-controlled values. The relay-install route uses a
- * hardcoded curl | sudo bash invocation with env vars validated
- * against a strict zod schema.
+ * fixed script (download the installer to a temp file, then run it with
+ * sudo) with env vars validated against a strict zod schema.
  */
 export async function executeSshCommand(
   opts: ExecuteSshCommandOptions,
