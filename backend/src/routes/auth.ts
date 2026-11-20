@@ -7,7 +7,12 @@ import {
   hasGitHubOAuthConfigured,
 } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
-import { CLEAR_PANEL_SESSION_COOKIE, clearUserSessionCookie, hashApiKey } from "../middleware/auth.js";
+import {
+  CLEAR_PANEL_SESSION_COOKIE,
+  clearUserSessionCookie,
+  hashApiKey,
+  presentedUserSession,
+} from "../middleware/auth.js";
 import { parsePanelSessionCookie, safeCompare } from "../lib/panel-token.js";
 import {
   buildAuthorizationUrl,
@@ -383,7 +388,7 @@ authRouter.get("/check", async (c) => {
   const limit = checkLoginBlocked(clientKey);
   if (limit.blocked) {
     if (panelCookie !== null) c.header("Set-Cookie", CLEAR_PANEL_SESSION_COOKIE, { append: true });
-    if (readUserSessionCookie(c.req.header("Cookie")) !== null) {
+    if (presentedUserSession(c.req.header("Cookie")).carried) {
       c.header("Set-Cookie", clearUserSessionCookie(), { append: true });
     }
     c.header("Retry-After", String(limit.retryAfterSec));

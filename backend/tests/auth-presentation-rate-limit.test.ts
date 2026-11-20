@@ -403,6 +403,109 @@ describe("stale user_session (revoked or expired GitHub session)", () => {
   });
 });
 
+describe("client key: failures are counted per client, not globally", () => {
+  // The node adapter's socket, as login-rate-limit.test.ts fakes it.
+  const nodeEnv = (remoteAddress: string) => ({ incoming: { socket: { remoteAddress } } });
+  const A = "203.0.113.10";
+  const B = "198.51.100.20";
+
+  it("requireAuth: 10 failures from A block A only, B with a valid credential passes", async () => {
+    for (let i = 0; i < LOGIN_RATE_MAX; i++) {
+      const res = await app.request("/api/servers", { headers: { Authorization: "Bearer wrong" } }, nodeEnv(A));
+      expect(res.status).toBe(401);
+    }
+    expect(_loginFailureCount(A)).toBe(LOGIN_RATE_MAX);
+    expect(failures()).toBe(0);
+    const b = await app.request("/api/servers", { headers: { Authorization: `Bearer ${PANEL}` } }, nodeEnv(B));
+    expect(b.status).toBe(200);
+    const a = await app.request("/api/servers", { headers: { Authorization: `Bearer ${PANEL}` } }, nodeEnv(A));
+    expect(a.status).toBe(429);
+  });
+
+  it("/check: 10 failures from A block A only, B with a valid credential passes", async () => {
+    for (let i = 0; i < LOGIN_RATE_MAX; i++) {
+      const res = await app.request("/api/auth/check", { headers: { Cookie: "panel_session=wrong" } }, nodeEnv(A));
+      expect(res.status).toBe(401);
+    }
+    expect(_loginFailureCount(A)).toBe(LOGIN_RATE_MAX);
+    expect(failures()).toBe(0);
+    const b = await app.request("/api/auth/check", { headers: { Cookie: `panel_session=${PANEL}` } }, nodeEnv(B));
+    expect(b.status).toBe(200);
+    const a = await app.request("/api/auth/check", { headers: { Cookie: `panel_session=${PANEL}` } }, nodeEnv(A));
+    expect(a.status).toBe(429);
+  });
+});
+
+describe("/check 429 in production", () => {
+  it("clears a carried user_session with Secure, like the issued cookie", async () => {
+    config.NODE_ENV = "production" as typeof config.NODE_ENV;
+    block();
+    const res = await check({ Cookie: "user_session=live" });
+    expect(res.status).toBe(429);
+    expect(setCookies(res)).toEqual([`${CLEAR_USER}; Secure`]);
+  });
+});
+
+describe("malformed user_session value (bad percent-encoding) never answers 500", () => {
+  const BAD = "user_session=%";
+
+  it("requireAuth: a valid Bearer next to it passes, records and clears nothing", async () => {
+    const res = await servers({ Authorization: `Bearer ${PANEL}`, Cookie: BAD });
+    expect(res.status).toBe(200);
+    expect(failures()).toBe(0);
+    expect(setCookies(res)).toEqual([]);
+  });
+
+  it("requireAuth: a valid panel_session next to it passes, records and clears nothing", async () => {
+    const res = await servers({ Cookie: `panel_session=${PANEL}; ${BAD}` });
+    expect(res.status).toBe(200);
+    expect(failures()).toBe(0);
+    expect(setCookies(res)).toEqual([]);
+  });
+
+  it("requireAuth: alone it answers 401, records one failure, clears it and is not looked up", async () => {
+    const res = await servers({ Cookie: BAD });
+    expect(res.status).toBe(401);
+    expect(failures()).toBe(1);
+    expect(setCookies(res)).toEqual([CLEAR_USER]);
+    expect(mSession.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("requireAuth: a blocked key answers 429 and clears it", async () => {
+    block();
+    const res = await servers({ Cookie: BAD });
+    expect(res.status).toBe(429);
+    expect(setCookies(res)).toEqual([CLEAR_USER]);
+  });
+
+  it("/check: a valid Bearer next to it answers 200", async () => {
+    const res = await check({ Authorization: `Bearer ${PANEL}`, Cookie: BAD });
+    expect(res.status).toBe(200);
+    expect(failures()).toBe(0);
+    expect(setCookies(res)).toEqual([]);
+  });
+
+  it("/check: a valid panel_session next to it answers 200", async () => {
+    const res = await check({ Cookie: `panel_session=${PANEL}; ${BAD}` });
+    expect(res.status).toBe(200);
+    expect(failures()).toBe(0);
+  });
+
+  it("/check: alone it answers 401 without recording or clearing (not evaluated there)", async () => {
+    const res = await check({ Cookie: BAD });
+    expect(res.status).toBe(401);
+    expect(failures()).toBe(0);
+    expect(setCookies(res)).toEqual([]);
+  });
+
+  it("/check: a blocked key answers 429 and clears it", async () => {
+    block();
+    const res = await check({ Cookie: BAD });
+    expect(res.status).toBe(429);
+    expect(setCookies(res)).toEqual([CLEAR_USER]);
+  });
+});
+
 describe("without PANEL_TOKEN (development fallback)", () => {
   it("requireAuth and /check do not consult the limiter", async () => {
     config.PANEL_TOKEN = "" as unknown as typeof config.PANEL_TOKEN;

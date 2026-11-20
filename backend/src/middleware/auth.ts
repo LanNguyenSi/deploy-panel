@@ -10,6 +10,24 @@ import { checkLoginBlocked, loginClientKey, recordLoginFailure } from "../lib/lo
 export const CLEAR_PANEL_SESSION_COOKIE = "panel_session=; Path=/; HttpOnly; Max-Age=0";
 
 /**
+ * The `user_session` cookie a request presents. `carried` is true when the
+ * header holds one; `token` is its decoded value, or null when the value is
+ * malformed (readUserSessionCookie throws URIError on bad percent-encoding,
+ * for example `user_session=%`). A malformed cookie counts as carried but
+ * invalid, and reading it never throws.
+ */
+export function presentedUserSession(
+  cookieHeader: string | undefined,
+): { carried: boolean; token: string | null } {
+  try {
+    const token = readUserSessionCookie(cookieHeader);
+    return { carried: token !== null, token };
+  } catch {
+    return { carried: true, token: null };
+  }
+}
+
+/**
  * Set-Cookie value that clears `user_session`, with the attributes of the
  * cookie the OAuth callback issues (`buildUserSessionCookie`: HttpOnly,
  * SameSite=Lax, Path=/, no Domain, Secure in production).
@@ -37,7 +55,8 @@ export function hashApiKey(key: string): string {
  *   isAdmin      — true for panel/session auth AND for ApiKey rows without
  *                  userId (legacy admin keys). Admin sees all resources;
  *                  non-admin actors only see rows where Server.userId matches
- *                  their own. *
+ *                  their own.
+ *
  * Failed presentations share the failure budget of POST /api/auth/login
  * (lib/login-rate-limit.ts, same client key and constants): a blocked key
  * gets 429 `rate_limited` with Retry-After before any credential is
@@ -45,11 +64,15 @@ export function hashApiKey(key: string): string {
  * fails records one failure: a `dp_` key that is unknown or revoked, a
  * non-`dp_` Bearer that is not the PANEL_TOKEN (also when a cookie then
  * succeeds), a `panel_session` cookie that is not the PANEL_TOKEN, and a
- * `user_session` cookie without a valid session. Successful presentations
+ * `user_session` cookie without a valid session (a malformed value
+ * included). Successful presentations
  * never record. A failed `panel_session` or `user_session` cookie is cleared
  * with a Set-Cookie on the response (and on the 429 when the request carried
  * it), so a browser holding a stale cookie (a rotated PANEL_TOKEN, a revoked
- * or expired GitHub session) stops spending the budget.
+ * or expired GitHub session) stops spending the budget. Requests already
+ * past the blocked check when the limit is reached are still evaluated, so
+ * concurrent `dp_` and `user_session` lookups can each record a failure
+ * beyond the limit.
  */
 export async function requireAuth(c: Context, next: Next) {
   const token = config.PANEL_TOKEN;
@@ -73,7 +96,7 @@ export async function requireAuth(c: Context, next: Next) {
   const clientKey = loginClientKey(c);
   const cookie = c.req.header("Cookie");
   const panelCookie = parsePanelSessionCookie(cookie);
-  const userSessionToken = readUserSessionCookie(cookie);
+  const userSession = presentedUserSession(cookie);
   const clearPanelCookie = () =>
     c.header("Set-Cookie", CLEAR_PANEL_SESSION_COOKIE, { append: true });
   const clearUserCookie = () =>
@@ -82,7 +105,7 @@ export async function requireAuth(c: Context, next: Next) {
   const limit = checkLoginBlocked(clientKey);
   if (limit.blocked) {
     if (panelCookie !== null) clearPanelCookie();
-    if (userSessionToken !== null) clearUserCookie();
+    if (userSession.carried) clearUserCookie();
     c.header("Retry-After", String(limit.retryAfterSec));
     return c.json(
       { error: "rate_limited", message: "too many failed authentication attempts; retry later" },
@@ -138,9 +161,10 @@ export async function requireAuth(c: Context, next: Next) {
   }
 
   // Check user_session cookie (native GitHub OAuth login). Non-admin;
-  // userId comes from the session row.
-  if (userSessionToken) {
-    const userId = await validateSession(userSessionToken);
+  // userId comes from the session row. A malformed cookie is not looked up
+  // and fails like an unknown session.
+  if (userSession.carried) {
+    const userId = userSession.token ? await validateSession(userSession.token) : null;
     if (userId) {
       c.set("authType", "session");
       c.set("userId", userId);
