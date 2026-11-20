@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { urlV3 } from "../lib/zod-url.js";
+import { trimTrailingSlashes } from "../lib/origin.js";
 
 const configSchema = z.object({
   PORT: z.coerce.number().default(3001),
@@ -113,7 +114,7 @@ if (
     console.error(
       "Invalid config: BACKEND_URL must be the public backend origin when NODE_ENV=production " +
         `with GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET set; it is "${config.BACKEND_URL}", ` +
-        `so GitHub would be sent redirect_uri "${config.BACKEND_URL.replace(/\/+$/, "")}/api/auth/github/callback" ` +
+        `so GitHub would be sent redirect_uri "${trimTrailingSlashes(config.BACKEND_URL)}/api/auth/github/callback" ` +
         "and every login would fail with redirect_uri_mismatch; set BACKEND_URL to the public origin " +
         "registered on the GitHub OAuth App",
     );

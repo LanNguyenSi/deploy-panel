@@ -2,8 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+import { API_BASE as BASE } from "@/lib/base-url";
 
 // The OAuth callback redirects back to /login?error=... on failure. These
 // strings are stable contract; frontend maps them to human-readable copy.
