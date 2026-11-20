@@ -4,8 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { acquireInert, releaseInert } from "@/lib/inert";
-
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+import { API_BASE as BASE } from "@/lib/base-url";
 
 const MOBILE_QUERY = "(max-width: 768px)";
 

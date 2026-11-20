@@ -21,6 +21,7 @@ import {
   type OAuthConfig,
 } from "../lib/github.js";
 import { isAllowedGitHubLogin, normalizeGitHubLogin } from "../lib/github-login.js";
+import { trimTrailingSlashes } from "../lib/origin.js";
 import {
   buildUserSessionCookie,
   createSession,
@@ -128,7 +129,7 @@ authRouter.get("/github/config", (c) => {
 const OAUTH_STATE_COOKIE = "dp_oauth_state";
 
 function oauthRedirectUri(): string {
-  return `${config.BACKEND_URL.replace(/\/+$/, "")}/api/auth/github/callback`;
+  return `${trimTrailingSlashes(config.BACKEND_URL)}/api/auth/github/callback`;
 }
 
 function buildOAuthConfig(): OAuthConfig | null {
@@ -165,7 +166,7 @@ authRouter.get("/github/callback", async (c) => {
 
   if (!cfg) {
     c.header("Set-Cookie", clearState);
-    return c.redirect(`${config.FRONTEND_URL}/login?error=not_configured`);
+    return c.redirect(`${trimTrailingSlashes(config.FRONTEND_URL)}/login?error=not_configured`);
   }
 
   const code = c.req.query("code");
@@ -178,10 +179,10 @@ authRouter.get("/github/callback", async (c) => {
   c.header("Set-Cookie", clearState, { append: true });
 
   if (!code) {
-    return c.redirect(`${config.FRONTEND_URL}/login?error=missing_code`);
+    return c.redirect(`${trimTrailingSlashes(config.FRONTEND_URL)}/login?error=missing_code`);
   }
   if (!state || !storedState || state !== storedState) {
-    return c.redirect(`${config.FRONTEND_URL}/login?error=state_mismatch`);
+    return c.redirect(`${trimTrailingSlashes(config.FRONTEND_URL)}/login?error=state_mismatch`);
   }
 
   let tokenResponse;
@@ -192,7 +193,7 @@ authRouter.get("/github/callback", async (c) => {
   } catch (err) {
     const reason = err instanceof GitHubAuthError ? "oauth_failed" : "upstream_unavailable";
     console.error("OAuth callback failed:", (err as Error).message);
-    return c.redirect(`${config.FRONTEND_URL}/login?error=${reason}`);
+    return c.redirect(`${trimTrailingSlashes(config.FRONTEND_URL)}/login?error=${reason}`);
   }
 
   // Apply the same allowlist guard as the broker path. Without this, any
@@ -203,7 +204,7 @@ authRouter.get("/github/callback", async (c) => {
   // normalised (isAllowedGitHubLogin, lib/github-login.ts): an entry
   // "alice" admits the GitHub login "Alice".
   if (!isAllowedGitHubLogin(githubUser.login)) {
-    return c.redirect(`${config.FRONTEND_URL}/login?error=forbidden_github_login`);
+    return c.redirect(`${trimTrailingSlashes(config.FRONTEND_URL)}/login?error=forbidden_github_login`);
   }
 
   const githubId = String(githubUser.id);
@@ -236,7 +237,9 @@ authRouter.get("/github/callback", async (c) => {
     user.id,
   );
 
-  return c.redirect(config.FRONTEND_URL);
+  // A FRONTEND_URL configured with a trailing slash lands on the origin
+  // without one; an empty FRONTEND_URL keeps today's empty-Location redirect.
+  return c.redirect(trimTrailingSlashes(config.FRONTEND_URL));
 });
 
 // ── Identity-broker registration (e.g. project-pilot) ────────────────────────

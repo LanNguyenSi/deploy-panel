@@ -14,6 +14,7 @@ import { v1Router } from "./routes/v1.js";
 import { apiKeysRouter } from "./routes/api-keys.js";
 import { ENV_REPLACE_MAX_BODY_BYTES } from "./routes/apps.js";
 import { requireAuth, requirePanelAuth } from "./middleware/auth.js";
+import { trimTrailingSlashes } from "./lib/origin.js";
 
 // One cap for every /api/* request body. /api/auth/login and /api/auth/check
 // answer without authentication, so an uncapped body grows the heap. The
@@ -43,7 +44,10 @@ export function createApp(corsOrigins: string) {
   app.use(
     "*",
     cors({
-      origin: corsOrigins.split(",").map((s) => s.trim()),
+      // Each entry is trimmed of surrounding whitespace and of trailing
+      // slashes: a browser never sends a trailing slash in Origin, so a
+      // configured "https://panel.example/" must still match the origin.
+      origin: corsOrigins.split(",").map((s) => trimTrailingSlashes(s.trim())),
       credentials: true,
     }),
   );
