@@ -100,7 +100,7 @@ describe("buildInstallCommand", () => {
     expect(INSTALLER_FETCH_FAILED_EXIT_CODE).toBe(97);
   });
 
-  it("downloads to a temp file that is removed on every exit, then runs that file as root", () => {
+  it("downloads to a temp file that is removed when the command exits, then runs that file as root", () => {
     const cmd = buildInstallCommand({});
     expect(cmd).toContain(`f=$(mktemp); trap 'rm -f "$f"' EXIT;`.replace(/'/g, `'"'"'`));
     expect(cmd.endsWith(`sudo -E bash "$f" </dev/null || { rc=$?; [ "$rc" -ne 97 ] || rc=1; exit "$rc"; }'`)).toBe(true);

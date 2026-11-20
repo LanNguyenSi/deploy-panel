@@ -66,9 +66,10 @@ function shellEscape(value: string): string {
 
 /**
  * Exit code the remote command uses when it could not download the
- * installer. The download happens before anything else on the VPS is
- * touched, so this code means "nothing ran". Any other non-zero exit
- * means the installer itself (or a step after the download) failed.
+ * installer. The download happens before the installer runs and before
+ * a re-install removes the relay's .env, so this code means the installer
+ * did not run. Any other non-zero exit means the installer itself (or a
+ * step after the download) failed.
  */
 export const INSTALLER_FETCH_FAILED_EXIT_CODE = 97;
 
@@ -282,7 +283,7 @@ function sanitizeStderrLine(line: string): string {
 /**
  * Classify the exit code of the install command. Returns null for exit 0
  * (the caller then parses stdout). Exit 97 means the installer download
- * failed before anything ran; any other non-zero exit (including -1, no
+ * failed before the installer ran; any other non-zero exit (including -1, no
  * code reported) means the installer or a step after the download failed,
  * whatever stdout contains: a complete URL/Token block printed before a
  * late failure is not a success.
