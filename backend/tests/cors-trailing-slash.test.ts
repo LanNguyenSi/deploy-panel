@@ -71,6 +71,15 @@ describe("CORS origin list with trailing slashes", () => {
     expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
   });
 
+  it("the whitespace-only entry matches nothing: no Origin, an empty Origin and '/' get no ACAO", async () => {
+    const none = await app.request("/api/health");
+    expect(none.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    for (const origin of ["", "/"]) {
+      const res = await app.request("/api/health", { headers: { Origin: origin } });
+      expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    }
+  });
+
   it("the exact slashed origin is never allowed (browsers never send it, the list holds trimmed values)", async () => {
     const res = await preflight("https://a.example/");
     expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();

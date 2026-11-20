@@ -93,6 +93,22 @@ describe("GET /auth/github/start", () => {
   });
 });
 
+describe("GET /auth/github/start with a trailing slash in BACKEND_URL", () => {
+  afterEach(() => {
+    configMock.BACKEND_URL = "http://localhost:3001";
+  });
+
+  it("sends GitHub a redirect_uri with a single slash", async () => {
+    configMock.BACKEND_URL = "https://panel.example.com//";
+    const res = await authRouter.request("/github/start");
+    expect(res.status).toBe(302);
+    const location = new URL(res.headers.get("Location") ?? "");
+    expect(location.searchParams.get("redirect_uri")).toBe(
+      "https://panel.example.com/api/auth/github/callback",
+    );
+  });
+});
+
 describe("GET /auth/github/callback", () => {
   beforeEach(() => {
     vi.clearAllMocks();
