@@ -11,7 +11,11 @@ import {
   serverOwnershipWhere,
 } from "../lib/ownership.js";
 import { executeSshCommand, SshError, SshTimeoutError } from "../services/ssh-executor.js";
-import { buildInstallCommand, parseInstallOutput } from "../services/install-relay.js";
+import {
+  buildInstallCommand,
+  classifyInstallExit,
+  parseInstallOutput,
+} from "../services/install-relay.js";
 import { probeVps } from "../services/probe-vps.js";
 import { activeInstalls, isServerMutating } from "../services/active-installs.js";
 import {
@@ -410,6 +414,10 @@ export const sshAuthSchema = z
     },
   );
 
+// Covers a slow VPS plus a cold Docker pull; install.sh itself typically
+// finishes in 2-5 minutes. Shared by the install and re-install routes.
+const INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+
 export const installRelaySchema = z
   .object({
     // Server identity the resulting DB row will carry. Validated the
@@ -647,8 +655,12 @@ serversRouter.post("/install-relay", async (c) => {
     // after the command finishes. Stderr is streamed to the client
     // for diagnostics but not scanned for success markers.
     let stdoutBuffer = "";
+    // Last non-empty stderr line: when the installer download fails, this is
+    // curl's own message and goes into the error event.
+    let lastStderrLine = "";
     const forwardProgress = async (streamKind: "stdout" | "stderr", line: string) => {
       if (streamKind === "stdout") stdoutBuffer += line + "\n";
+      else if (line.trim() !== "") lastStderrLine = line;
       await stream.writeSSE({
         event: "progress",
         data: JSON.stringify({ stream: streamKind, line }),
@@ -667,7 +679,7 @@ serversRouter.post("/install-relay", async (c) => {
         relayDir: input.relayDir,
       });
 
-      await executeSshCommand({
+      const sshResult = await executeSshCommand({
         guardTarget: connectGuardRequiredForActor(actor),
         host: input.host,
         port: input.sshPort,
@@ -694,10 +706,28 @@ serversRouter.post("/install-relay", async (c) => {
         ...(input.expectedHostKeySha256
           ? { expectedHostKeySha256: input.expectedHostKeySha256 }
           : {}),
-        // Covers a slow VPS + Docker pull cold cache. install.sh
-        // itself typically finishes in ~2-5 min.
-        timeoutMs: 10 * 60 * 1000,
+        timeoutMs: INSTALL_TIMEOUT_MS,
       });
+
+      // The exit code decides first: a non-zero exit is a failed install
+      // whatever the output looks like (an installer can print its
+      // URL/Token block and fail afterwards).
+      if (!sshResult.finished) throw new SshTimeoutError(INSTALL_TIMEOUT_MS);
+      const exitError = classifyInstallExit(sshResult.exitCode, lastStderrLine);
+      if (exitError) {
+        await audit(
+          "server.install-relay.failed",
+          input.host,
+          exitError.kind,
+          getActor(c),
+          getActorUserId(c),
+        );
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({ kind: exitError.kind, message: exitError.message }),
+        });
+        return;
+      }
 
       const parsedOutput = parseInstallOutput(stdoutBuffer);
       if (!parsedOutput.ok) {
@@ -887,8 +917,12 @@ serversRouter.post("/:id/install-relay", async (c) => {
   const startTime = Date.now();
   return streamSSE(c, async (stream) => {
     let stdoutBuffer = "";
+    // Last non-empty stderr line: when the installer download fails, this is
+    // curl's own message and goes into the error event.
+    let lastStderrLine = "";
     const forwardProgress = async (streamKind: "stdout" | "stderr", line: string) => {
       if (streamKind === "stdout") stdoutBuffer += line + "\n";
+      else if (line.trim() !== "") lastStderrLine = line;
       await stream.writeSSE({
         event: "progress",
         data: JSON.stringify({ stream: streamKind, line }),
@@ -909,29 +943,28 @@ serversRouter.post("/:id/install-relay", async (c) => {
       // stored on first install, else the installer default.
       const effectiveRelayDir = input.relayDir ?? server.relayDir ?? "/opt/agent-relay";
 
-      const baseCommand = buildInstallCommand({
-        relayDomain: input.relayDomain,
-        traefikEmail: input.traefikEmail,
-        appsDir: input.appsDir,
-        relayMode: effectiveMode,
-        traefikNetwork: input.traefikNetwork,
-        traefikCertResolver: input.traefikCertResolver,
-        relayBind: input.relayBind,
-        // Forward the resolved dir as an explicit RELAY_DIR so
-        // install.sh writes compose/.env at the correct location
-        // (matches whatever the prior install used).
-        relayDir: effectiveRelayDir,
-      });
-
       // Token rotation. install.sh preserves an existing AUTH_TOKEN
       // when it sees <RELAY_DIR>/.env. If the operator wants a fresh
-      // token, we have to wipe that file first. Zod already
-      // validated `effectiveRelayDir` as a shell-safe absolute path
-      // (no metachars, no `..`) so templating it straight into the
-      // command is safe.
-      const command = input.rotateToken
-        ? `sudo rm -f ${effectiveRelayDir}/.env && ${baseCommand}`
-        : baseCommand;
+      // token, that file has to go first. The removal runs inside the
+      // remote command AFTER the installer was downloaded, so a failed
+      // download never costs the VPS its token. buildInstallCommand
+      // re-checks the path as a shell-safe absolute path.
+      const command = buildInstallCommand(
+        {
+          relayDomain: input.relayDomain,
+          traefikEmail: input.traefikEmail,
+          appsDir: input.appsDir,
+          relayMode: effectiveMode,
+          traefikNetwork: input.traefikNetwork,
+          traefikCertResolver: input.traefikCertResolver,
+          relayBind: input.relayBind,
+          // Forward the resolved dir as an explicit RELAY_DIR so
+          // install.sh writes compose/.env at the correct location
+          // (matches whatever the prior install used).
+          relayDir: effectiveRelayDir,
+        },
+        input.rotateToken ? { removeBeforeRun: `${effectiveRelayDir}/.env` } : {},
+      );
 
       // Capture the fingerprint we see during this connect so we can
       // update the DB when the stored value is null (legacy row first
@@ -941,7 +974,7 @@ serversRouter.post("/:id/install-relay", async (c) => {
       // from "accept any" into "accept only this one".
       let observedHostKeySha256: string | undefined;
 
-      await executeSshCommand({
+      const sshResult = await executeSshCommand({
         guardTarget: connectGuardRequired(server, actor),
         host: server.host,
         port: input.sshPort,
@@ -972,7 +1005,7 @@ serversRouter.post("/:id/install-relay", async (c) => {
         ...(server.hostKeySha256
           ? { expectedHostKeySha256: server.hostKeySha256 }
           : {}),
-        timeoutMs: 10 * 60 * 1000,
+        timeoutMs: INSTALL_TIMEOUT_MS,
       });
 
       // Persist the freshly-observed fingerprint BEFORE parsing the
@@ -987,6 +1020,26 @@ serversRouter.post("/:id/install-relay", async (c) => {
           where: { id: server.id },
           data: { hostKeySha256: observedHostKeySha256 },
         });
+      }
+
+      // The exit code decides before the output is read: a non-zero exit is
+      // a failed re-install whatever the output looks like, and it writes
+      // nothing to the row (the fingerprint above is the one exception).
+      if (!sshResult.finished) throw new SshTimeoutError(INSTALL_TIMEOUT_MS);
+      const exitError = classifyInstallExit(sshResult.exitCode, lastStderrLine);
+      if (exitError) {
+        await audit(
+          "server.reinstall-relay.failed",
+          `${server.name} (${server.host})`,
+          exitError.kind,
+          getActor(c),
+          getActorUserId(c),
+        );
+        await stream.writeSSE({
+          event: "error",
+          data: JSON.stringify({ kind: exitError.kind, message: exitError.message }),
+        });
+        return;
       }
 
       const parsedOutput = parseInstallOutput(stdoutBuffer);
