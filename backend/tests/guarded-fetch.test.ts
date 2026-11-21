@@ -18,6 +18,7 @@ import { guardedFetch } from "../src/lib/guarded-fetch.js";
 import { classifyProbeError } from "../src/services/server-status.js";
 import { RELAY_REDIRECT_MESSAGE, relayFetch } from "../src/lib/relay-fetch.js";
 import { executeSshCommand, SshError } from "../src/services/ssh-executor.js";
+import { startMockSshServer } from "./helpers/mock-ssh-server.js";
 
 let resolverCalls: string[];
 let server: Server;
@@ -55,7 +56,7 @@ beforeEach(async () => {
         setTimeout(() => {
           res.writeHead(200, { "content-type": "application/json" });
           res.end("{}");
-        }, 150);
+        }, 600);
       } else if (req.url === "/err") {
         res.writeHead(409, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "busy" }));
@@ -206,7 +207,10 @@ describe("guardedFetch: socket reuse, errors and the connect timeout", () => {
   });
 
   it("stops the connect timer once connected, so a slow answer is not cut off", async () => {
-    const res = await guardedFetch(`http://relay.test:${port}/slow`, {}, { connectTimeoutMs: 50 });
+    // The answer comes 600ms in, well after the 300ms connect window: only a
+    // timer cleared at connect can let this response through. The window is
+    // wide enough that the guarded lookup and the local connect fit easily.
+    const res = await guardedFetch(`http://relay.test:${port}/slow`, {}, { connectTimeoutMs: 300 });
     expect(res.status).toBe(200);
   });
 });
@@ -274,6 +278,76 @@ describe("executeSshCommand with guardTarget", () => {
       expect(connections).toBe(1);
     } finally {
       await new Promise<void>((r) => tcp.close(() => r()));
+    }
+  });
+
+  it("runs a command end to end over the guarded socket to the stub-resolved address", async () => {
+    const mock = await startMockSshServer({
+      acceptAuth: (ctx) => ctx.method === "password" && ctx.password === "right",
+      onExec: ({ command, emitStdout, exit }) => {
+        emitStdout(`ran:${command}\n`);
+        exit(0);
+      },
+    });
+    try {
+      const stdoutLines: string[] = [];
+      const result = await executeSshCommand({
+        host: "ssh.test",
+        port: mock.port,
+        user: "root",
+        auth: { kind: "password", password: "right" },
+        command: "true",
+        onStdout: (line) => stdoutLines.push(line),
+        acceptAnyHostKey: true,
+        timeoutMs: 5000,
+        guardTarget: true,
+      });
+      expect(result).toEqual({ exitCode: 0, finished: true });
+      expect(stdoutLines).toEqual(["ran:true"]);
+      // The guard path was really used: only the stub resolver can answer for
+      // ssh.test, and the mock server only listens on the address it gave.
+      expect(resolverCalls).toEqual(["ssh.test"]);
+    } finally {
+      await mock.close();
+    }
+  });
+
+  it("falls back to the next checked address when the first one is refused", async () => {
+    // The mock server listens on 127.0.0.1 only, so the IPv6 loopback answer
+    // is refused at once and the connection must fall back to the second
+    // checked address of the same lookup.
+    _setConnectResolver((host, cb) => {
+      resolverCalls.push(host);
+      cb(null, [
+        { address: "::1", family: 6 },
+        { address: "127.0.0.1", family: 4 },
+      ] satisfies dns.LookupAddress[]);
+    });
+    const mock = await startMockSshServer({
+      acceptAuth: () => true,
+      onExec: ({ emitStdout, exit }) => {
+        emitStdout("ok\n");
+        exit(0);
+      },
+    });
+    try {
+      const stdoutLines: string[] = [];
+      const result = await executeSshCommand({
+        host: "ssh.test",
+        port: mock.port,
+        user: "root",
+        auth: { kind: "password", password: "x" },
+        command: "echo ok",
+        onStdout: (line) => stdoutLines.push(line),
+        acceptAnyHostKey: true,
+        timeoutMs: 5000,
+        guardTarget: true,
+      });
+      expect(result).toEqual({ exitCode: 0, finished: true });
+      expect(stdoutLines).toEqual(["ok"]);
+      expect(resolverCalls).toEqual(["ssh.test"]);
+    } finally {
+      await mock.close();
     }
   });
 });
