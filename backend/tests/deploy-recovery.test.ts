@@ -10,6 +10,11 @@ vi.mock("../src/lib/prisma.js", () => ({
       findUnique: vi.fn().mockResolvedValue({ log: null }),
       findFirst: vi.fn().mockResolvedValue(null),
       update: vi.fn().mockResolvedValue({}),
+      // Recovery finalizes with a compare-and-set (updateMany scoped to
+      // status "running"); count 1 = the row was still running, which is the
+      // state every verdict-writing test below runs in. The finalized-row
+      // tests override this with count 0.
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
     },
   },
 }));
@@ -35,7 +40,12 @@ import {
 } from "../src/lib/deploy-recovery.js";
 
 const mDeployFindUnique = (prisma.deploy as any).findUnique as ReturnType<typeof vi.fn>;
-const mDeployUpdate = (prisma.deploy as any).update as ReturnType<typeof vi.fn>;
+// Recovery writes every verdict through the compare-and-set updateMany (see
+// settleRecoveredDeploy in deploy-recovery.ts), so this handle (which every
+// "what did the verdict say" assertion below reads) is the updateMany mock.
+// `deploy.update` stays mocked but unused by recovery: it is what
+// streamDeploy/finalizeDeploy use, not this function.
+const mDeployUpdate = (prisma.deploy as any).updateMany as ReturnType<typeof vi.fn>;
 const mAppUpdate = (prisma.app as any).update as ReturnType<typeof vi.fn>;
 const mDeployFindFirst = (prisma.deploy as any).findFirst as ReturnType<typeof vi.fn>;
 const mGate = verifyDeployHealth as unknown as ReturnType<typeof vi.fn>;
@@ -736,6 +746,135 @@ describe("recoverBrokenDeploy: a healthy probe needs proof the target was reache
 
     expect(lastCall(mDeployUpdate).data.status).toBe("interrupted");
     expect(lastOutput()).toContain("relay unreachable or app lookup failed");
+  });
+});
+
+// A finalize and a recovery can land on the same row at once: in-process the
+// streamed done/finalize path (a stream `done` event that races a read
+// error) can settle the row while recovery's health gate polls for up to
+// ~60s; a rollback route or the periodic stuck-sweep can too, but only as
+// defence in depth (another process, or a registry gap). Every verdict is
+// therefore written with `updateMany` scoped to `status: "running"`; when
+// the row is no longer running the count is 0 and NOTHING else may be
+// written: neither the Deploy row (no plain `update` fallback) nor the App
+// row. The health probe still runs (it only reads); the guard is at write
+// time.
+describe("recoverBrokenDeploy: a row settled by another writer is never rewritten", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Pin the compare-and-set default per test (the count-0 overrides below
+    // would otherwise leak past vi.clearAllMocks, which clears calls but not
+    // the implementation).
+    mDeployUpdate.mockResolvedValue({ count: 1 });
+    mDeployFindUnique.mockResolvedValue({ log: null, createdAt: DEPLOY_START });
+    mDeployFindFirst.mockResolvedValue(null);
+    mockTargetReached();
+  });
+
+  it("writes the verdict with updateMany scoped to status=running, and touches the App row when the row was still running", async () => {
+    mGate.mockResolvedValue({ healthy: true });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(mDeployUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "d1", status: "running" } }),
+    );
+    expect(lastCall(mDeployUpdate).data.status).toBe("success");
+    expect(mAppUpdate).toHaveBeenCalledOnce();
+  });
+
+  it("a compare-and-set write that itself rejects is still treated as settled: the App row update runs and no plain deploy.update fallback does", async () => {
+    mGate.mockResolvedValue({ healthy: true });
+    mockTargetReached(); // healthy verdict with the target proven -> success branch
+    // A DB error ON the conditional write: no count is known, so the catch
+    // assumes the write went through and recovery proceeds with its side
+    // effects. Falling back to count 0 here would silently skip the App row
+    // update even though nothing proved the row was settled by someone else.
+    mDeployUpdate.mockRejectedValue(new Error("db hiccup"));
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(mDeployUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "d1", status: "running" } }),
+    );
+    // The healthy verdict still reaches the App card...
+    expect(mAppUpdate).toHaveBeenCalledOnce();
+    expect(lastCall(mAppUpdate).data.status).toBe("healthy");
+    // ...and the rejected compare-and-set never becomes an unconditional
+    // second write on the Deploy row.
+    expect((prisma.deploy as any).update).not.toHaveBeenCalled();
+  });
+
+  it("a Deploy row already settled success: recovery writes neither the Deploy row nor the App row", async () => {
+    mGate.mockResolvedValue({ healthy: true });
+    // The compare-and-set misses: another writer settled the row while the
+    // gate was polling, so the where-clause (status running) matches nothing.
+    mDeployUpdate.mockResolvedValue({ count: 0 });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    // The conditional write was attempted (that is the guard)...
+    expect(mDeployUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "d1", status: "running" } }),
+    );
+    // ...and once it came back 0, nothing else was written.
+    expect((prisma.deploy as any).update).not.toHaveBeenCalled();
+    expect(mAppUpdate).not.toHaveBeenCalled();
+  });
+
+  it("a Deploy row already settled failed (unhealthy verdict): neither the Deploy row nor the App row is written", async () => {
+    mGate.mockResolvedValue({ healthy: false, reason: "service web is restarting" });
+    mDeployUpdate.mockResolvedValue({ count: 0 });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(mDeployUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "d1", status: "running" } }),
+    );
+    expect((prisma.deploy as any).update).not.toHaveBeenCalled();
+    // The tempting side effect here is flipping the App card `unhealthy` for
+    // a row that another writer had already settled, that must not happen.
+    expect(mAppUpdate).not.toHaveBeenCalled();
+  });
+
+  it("the skip is named in a log line", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    mGate.mockResolvedValue({ healthy: true });
+    mDeployUpdate.mockResolvedValue({ count: 0 });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(logSpy.mock.calls.map((c) => String(c[0])).some((s) => s.includes("d1") && s.includes("no longer running"))).toBe(true);
+    logSpy.mockRestore();
+  });
+
+  it("an interrupted verdict on an already-settled row is skipped the same way", async () => {
+    mGate.mockResolvedValue({ healthy: true });
+    mockRelayDetail({ commit: HEAD, recentDeploys: [] }); // no proof -> interrupted branch
+    mDeployUpdate.mockResolvedValue({ count: 0 });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(mDeployUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "d1", status: "running" } }),
+    );
+    expect(mAppUpdate).not.toHaveBeenCalled();
+  });
+
+  it("a healthy-probe-but-rollback-verdict (failed write) on an already-settled row is skipped the same way", async () => {
+    mDeployFindUnique.mockResolvedValue({
+      log: JSON.stringify([{ name: "rollback: compose up", status: "success", durationMs: 300 }]),
+      createdAt: DEPLOY_START,
+    });
+    mGate.mockResolvedValue({ healthy: true });
+    mDeployUpdate.mockResolvedValue({ count: 0 });
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(mDeployUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "d1", status: "running" } }),
+    );
+    expect(mAppUpdate).not.toHaveBeenCalled();
   });
 });
 

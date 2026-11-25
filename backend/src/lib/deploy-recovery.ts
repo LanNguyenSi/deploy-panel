@@ -225,6 +225,14 @@ const RECOVERY_INTERVAL_MS = 12_000;
  * any relay. Fail closed: when the relay cannot be asked for the app (the
  * lookup throws) or the row's start time cannot be read, a recovered rollback
  * ends `interrupted` rather than `success`.
+ *
+ * Every verdict is written with a compare-and-set against `status: "running"`
+ * (see settleRecoveredDeploy): the gate polls up to ~60s, and meanwhile the
+ * in-process streamed done/finalize path (a `done` event or a blocked/4xx
+ * write) followed by the throw that routed here can finalize the row; the
+ * rollback routes and the stuck-sweep only can, as defence in depth (another
+ * process, or a registry gap). The probe still runs (it reads); the guard is
+ * at write time: a settled row (App card too) is kept and the skip logged.
  */
 export async function recoverBrokenDeploy(
   deployId: string,
@@ -315,9 +323,8 @@ async function recoverBrokenDeployBody(
 
   if (verdict.healthy && hasRollbackOrFailure) {
     console.log(`[deploy-recovery] ${appName} probe healthy but the log already shows a rollback/failure — refusing the optimistic success verdict`);
-    await prisma.deploy.update({
-      where: { id: deployId },
-      data: {
+    if (
+      !(await settleRecoveredDeploy(deployId, appName, {
         status: "failed",
         log: JSON.stringify([
           ...existingSteps,
@@ -328,8 +335,10 @@ async function recoverBrokenDeployBody(
             output: `Connection lost during deploy: ${error}. The app is healthy because the rollback already restored the previous version, not because this deploy succeeded${noteSuffix}`,
           },
         ]),
-      },
-    }).catch(() => {});
+      })
+    )) {
+      return;
+    }
     // The app itself really is up (the old version) — reflect that on the
     // app card while still recording this deploy attempt as failed.
     await prisma.app.update({
@@ -338,9 +347,8 @@ async function recoverBrokenDeployBody(
     }).catch(() => {});
   } else if (target && !target.reached) {
     console.log(`[deploy-recovery] ${appName} probe healthy but the deploy's target was not reached, marking deploy interrupted: ${target.failedCheck}`);
-    await prisma.deploy.update({
-      where: { id: deployId },
-      data: {
+    if (
+      !(await settleRecoveredDeploy(deployId, appName, {
         status: "interrupted",
         log: JSON.stringify([
           ...existingSteps,
@@ -351,19 +359,20 @@ async function recoverBrokenDeployBody(
             output: `Connection lost during deploy: ${error}. The app is healthy, but that does not show this deploy ran (the previous version may still be running); check failed: ${target.failedCheck}${noteSuffix}`,
           },
         ]),
-      },
-    }).catch(() => {});
-    // The app itself really is up (the old version): reflect that on the app
-    // card, but no deploy happened, so lastDeployAt stays as it was.
+      })
+    )) {
+      return;
+    }
+    // The app itself really is up (the old version): reflect that on the
+    // app card, but no deploy happened, so lastDeployAt stays as it was.
     await prisma.app.update({
       where: { id: appId },
       data: { status: "healthy" },
     }).catch(() => {});
   } else if (verdict.healthy) {
     console.log(`[deploy-recovery] ${appName} verified healthy — marking deploy success`);
-    await prisma.deploy.update({
-      where: { id: deployId },
-      data: {
+    if (
+      !(await settleRecoveredDeploy(deployId, appName, {
         status: "success",
         // The relay's own entry for this deploy proved the target; its commits
         // and duration fill the record the way a streamed `done` event does.
@@ -375,29 +384,73 @@ async function recoverBrokenDeployBody(
           ...existingSteps,
           { name: "recovery", status: "success", durationMs: 0, output: `Connection lost during deploy; verified healthy via post-deploy gate${noteSuffix}` },
         ]),
-      },
-    }).catch(() => {});
+      })
+    )) {
+      return;
+    }
     await prisma.app.update({
       where: { id: appId },
       data: { status: "healthy", lastDeployAt: new Date() },
     }).catch(() => {});
   } else {
     console.log(`[deploy-recovery] ${appName} NOT verified healthy — marking deploy failed: ${verdict.reason}`);
-    await prisma.deploy.update({
-      where: { id: deployId },
-      data: {
+    if (
+      !(await settleRecoveredDeploy(deployId, appName, {
         status: "failed",
         log: JSON.stringify([
           ...existingSteps,
           { name: "recovery", status: "failure", durationMs: 0, output: `Connection lost during deploy: ${error}. ${verdict.reason ?? "post-deploy health check failed after recovery"}${noteSuffix}` },
         ]),
-      },
-    }).catch(() => {});
+      })
+    )) {
+      return;
+    }
     await prisma.app.update({
       where: { id: appId },
       data: { status: "unhealthy" },
     }).catch(() => {});
   }
+}
+
+/**
+ * The shape of one recovery verdict for the Deploy row (see the branches in
+ * recoverBrokenDeployBody).
+ */
+type RecoveryDeployWrite = {
+  status: "success" | "failed" | "interrupted";
+  log: string;
+  commitBefore?: string;
+  commitAfter?: string;
+  duration?: number;
+};
+
+/**
+ * Writes one recovery verdict with the stuck-sweep's compare-and-set
+ * (startup.ts): `updateMany` scoped to `status: "running"`. Recovery polls
+ * health for up to ~60s, and meanwhile the row may already have been
+ * finalized in-process by the streamed done/finalize path (streamDeploy
+ * finalizes on `done`, a post-`done` read rejects and still hands the id to
+ * recovery) or a blocked/4xx write followed by a throw; rollback routes and
+ * the stuck-sweep only settle it as defence in depth (another process, or a
+ * registry gap). A plain `update` would silently rewrite that settled row
+ * with recovery's verdict; here the `count` comes back `0`, the row (and
+ * the App card and every side effect after this point) is left alone, and
+ * a log line names the skip. A write that itself throws (a DB hiccup) is
+ * swallowed like before: no count is known, so the App row update goes on.
+ */
+async function settleRecoveredDeploy(
+  deployId: string,
+  appName: string,
+  data: RecoveryDeployWrite,
+): Promise<boolean> {
+  const settled = await prisma.deploy
+    .updateMany({ where: { id: deployId, status: "running" }, data })
+    .catch(() => ({ count: 1 }));
+  if (settled.count === 0) {
+    console.log(`[deploy-recovery] ${appName}: deploy ${deployId} is no longer running (settled by another writer while recovery polled): keeping that verdict, skipping the recovery write and the App row update`);
+    return false;
+  }
+  return true;
 }
 
 /** True for the relay's best-effort prune step, whatever its status. */
