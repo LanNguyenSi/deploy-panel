@@ -1,4 +1,5 @@
 import { relayRequest } from "./relay.js";
+import { RELAY_ENV_MAX_BYTES } from "./relay-body.js";
 import { getDecryptedAppSecrets } from "./app-secrets.js";
 import { computeMissingRequiredKeys } from "./required-env-gate.js";
 import { relayAppPath } from "./relay-path.js";
@@ -45,6 +46,7 @@ export async function provisionAndCheckAppSecrets(opts: {
     serverId,
     path: relayAppPath(appName, "/env"),
     method: "GET",
+    maxResponseBytes: RELAY_ENV_MAX_BYTES,
   });
 
   const merged = new Map<string, string>((current.entries ?? []).map((e) => [e.key, e.value]));
@@ -61,6 +63,7 @@ export async function provisionAndCheckAppSecrets(opts: {
       path: relayAppPath(appName, "/env"),
       method: "PUT",
       body: { entries: Array.from(merged, ([key, value]) => ({ key, value })) },
+      maxResponseBytes: RELAY_ENV_MAX_BYTES,
     });
   }
 

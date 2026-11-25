@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
+import { clampLogLines, RELAY_LOGS_MAX_BYTES } from "../lib/relay-body.js";
 import { recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "../lib/deploy-recovery.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
 import { classifyDeployLogOutcome, normalizeDeployLog } from "../lib/deploy-log.js";
@@ -496,7 +497,7 @@ v1Router.post("/rollback", async (c) => {
 v1Router.get("/logs", async (c) => {
   const server = c.req.query("server");
   const appName = c.req.query("app");
-  const lines = Math.min(Math.max(1, Number(c.req.query("lines")) || 50), 1000);
+  const lines = clampLogLines(c.req.query("lines"));
 
   if (!server || !appName) {
     return c.json({ error: "bad_request", message: "server and app query params are required" }, 400);
@@ -522,6 +523,7 @@ v1Router.get("/logs", async (c) => {
       serverId: srv.id,
       actor,
       path: logsPath,
+      maxResponseBytes: RELAY_LOGS_MAX_BYTES,
     });
     return c.json(result);
   } catch (err) {

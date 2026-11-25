@@ -14,6 +14,7 @@ import {
   type ProbeFailureStatus,
 } from "../services/server-status.js";
 import { relayFetch } from "./relay-fetch.js";
+import { readRelayJson } from "./relay-body.js";
 import { connectGuardRequired } from "./connect-guard.js";
 
 export const GHCR_TOKEN_URL =
@@ -252,7 +253,7 @@ export async function fetchRelayHealth(
       };
     }
 
-    const data = (await response.json().catch(() => null)) as Record<
+    const data = (await readRelayJson(response).catch(() => null)) as Record<
       string,
       unknown
     > | null;

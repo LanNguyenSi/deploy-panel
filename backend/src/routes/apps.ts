@@ -3,6 +3,7 @@ import { bodyLimit } from "hono/body-limit";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { relayRequest, RelayError } from "../lib/relay.js";
+import { clampLogLines, RELAY_ENV_MAX_BYTES, RELAY_LOGS_MAX_BYTES } from "../lib/relay-body.js";
 import { streamDeploy } from "../lib/stream-deploy.js";
 import { setAppStatusAfterRollback, setAppStatusAfterRollbackRejection } from "../lib/rollback-app-status.js";
 import { audit, getActor, getActorUserId } from "../lib/audit.js";
@@ -475,13 +476,14 @@ appsRouter.get("/:name/logs", async (c) => {
   const serverId = getServerId(c);
   const name = c.req.param("name");
   if (!APP_NAME_PATTERN.test(name)) return c.json({ error: "invalid_app_name" }, 400);
-  const lines = Number(c.req.query("lines") ?? 50);
+  const lines = clampLogLines(c.req.query("lines"));
 
   try {
     const result = await relayRequest({
       serverId,
       actor: getActorContext(c),
       path: relayAppPath(name, "/logs", `?lines=${lines}`),
+      maxResponseBytes: RELAY_LOGS_MAX_BYTES,
     });
     return c.json(result);
   } catch (err) {
@@ -697,6 +699,7 @@ appsRouter.get("/:name/env", async (c) => {
       actor: getActorContext(c),
       path: relayAppPath(name, "/env"),
       method: "GET",
+      maxResponseBytes: RELAY_ENV_MAX_BYTES,
     });
     return c.json({ entries: classifySensitivity(result.entries ?? []) });
   } catch (err) {
@@ -790,6 +793,7 @@ appsRouter.put("/:name/env", async (c) => {
       actor: getActorContext(c),
       path: envPath,
       method: "GET",
+      maxResponseBytes: RELAY_ENV_MAX_BYTES,
     });
     current = prev.entries ?? [];
   } catch (err) {
@@ -805,6 +809,7 @@ appsRouter.put("/:name/env", async (c) => {
       path: envPath,
       method: "PUT",
       body: { entries },
+      maxResponseBytes: RELAY_ENV_MAX_BYTES,
     });
   } catch (err) {
     if (err instanceof RelayError) return c.json({ error: err.message }, err.status as 400 | 404 | 500);

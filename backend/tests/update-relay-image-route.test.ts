@@ -321,6 +321,22 @@ describe("POST /servers/:id/update-relay-image", () => {
     expect(updateCall?.data.status).toBe("online");
   });
 
+  it("releases the post-update /health connection unread: only its status counts, so the body is cancelled", async () => {
+    const health = new Response(JSON.stringify({ status: "ok" }), { status: 200 });
+    const cancel = vi.spyOn(health.body!, "cancel");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(health));
+    mServer.findUnique.mockResolvedValue(serverFixture());
+
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-a/update-relay-image",
+      asJson(validBody),
+    );
+    const done = (await readSse(res)).find((e) => e.event === "done");
+
+    expect(done?.data.healthOk).toBe(true);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it("persists fingerprint even when `docker compose` fails (compose failure mustn't throw away capture)", async () => {
     // Legacy row + SSH handshake succeeds + fingerprint captured, but
     // compose exits non-zero. The B2-style invariant from re-install

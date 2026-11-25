@@ -108,13 +108,12 @@ describe("checkScheduled — required-env gate enforced end-to-end (real streamD
 
   it("provisions then deploys (reaches the relay) once the required key is satisfied", async () => {
     mProvision.mockResolvedValue({ provisionedKeys: ["METRICS_API_TOKEN"], wrote: true, missing: [] });
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: true,
-      status: 200,
-      body: {} as any,
-      headers: new Headers({ "content-type": "application/json" }),
-      json: async () => ({ result: { success: true, steps: [] } }),
-    } as unknown as Response);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ result: { success: true, steps: [] } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
 
     await checkScheduled();
     await new Promise((r) => setTimeout(r, 0));

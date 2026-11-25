@@ -1,9 +1,16 @@
 import { prisma } from "./prisma.js";
 import { guardedFetch } from "./guarded-fetch.js";
+import {
+  RELAY_ERROR_BODY_MAX_BYTES,
+  RELAY_RESPONSE_MAX_BYTES,
+  readRelayJson,
+  readRelayText,
+  relayBodyTooLarge,
+} from "./relay-body.js";
 import { hasRollbackOrFailedStep, isBuildCachePruneStep, recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "./deploy-recovery.js";
 import { verifyDeployHealth } from "./post-deploy-gate.js";
 import { provisionAndCheckAppSecrets, type ProvisionResult } from "./provision-secrets.js";
-import { envUnreadableRelayMessage } from "./relay.js";
+import { envUnreadableRelayMessage, RelayError } from "./relay.js";
 import { InvalidAppNameError, relayAppPath } from "./relay-path.js";
 import {
   CONFLICT_STEP_KIND,
@@ -424,7 +431,10 @@ export async function streamDeploy(opts: {
     // through recoverBrokenDeploy: those cases can't be told apart from a
     // dropped connection.
     if (!res.ok && res.status >= 400 && res.status < 500) {
-      const bodyText = await res.text().catch(() => "").finally(disarmIdleTimer);
+      // The relay's reason is only shown as text: cut at the error-body cap.
+      const bodyText = await readRelayText(res, { maxBytes: RELAY_ERROR_BODY_MAX_BYTES, truncate: true })
+        .catch(() => "")
+        .finally(disarmIdleTimer);
       const reason = `Relay rejected the deploy: ${res.status} ${bodyText || res.statusText}`;
       // 409: another deploy is already running on the relay. Nothing was
       // deployed by this request, so the app keeps its previous status
@@ -465,12 +475,17 @@ export async function streamDeploy(opts: {
     const contentType = res.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
       let data: any;
+      let jsonFailure = "Relay returned invalid JSON";
       try {
-        data = await res.json();
+        data = await readRelayJson(res);
         disarmIdleTimer();
-      } catch {
+      } catch (jsonErr) {
         disarmIdleTimer();
-        await prisma.deploy.update({ where: { id: deployId }, data: { status: "failed", log: failureStepLog("Relay returned invalid JSON") } });
+        // An answer over the body cap is the same failure as one that cannot
+        // be parsed (an unusable relay answer: nothing is recovered from it);
+        // only the reason differs.
+        if (jsonErr instanceof RelayError) jsonFailure = `Relay returned an unusable answer: ${jsonErr.message}`;
+        await prisma.deploy.update({ where: { id: deployId }, data: { status: "failed", log: failureStepLog(jsonFailure) } });
         await prisma.app.update({ where: { id: appId }, data: { status: "unhealthy" } });
         return;
       }
@@ -527,6 +542,8 @@ export async function streamDeploy(opts: {
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    // Bytes of the pending line (what `buffer` holds after the last newline).
+    let pendingBytes = 0;
     // Hoisted above the read loop: an `event: `/`data: ` pair can land in
     // separate chunks (frames are ~4KB+ now that step output carries
     // diagnostic text), and declaring this inside the loop body reset it to
@@ -550,8 +567,39 @@ export async function streamDeploy(opts: {
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
+      // The pending (not yet newline-terminated) line is the only thing that
+      // grows across reads. The largest legitimate line is the `done` event
+      // carrying the full result, which is as large as the JSON fallback body,
+      // so a line past the same cap is not a relay event: stop buffering,
+      // release the socket and fail like a broken stream (the catch block
+      // below recovers from the post-deploy state). The length is counted in
+      // bytes, scanning only the new chunk for the newline byte: a line that
+      // ends in this chunk is `pendingBytes` plus what precedes the newline,
+      // the line left open is what follows the last newline. (A line wholly
+      // inside one chunk is as large as the chunk, which the transport has
+      // already delivered.)
+      const firstNewline = value.indexOf(NEWLINE_BYTE);
+      if (firstNewline === -1) {
+        pendingBytes += value.length;
+      } else {
+        if (pendingBytes + firstNewline > RELAY_RESPONSE_MAX_BYTES) {
+          await reader.cancel().catch(() => undefined);
+          throw relayBodyTooLarge(RELAY_RESPONSE_MAX_BYTES);
+        }
+        pendingBytes = value.length - value.lastIndexOf(NEWLINE_BYTE) - 1;
+      }
+      if (pendingBytes > RELAY_RESPONSE_MAX_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw relayBodyTooLarge(RELAY_RESPONSE_MAX_BYTES);
+      }
+
+      // Split only when this chunk completed a line: splitting the whole
+      // pending buffer on every chunk would be quadratic for a long line.
+      let lines: string[] = [];
+      if (firstNewline !== -1) {
+        lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+      }
 
       for (const line of lines) {
         if (line.startsWith(":")) {
@@ -658,6 +706,8 @@ interface EventContext {
   previousStatus?: string;
   startedAt: number;
 }
+
+const NEWLINE_BYTE = 0x0a;
 
 // Caps a single step's output before it's persisted — mirrors agent-relay's
 // own HEALTH_FAILURE_LOG_MAX_CHARS cap so an already-capped upstream value
