@@ -349,10 +349,11 @@ async function assertPublicHost(hostname: string, lookupImpl?: DnsLookup): Promi
 
 /**
  * Issue a single GET against the public route. `ok` is false for a status
- * `isRouteDown` flags, or for a transport error (timeout, DNS, connection
- * refused); otherwise the route is considered reachable. A connection the
- * connect-time guard denies (the host resolved to a non-public address when
- * the socket was opened) is a refusal, like the pre-check, not a route failure.
+ * `isRouteDown` flags, or for a transport error (timeout, connection refused,
+ * TLS); otherwise the route is considered reachable. A name that cannot be
+ * resolved, at the pre-check or when the connection is opened, is a refusal
+ * (fail closed), as is a connection the connect-time guard denies (the host
+ * resolved to a non-public address): neither is a route failure.
  *
  * Before fetching, the URL's host is run through the SSRF guard
  * (`assertPublicHost`): if it is, or resolves to, a non-public address — or

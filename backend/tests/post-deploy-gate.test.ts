@@ -282,6 +282,14 @@ describe("probeRoute default transport (connect-time guard)", () => {
     expect(v).toEqual({ ok: true, status: 302 });
   });
 
+  it("ignores a failing body cancel and still reports the status verdict", async () => {
+    const body = { cancel: () => Promise.reject(new Error("x")) };
+    const ok = await probeRoute("https://x.test/", { fetchImpl: vi.fn().mockResolvedValue({ status: 200, body }), lookupImpl: publicLookup });
+    expect(ok).toEqual({ ok: true, status: 200 });
+    const down = await probeRoute("https://x.test/", { fetchImpl: vi.fn().mockResolvedValue({ status: 503, body }), lookupImpl: publicLookup });
+    expect(down).toEqual({ ok: false, status: 503 });
+  });
+
   it("cancels the response body after reading the status", async () => {
     const cancel = vi.fn().mockResolvedValue(undefined);
     const fetchImpl = vi.fn().mockResolvedValue({ status: 200, body: { cancel } });
