@@ -192,7 +192,7 @@ describe("apps router: streamDeploy delegation", () => {
 // dot, a traversal shape) still left a row's worth of work behind it. It now
 // refuses with the same 400 invalid_app_name the sibling :name routes
 // answer, BEFORE findOrCreateApp or any Deploy row.
-describe("apps POST /:name/deploy — refused app name answers 400 before any row", () => {
+describe("apps POST /:name/deploy: refused app name answers 400 before any row", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mAppUpsert.mockResolvedValue({ id: "app-a", name: "my-app" });

@@ -361,7 +361,7 @@ appsRouter.post("/:name/rollback", async (c) => {
   // Same refusal must hold if findOrCreateApp's OWN pattern (which is today
   // identical to the relay's, but is a separate constant) rejects the name:
   // map its typed error to the same 400 instead of letting it reach
-  // app.onError as a 500. Backstop — with the two patterns equal the
+  // app.onError as a 500. Backstop: with the two patterns equal the
   // relayAppPath check above already refused this name.
   let app: Awaited<ReturnType<typeof findOrCreateApp>>;
   try {
@@ -1048,7 +1048,7 @@ appsRouter.put("/:name/required-env-keys", async (c) => {
 
 // Exported for the backstop test in tests/apps-invalid-app-name-backstop.test.ts:
 // the throw is unreachable from any route handler (every caller checks
-// APP_NAME_PATTERN or relayAppPath first — except bulk deploy, which reports
+// APP_NAME_PATTERN or relayAppPath first, except bulk deploy, which reports
 // it in-band), so its typed-ness is what the tests pin.
 export async function findOrCreateApp(serverId: string, name: string) {
   if (!APP_NAME_PATTERN.test(name)) {

@@ -211,8 +211,8 @@ describe("streamDeploy -> recoverBrokenDeploy — append + rollback-aware succes
 
   it("does not write a second verdict when `done` already finalized the row and a read error then reaches recovery", async () => {
     const okStep = { name: "compose up", status: "success", durationMs: 500 };
-    // The relay delivered `done` (success) — finalizeDeploy settles the row
-    // `success` — and only the read AFTER that rejects. streamDeploy's catch
+    // The relay delivered `done` (success): finalizeDeploy settles the row
+    // `success`, and only the read AFTER that rejects. streamDeploy's catch
     // hands the id to recovery anyway; recovery's gate then says unhealthy,
     // so its `failed` verdict must NOT overwrite the settled `success` row,
     // and it must not touch the App row either.

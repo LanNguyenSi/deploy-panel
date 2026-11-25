@@ -5,7 +5,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 // app.onError. Via HTTP the refusal is normally pre-empted by the route's own
 // check (the local APP_NAME_PATTERN or relayAppPath's identical pattern), so
 // the route-level case here mocks relay-path's relayAppPath to pass any name
-// through (identity) — that is what simulates "a caller reached
+// through (identity): that is what simulates "a caller reached
 // findOrCreateApp with an unvalidated name" and pins the route's mapping of
 // the typed error. The direct findOrCreateApp case pins that the throw is the
 // typed error at all (a bare Error would answer 500) and that no App row is
@@ -93,7 +93,7 @@ describe("rollback route: an unvalidated name reaching findOrCreateApp answers 4
 
   // relayAppPath is identity-mocked (see the top of the file), so the name
   // gets past the route's relay-path guard and findOrCreateApp's own pattern
-  // is what refuses it — the situation the typed-error mapping exists for.
+  // is what refuses it, the situation the typed-error mapping exists for.
   it("POST /:name/rollback with a dotted name: 400 invalid_app_name, no Deploy row", async () => {
     const res = await app().request("/servers/srv-a/apps/my.app/rollback", {
       method: "POST",

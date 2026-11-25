@@ -134,9 +134,9 @@ v1Router.post("/deploy", async (c) => {
     return c.json({ error: "bad_request", message: "server and app must be strings" }, 400);
   }
 
-  // Kept body: this route's name refusal stays `bad_request` (its original
-  // shape) rather than switching to the INVALID_APP_NAME_BODY the relay-path
-  // routes answer; the status (400) and the refusal point are what changed.
+  // Kept body: this route's pattern refusal is unchanged, still the 400
+  // bad_request it always answered (not the INVALID_APP_NAME_BODY the
+  // relay-path routes answer); what is new is the typeof guard above it.
   if (!APP_NAME_PATTERN.test(appName)) {
     return c.json({ error: "bad_request", message: "Invalid app name: must be alphanumeric, dots, hyphens, or underscores" }, 400);
   }

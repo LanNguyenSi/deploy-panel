@@ -41,8 +41,8 @@ import {
 
 const mDeployFindUnique = (prisma.deploy as any).findUnique as ReturnType<typeof vi.fn>;
 // Recovery writes every verdict through the compare-and-set updateMany (see
-// settleRecoveredDeploy in deploy-recovery.ts), so this handle — which every
-// "what did the verdict say" assertion below reads — is the updateMany mock.
+// settleRecoveredDeploy in deploy-recovery.ts), so this handle (which every
+// "what did the verdict say" assertion below reads) is the updateMany mock.
 // `deploy.update` stays mocked but unused by recovery: it is what
 // streamDeploy/finalizeDeploy use, not this function.
 const mDeployUpdate = (prisma.deploy as any).updateMany as ReturnType<typeof vi.fn>;
@@ -749,14 +749,16 @@ describe("recoverBrokenDeploy: a healthy probe needs proof the target was reache
   });
 });
 
-// A finalize and a recovery can land on the same row at once (a stream
-// `done` event that races a read error, a rollback route, the periodic
-// stuck-sweep): recovery's health gate polls for up to ~60s, and any of
-// them can settle the row meanwhile. Every verdict is therefore written
-// with `updateMany` scoped to `status: "running"`; when the row is no
-// longer running the count is 0 and NOTHING else may be written: neither
-// the Deploy row (no plain `update` fallback) nor the App row. The health
-// probe still runs (it only reads); the guard is at write time.
+// A finalize and a recovery can land on the same row at once: in-process the
+// streamed done/finalize path (a stream `done` event that races a read
+// error) can settle the row while recovery's health gate polls for up to
+// ~60s; a rollback route or the periodic stuck-sweep can too, but only as
+// defence in depth (another process, or a registry gap). Every verdict is
+// therefore written with `updateMany` scoped to `status: "running"`; when
+// the row is no longer running the count is 0 and NOTHING else may be
+// written: neither the Deploy row (no plain `update` fallback) nor the App
+// row. The health probe still runs (it only reads); the guard is at write
+// time.
 describe("recoverBrokenDeploy: a row settled by another writer is never rewritten", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -779,6 +781,28 @@ describe("recoverBrokenDeploy: a row settled by another writer is never rewritte
     );
     expect(lastCall(mDeployUpdate).data.status).toBe("success");
     expect(mAppUpdate).toHaveBeenCalledOnce();
+  });
+
+  it("a compare-and-set write that itself rejects is still treated as settled: the App row update runs and no plain deploy.update fallback does", async () => {
+    mGate.mockResolvedValue({ healthy: true });
+    mockTargetReached(); // healthy verdict with the target proven -> success branch
+    // A DB error ON the conditional write: no count is known, so the catch
+    // assumes the write went through and recovery proceeds with its side
+    // effects. Falling back to count 0 here would silently skip the App row
+    // update even though nothing proved the row was settled by someone else.
+    mDeployUpdate.mockRejectedValue(new Error("db hiccup"));
+
+    await recoverBrokenDeploy("d1", "a1", "srv-a", "thd", "socket hang up");
+
+    expect(mDeployUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: "d1", status: "running" } }),
+    );
+    // The healthy verdict still reaches the App card...
+    expect(mAppUpdate).toHaveBeenCalledOnce();
+    expect(lastCall(mAppUpdate).data.status).toBe("healthy");
+    // ...and the rejected compare-and-set never becomes an unconditional
+    // second write on the Deploy row.
+    expect((prisma.deploy as any).update).not.toHaveBeenCalled();
   });
 
   it("a Deploy row already settled success: recovery writes neither the Deploy row nor the App row", async () => {
@@ -809,7 +833,7 @@ describe("recoverBrokenDeploy: a row settled by another writer is never rewritte
     );
     expect((prisma.deploy as any).update).not.toHaveBeenCalled();
     // The tempting side effect here is flipping the App card `unhealthy` for
-    // a row that another writer had already settled — that must not happen.
+    // a row that another writer had already settled, that must not happen.
     expect(mAppUpdate).not.toHaveBeenCalled();
   });
 

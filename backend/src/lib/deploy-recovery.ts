@@ -226,13 +226,13 @@ const RECOVERY_INTERVAL_MS = 12_000;
  * lookup throws) or the row's start time cannot be read, a recovered rollback
  * ends `interrupted` rather than `success`.
  *
- * Every verdict is written with a compare-and-set against `status:
- * "running"` (see settleRecoveredDeploy): the health gate polls for up to
- * ~60s, and a `done` event, a rollback route or the stuck-sweep can finalize
- * the row meanwhile — if the row is no longer `running` when the verdict
- * lands, recovery keeps the settled row (and the App card) untouched and only
- * logs the skip. The health probe itself still runs first (it reads, never
- * writes); the guard is at write time only.
+ * Every verdict is written with a compare-and-set against `status: "running"`
+ * (see settleRecoveredDeploy): the gate polls up to ~60s, and meanwhile the
+ * in-process streamed done/finalize path (a `done` event or a blocked/4xx
+ * write) followed by the throw that routed here can finalize the row; the
+ * rollback routes and the stuck-sweep only can, as defence in depth (another
+ * process, or a registry gap). The probe still runs (it reads); the guard is
+ * at write time: a settled row (App card too) is kept and the skip logged.
  */
 export async function recoverBrokenDeploy(
   deployId: string,
@@ -425,18 +425,18 @@ type RecoveryDeployWrite = {
 };
 
 /**
- * Writes one recovery verdict with the same compare-and-set the stuck-sweep
- * uses (startup.ts): `updateMany` scoped to `status: "running"`. Recovery
- * polls health for up to ~60s before it gets here, and meanwhile the row may
- * already have been finalized by another writer — a stream `done` event that
- * raced a read error (streamDeploy finalizes on `done`, then the reader
- * rejects and still hands the id to recovery), a rollback route, or the
- * periodic stuck-sweep. A plain `update` would silently rewrite that settled
- * row with recovery's verdict; here the `count` comes back `0`, the row (and
- * the App card and every side effect after this point) is left alone, and a
- * log line names the skip. A write that itself throws (a DB hiccup) is
- * swallowed like before and keeps the App-row update going, since no count
- * is known to decide otherwise.
+ * Writes one recovery verdict with the stuck-sweep's compare-and-set
+ * (startup.ts): `updateMany` scoped to `status: "running"`. Recovery polls
+ * health for up to ~60s, and meanwhile the row may already have been
+ * finalized in-process by the streamed done/finalize path (streamDeploy
+ * finalizes on `done`, a post-`done` read rejects and still hands the id to
+ * recovery) or a blocked/4xx write followed by a throw; rollback routes and
+ * the stuck-sweep only settle it as defence in depth (another process, or a
+ * registry gap). A plain `update` would silently rewrite that settled row
+ * with recovery's verdict; here the `count` comes back `0`, the row (and
+ * the App card and every side effect after this point) is left alone, and
+ * a log line names the skip. A write that itself throws (a DB hiccup) is
+ * swallowed like before: no count is known, so the App row update goes on.
  */
 async function settleRecoveredDeploy(
   deployId: string,
@@ -447,7 +447,7 @@ async function settleRecoveredDeploy(
     .updateMany({ where: { id: deployId, status: "running" }, data })
     .catch(() => ({ count: 1 }));
   if (settled.count === 0) {
-    console.log(`[deploy-recovery] ${appName}: deploy ${deployId} is no longer running (settled by another writer while recovery polled) — keeping that verdict, skipping the recovery write and the App row update`);
+    console.log(`[deploy-recovery] ${appName}: deploy ${deployId} is no longer running (settled by another writer while recovery polled): keeping that verdict, skipping the recovery write and the App row update`);
     return false;
   }
   return true;
