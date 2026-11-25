@@ -50,9 +50,13 @@ export async function relayRequest<T>(options: RelayRequestOptions): Promise<T> 
   }, { guarded: connectGuardRequired(server, actor) });
 
   if (!response.ok) {
-    // Only ever shown as a message: cut at the cap, never an error of its own.
-    const text = await readRelayText(response, { maxBytes: RELAY_ERROR_BODY_MAX_BYTES, truncate: true }).catch(() => "");
-    throw new RelayError(`Relay error (${response.status}): ${text}`, response.status, text);
+    // The body is bounded like any answer (cut at the cap, never an error of
+    // its own) and kept whole as `RelayError.body`: callers parse it (the
+    // rollback phase sits after the relay's stderr text). Only the message,
+    // which is displayed and stored as a log, is cut shorter.
+    const text = await readRelayText(response, { maxBytes: RELAY_RESPONSE_MAX_BYTES, truncate: true }).catch(() => "");
+    const shown = text.slice(0, RELAY_ERROR_BODY_MAX_BYTES);
+    throw new RelayError(`Relay error (${response.status}): ${shown}`, response.status, text);
   }
 
   return readRelayJson<T>(response, { maxBytes: maxResponseBytes });

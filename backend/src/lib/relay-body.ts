@@ -11,14 +11,21 @@
  *
  * Caps:
  *  - `RELAY_RESPONSE_MAX_BYTES` for every relay answer. The largest legitimate
- *    non-log answer is the deploy JSON fallback (a handful of steps of at most
- *    200,000 characters each, JSON escaping up to about twice that, so about
- *    4 MB); health, system, app list and detail, env and self-update answers
- *    are kilobytes. 8 MiB leaves a factor of two.
+ *    answer that is neither logs nor env is the deploy JSON fallback (a handful
+ *    of steps of at most 200,000 characters each, JSON escaping up to about
+ *    twice that, so about 4 MB); health, system, app list and detail and
+ *    self-update answers are kilobytes. 8 MiB leaves a factor of two. A
+ *    non-2xx body is read up to this cap too (cut there, never an error) and
+ *    kept as `RelayError.body`, which callers parse (the rollback phase); only
+ *    the human-facing message is cut shorter, at `RELAY_ERROR_BODY_MAX_BYTES`.
  *  - `RELAY_LOGS_MAX_BYTES` for the two logs routes: the relay sends up to
  *    16 MiB of stdout, JSON escaping of log text can double it, plus headroom.
- *  - `RELAY_ERROR_BODY_MAX_BYTES` for the text of a non-2xx answer, which is
- *    only ever shown as a message: it is cut at the cap, never an error.
+ *  - `RELAY_ENV_MAX_BYTES` for every app env read: the relay accepts an env
+ *    PUT of up to 500 entries of a key of up to 128 characters and a value of
+ *    up to 32,768 characters, about 16.46 MB raw, and answers a read with the
+ *    same entries; JSON escaping of the values can double that, so 40 MiB.
+ *  - `RELAY_ERROR_BODY_MAX_BYTES` for the human-facing message built from a
+ *    non-2xx answer (and the 4xx reason of a deploy, which is only displayed).
  *
  * `content-length` is only an early refusal: a header above the cap refuses
  * before any byte is read, a smaller (lying) one never raises the limit.
@@ -27,6 +34,7 @@ import { RelayError } from "./relay.js";
 
 export const RELAY_RESPONSE_MAX_BYTES = 8 * 1024 * 1024;
 export const RELAY_LOGS_MAX_BYTES = 40 * 1024 * 1024;
+export const RELAY_ENV_MAX_BYTES = 40 * 1024 * 1024;
 export const RELAY_ERROR_BODY_MAX_BYTES = 64 * 1024;
 
 export interface RelayReadOptions {
@@ -50,17 +58,6 @@ const LOG_LINES_MAX = 1000;
  */
 export function clampLogLines(raw: string | undefined): number {
   return Math.min(Math.max(1, Number(raw) || LOG_LINES_DEFAULT), LOG_LINES_MAX);
-}
-
-/**
- * True when `text` encodes to more than `maxBytes` of UTF-8. A UTF-16 code
- * unit is at least one and at most three bytes, so the byte length is only
- * computed in the band where the character count cannot decide.
- */
-export function pendingLineTooLong(text: string, maxBytes: number): boolean {
-  if (text.length > maxBytes) return true;
-  if (text.length * 3 <= maxBytes) return false;
-  return Buffer.byteLength(text, "utf8") > maxBytes;
 }
 
 /** The error of an over-cap body: a 502 naming the cap, never any body content. */

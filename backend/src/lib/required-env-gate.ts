@@ -1,4 +1,5 @@
 import { relayRequest, RelayError, envUnreadableRelayMessage } from "./relay.js";
+import { RELAY_ENV_MAX_BYTES } from "./relay-body.js";
 import { listAppSecretKeys } from "./app-secrets.js";
 import { relayAppPath, InvalidAppNameError } from "./relay-path.js";
 
@@ -60,6 +61,7 @@ export async function evaluateRequiredEnv(opts: {
       serverId,
       path: relayAppPath(appName, "/env"),
       method: "GET",
+      maxResponseBytes: RELAY_ENV_MAX_BYTES,
     });
     for (const entry of current.entries ?? []) {
       if (!resolved.has(entry.key)) resolved.set(entry.key, entry.value);

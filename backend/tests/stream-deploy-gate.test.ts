@@ -935,6 +935,113 @@ describe("streamDeploy: relay body limits", () => {
     fetchSpy.mockRestore();
   });
 
+  /** A body made of exactly these chunks, in this order. */
+  function chunksStream(chunks: Uint8Array[]) {
+    const stats = { cancelled: false };
+    let next = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (next >= chunks.length) controller.close();
+        else controller.enqueue(chunks[next++]);
+      },
+      cancel() {
+        stats.cancelled = true;
+      },
+    });
+    return { stream, stats };
+  }
+  const sseResponseOf = (stream: ReadableStream<Uint8Array>) =>
+    new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+  const encode = (text: string) => new TextEncoder().encode(text);
+  /** Text of exactly `bytes` UTF-8 bytes made of `char` (padded with ASCII where it does not divide). */
+  function textOfBytes(bytes: number, char: string): string {
+    const width = encode(char).length;
+    const count = Math.floor(bytes / width);
+    return char.repeat(count) + "a".repeat(bytes - count * width);
+  }
+  /** `bytes` split in odd-sized chunks, so multi-byte characters straddle chunk borders. */
+  function splitInto(bytes: Uint8Array, size: number): Uint8Array[] {
+    const out: Uint8Array[] = [];
+    for (let at = 0; at < bytes.length; at += size) out.push(bytes.subarray(at, at + size));
+    return out;
+  }
+  const PENDING_PREFIX = "event: step\ndata: ";
+  const OPEN_LINE_PREFIX_BYTES = "data: ".length;
+
+  describe.each([
+    ["3-byte", "\u20AC"],
+    ["4-byte", "\u{1F600}"],
+    ["1-byte", "z"],
+  ])("a pending line of %s characters", (_label, char) => {
+    it("exactly at the cap is not aborted", async () => {
+      const text = PENDING_PREFIX + textOfBytes(CAP - OPEN_LINE_PREFIX_BYTES, char);
+      // The closing newline ends the line at exactly the cap.
+      const { stream, stats } = chunksStream([...splitInto(encode(text), 100_003), encode("\n")]);
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponseOf(stream));
+
+      await streamDeploy(baseOpts);
+
+      expect(stats.cancelled).toBe(false);
+      expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+      fetchSpy.mockRestore();
+    });
+
+    it("one byte over the cap is aborted", async () => {
+      const text = PENDING_PREFIX + textOfBytes(CAP - OPEN_LINE_PREFIX_BYTES + 1, char);
+      // A trailing chunk keeps the stream open when the abort comes (a closed stream ignores cancel).
+      const { stream, stats } = chunksStream([...splitInto(encode(text), 100_003), encode("\n")]);
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponseOf(stream));
+
+      await streamDeploy(baseOpts);
+
+      expect(stats.cancelled).toBe(true);
+      expect(recoverBrokenDeploy).toHaveBeenCalledOnce();
+      fetchSpy.mockRestore();
+    });
+  });
+
+  it("many small chunks without a newline abort at the cap, not later", async () => {
+    const small = encode("a".repeat(1000));
+    const chunks = [encode(PENDING_PREFIX), ...Array.from({ length: CAP / 1000 + 200 }, () => small)];
+    const { stream, stats } = chunksStream(chunks);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponseOf(stream));
+
+    await streamDeploy(baseOpts);
+
+    expect(stats.cancelled).toBe(true);
+    expect(recoverBrokenDeploy).toHaveBeenCalledOnce();
+    fetchSpy.mockRestore();
+  });
+
+  it("a line that grows across chunks and ends in a later chunk over the cap is aborted at its newline", async () => {
+    const first = encode(PENDING_PREFIX + textOfBytes(CAP - OPEN_LINE_PREFIX_BYTES - 10, "z"));
+    const second = encode(`${"a".repeat(100)}\n: ping\n`);
+    const { stream, stats } = chunksStream([first, second, encode(": tail\n")]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponseOf(stream));
+
+    await streamDeploy(baseOpts);
+
+    expect(stats.cancelled).toBe(true);
+    expect(recoverBrokenDeploy).toHaveBeenCalledOnce();
+    fetchSpy.mockRestore();
+  });
+
+  it("complete lines totalling more than the cap are not a long line: the pending count restarts at every newline", async () => {
+    const line = encode(`: ${"p".repeat(997)}\n`);
+    const { stream, stats } = chunksStream([
+      ...Array.from({ length: CAP / 1000 + 500 }, () => line),
+      encode(`event: done\ndata: ${JSON.stringify({ success: true })}\n\n`),
+    ]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponseOf(stream));
+
+    await streamDeploy(baseOpts);
+
+    expect(stats.cancelled).toBe(false);
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+    expect(lastCall(mDeployUpdate).data.status).toBe("success");
+    fetchSpy.mockRestore();
+  });
+
   it("a 1 MiB SSE event line (under the cap) is still processed", async () => {
     const step = JSON.stringify({ name: "build", status: "success", durationMs: 1, output: "y".repeat(MiB) });
     const sse = `event: step\ndata: ${step}\n\nevent: done\ndata: ${JSON.stringify({ success: true })}\n\n`;

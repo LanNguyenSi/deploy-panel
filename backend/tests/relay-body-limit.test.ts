@@ -58,10 +58,10 @@ import { prisma } from "../src/lib/prisma.js";
 import { RelayError, relayRequest } from "../src/lib/relay.js";
 import {
   RELAY_ERROR_BODY_MAX_BYTES,
+  RELAY_ENV_MAX_BYTES,
   RELAY_LOGS_MAX_BYTES,
   RELAY_RESPONSE_MAX_BYTES,
   clampLogLines,
-  pendingLineTooLong,
   readRelayJson,
   readRelayText,
 } from "../src/lib/relay-body.js";
@@ -219,21 +219,13 @@ describe("readRelayJson / readRelayText", () => {
     // Under the cap nothing is cut.
     expect(await readRelayText(new Response("short"), { maxBytes: 1024, truncate: true })).toBe("short");
   });
-
-  it("pendingLineTooLong compares UTF-8 bytes", () => {
-    expect(pendingLineTooLong("a".repeat(10), 10)).toBe(false);
-    expect(pendingLineTooLong("a".repeat(11), 10)).toBe(true);
-    // Two bytes per character: 5 characters are exactly 10 bytes.
-    expect(pendingLineTooLong("é".repeat(5), 10)).toBe(false);
-    expect(pendingLineTooLong("é".repeat(6), 10)).toBe(true);
-    expect(pendingLineTooLong("é".repeat(4), 10)).toBe(false);
-  });
 });
 
 describe("caps", () => {
   it("are the documented values", () => {
     expect(RELAY_RESPONSE_MAX_BYTES).toBe(8 * MiB);
     expect(RELAY_LOGS_MAX_BYTES).toBe(40 * MiB);
+    expect(RELAY_ENV_MAX_BYTES).toBe(40 * MiB);
     expect(RELAY_ERROR_BODY_MAX_BYTES).toBe(64 * 1024);
   });
 });
@@ -302,15 +294,25 @@ describe("relayRequest", () => {
     await expect(relayRequest({ serverId: "srv-1", path: "/api/x" })).rejects.toMatchObject({ status: 502 });
   });
 
-  it("cuts the error body of a non-2xx answer at 64 KiB and keeps the relay's status", async () => {
-    const { res, stats } = streamResponse(200 * 1024, { status: 500 });
+  it("keeps a non-2xx body whole in RelayError.body and cuts only the message at 64 KiB", async () => {
+    const { res } = streamResponse(200 * 1024, { status: 500 });
     fetchReturning(() => res);
 
     const err = await relayRequest({ serverId: "srv-1", path: "/api/x" }).catch((e) => e);
     expect(err).toBeInstanceOf(RelayError);
     expect(err.status).toBe(500);
-    expect(err.body).toHaveLength(RELAY_ERROR_BODY_MAX_BYTES);
-    expect(err.message).toBe(`Relay error (500): ${err.body}`);
+    expect(err.body).toHaveLength(200 * 1024);
+    expect(err.message).toBe(`Relay error (500): ${"Z".repeat(RELAY_ERROR_BODY_MAX_BYTES)}`);
+  });
+
+  it("bounds a non-2xx body at the answer cap: it is cut there, never an error, and the stream is cancelled", async () => {
+    const { res, stats } = streamResponse(RELAY_RESPONSE_MAX_BYTES + 2 * MiB, { status: 500 });
+    fetchReturning(() => res);
+
+    const err = await relayRequest({ serverId: "srv-1", path: "/api/x" }).catch((e) => e);
+    expect(err.status).toBe(500);
+    expect(err.body).toHaveLength(RELAY_RESPONSE_MAX_BYTES);
+    expect(err.message).toHaveLength(`Relay error (500): `.length + RELAY_ERROR_BODY_MAX_BYTES);
     expect(stats.cancelled).toBe(true);
   });
 
