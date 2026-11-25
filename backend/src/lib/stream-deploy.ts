@@ -1,9 +1,17 @@
 import { prisma } from "./prisma.js";
 import { guardedFetch } from "./guarded-fetch.js";
+import {
+  RELAY_ERROR_BODY_MAX_BYTES,
+  RELAY_RESPONSE_MAX_BYTES,
+  readRelayJson,
+  readRelayText,
+  pendingLineTooLong,
+  relayBodyTooLarge,
+} from "./relay-body.js";
 import { hasRollbackOrFailedStep, isBuildCachePruneStep, recoverBrokenDeploy, registerActiveDeploy, releaseActiveDeploy } from "./deploy-recovery.js";
 import { verifyDeployHealth } from "./post-deploy-gate.js";
 import { provisionAndCheckAppSecrets, type ProvisionResult } from "./provision-secrets.js";
-import { envUnreadableRelayMessage } from "./relay.js";
+import { envUnreadableRelayMessage, RelayError } from "./relay.js";
 import { InvalidAppNameError, relayAppPath } from "./relay-path.js";
 import {
   CONFLICT_STEP_KIND,
@@ -424,7 +432,10 @@ export async function streamDeploy(opts: {
     // through recoverBrokenDeploy: those cases can't be told apart from a
     // dropped connection.
     if (!res.ok && res.status >= 400 && res.status < 500) {
-      const bodyText = await res.text().catch(() => "").finally(disarmIdleTimer);
+      // The relay's reason is only shown as text: cut at the error-body cap.
+      const bodyText = await readRelayText(res, { maxBytes: RELAY_ERROR_BODY_MAX_BYTES, truncate: true })
+        .catch(() => "")
+        .finally(disarmIdleTimer);
       const reason = `Relay rejected the deploy: ${res.status} ${bodyText || res.statusText}`;
       // 409: another deploy is already running on the relay. Nothing was
       // deployed by this request, so the app keeps its previous status
@@ -465,12 +476,17 @@ export async function streamDeploy(opts: {
     const contentType = res.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
       let data: any;
+      let jsonFailure = "Relay returned invalid JSON";
       try {
-        data = await res.json();
+        data = await readRelayJson(res);
         disarmIdleTimer();
-      } catch {
+      } catch (jsonErr) {
         disarmIdleTimer();
-        await prisma.deploy.update({ where: { id: deployId }, data: { status: "failed", log: failureStepLog("Relay returned invalid JSON") } });
+        // An answer over the body cap is the same failure as one that cannot
+        // be parsed (an unusable relay answer: nothing is recovered from it);
+        // only the reason differs.
+        if (jsonErr instanceof RelayError) jsonFailure = `Relay returned an unusable answer: ${jsonErr.message}`;
+        await prisma.deploy.update({ where: { id: deployId }, data: { status: "failed", log: failureStepLog(jsonFailure) } });
         await prisma.app.update({ where: { id: appId }, data: { status: "unhealthy" } });
         return;
       }
@@ -552,6 +568,15 @@ export async function streamDeploy(opts: {
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
+      // The pending (not yet newline-terminated) line is the only thing that
+      // grows across reads. One event line carries at most one step, so a
+      // pending line past the body cap is not a relay event: stop buffering,
+      // release the socket and fail like a broken stream (the catch block
+      // below recovers from the post-deploy state).
+      if (pendingLineTooLong(buffer, RELAY_RESPONSE_MAX_BYTES)) {
+        await reader.cancel().catch(() => undefined);
+        throw relayBodyTooLarge(RELAY_RESPONSE_MAX_BYTES);
+      }
 
       for (const line of lines) {
         if (line.startsWith(":")) {

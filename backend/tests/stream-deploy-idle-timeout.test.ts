@@ -277,17 +277,18 @@ describe("streamDeploy: idle timeout instead of a fixed total cap", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
       const signal = init!.signal as AbortSignal;
       await new Promise((resolve) => setTimeout(resolve, STREAM_FIRST_BYTE_TIMEOUT_MS - 1));
-      return {
-        ok: true,
-        status: 200,
-        body: {},
-        headers: new Headers({ "content-type": "application/json" }),
-        json: () =>
-          new Promise((resolve, reject) => {
-            signal.addEventListener("abort", () => reject(signal.reason));
-            setTimeout(() => resolve({ result: { success: true, durationMs: 5 } }), STREAM_FIRST_BYTE_TIMEOUT_MS - 1);
-          }),
-      } as unknown as Response;
+      // The JSON body arrives after another window's worth of silence; an
+      // abort of the dispatch signal errors the stream, as a real fetch does.
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          signal.addEventListener("abort", () => controller.error(signal.reason));
+          setTimeout(() => {
+            controller.enqueue(new TextEncoder().encode(JSON.stringify({ result: { success: true, durationMs: 5 } })));
+            controller.close();
+          }, STREAM_FIRST_BYTE_TIMEOUT_MS - 1);
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
     });
 
     const run = streamDeploy(opts);

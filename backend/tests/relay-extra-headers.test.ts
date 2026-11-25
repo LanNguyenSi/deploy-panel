@@ -12,10 +12,7 @@ import { relayRequest } from "../src/lib/relay.js";
 
 describe("relayRequest extra headers", () => {
   it("forwards caller headers but never lets them replace the content type or the bearer token", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: true,
-      json: async () => ({}),
-    } as unknown as Response);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
 
     await relayRequest({
       serverId: "srv",
@@ -35,10 +32,7 @@ describe("relayRequest extra headers", () => {
   });
 
   it("drops caller content-type and authorization keys regardless of case", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: true,
-      json: async () => ({}),
-    } as unknown as Response);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
 
     await relayRequest({
       serverId: "srv",

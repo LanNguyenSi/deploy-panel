@@ -22,6 +22,7 @@
 
 import { normalizeRevision } from "../lib/ghcr.js";
 import { relayFetch } from "../lib/relay-fetch.js";
+import { readRelayJson } from "../lib/relay-body.js";
 import { connectGuardRequired } from "../lib/connect-guard.js";
 
 export type RelayRecordOutcome =
@@ -77,7 +78,7 @@ export async function readRelaySelfUpdateOutcome(
       signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),
     }, { guarded: opts.guarded ?? connectGuardRequired(server) });
     if (!res.ok) return { kind: "none" };
-    const body = (await res.json()) as {
+    const body = (await readRelayJson(res)) as {
       revision?: unknown;
       state?: Record<string, unknown> | null;
     } | null;

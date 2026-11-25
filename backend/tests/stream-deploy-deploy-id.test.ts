@@ -60,12 +60,12 @@ describe("streamDeploy sends the panel deploy id to the relay", () => {
   });
 
   it("a relay 400 for the id is a deploy-start failure, not a lost connection", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: false,
-      status: 400,
-      statusText: "Bad Request",
-      text: async () => '{"error":"Invalid X-Deploy-Id header: deployId must be 1-128 characters from [A-Za-z0-9._:-]"}',
-    } as unknown as Response);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response('{"error":"Invalid X-Deploy-Id header: deployId must be 1-128 characters from [A-Za-z0-9._:-]"}', {
+        status: 400,
+        statusText: "Bad Request",
+      }),
+    );
 
     await streamDeploy(opts);
 

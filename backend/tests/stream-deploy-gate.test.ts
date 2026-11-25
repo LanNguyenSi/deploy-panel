@@ -110,13 +110,7 @@ describe("streamDeploy — pre-deploy secret provisioning + required-env gate", 
 
   it("proceeds to call the relay's deploy endpoint once provisioning leaves nothing missing", async () => {
     mProvision.mockResolvedValue({ provisionedKeys: ["METRICS_API_TOKEN"], wrote: true, missing: [] });
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: true,
-      status: 200,
-      body: {} as any,
-      headers: new Headers({ "content-type": "application/json" }),
-      json: async () => ({ result: { success: true, steps: [] } }),
-    } as unknown as Response);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ result: { success: true, steps: [] } }), { status: 200, headers: { "content-type": "application/json" } }));
 
     await streamDeploy(baseOpts);
 
@@ -131,13 +125,7 @@ describe("streamDeploy — pre-deploy secret provisioning + required-env gate", 
   it("passes requiredEnvKeys from the app row into provisioning, defaulting to [] when the app has none declared", async () => {
     mAppFindUnique.mockResolvedValue({ requiredEnvKeys: [] });
     mProvision.mockResolvedValue({ provisionedKeys: [], wrote: false, missing: [] });
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: true,
-      status: 200,
-      body: {} as any,
-      headers: new Headers({ "content-type": "application/json" }),
-      json: async () => ({ result: { success: true, steps: [] } }),
-    } as unknown as Response);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ result: { success: true, steps: [] } }), { status: 200, headers: { "content-type": "application/json" } }));
 
     await streamDeploy(baseOpts);
 
@@ -150,13 +138,7 @@ describe("streamDeploy — pre-deploy secret provisioning + required-env gate", 
 
   it("records which panel-managed secrets were (re)provisioned by key name only, never a value", async () => {
     mProvision.mockResolvedValue({ provisionedKeys: ["METRICS_API_TOKEN"], wrote: true, missing: [] });
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: true,
-      status: 200,
-      body: {} as any,
-      headers: new Headers({ "content-type": "application/json" }),
-      json: async () => ({ result: { success: true, steps: [] } }),
-    } as unknown as Response);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ result: { success: true, steps: [] } }), { status: 200, headers: { "content-type": "application/json" } }));
 
     await streamDeploy(baseOpts);
 
@@ -269,14 +251,7 @@ describe("streamDeploy: relay response handling", () => {
   });
 
   it("relay 404 (unknown app): marks the deploy failed without recovery, and the reason round-trips as a visible step", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: false,
-      status: 404,
-      statusText: "Not Found",
-      body: null,
-      headers: new Headers(),
-      text: async () => "unknown app",
-    } as unknown as Response);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unknown app", { status: 404, statusText: "Not Found" }));
 
     await streamDeploy(baseOpts);
 
@@ -298,14 +273,7 @@ describe("streamDeploy: relay response handling", () => {
   });
 
   it("relay 409 (another deploy running): deploy fails with a conflict step and the app keeps its previous status", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: false,
-      status: 409,
-      statusText: "Conflict",
-      body: null,
-      headers: new Headers(),
-      text: async () => "deploy already running",
-    } as unknown as Response);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("deploy already running", { status: 409, statusText: "Conflict" }));
 
     await streamDeploy({ ...baseOpts, previousStatus: "healthy" });
 
@@ -325,14 +293,7 @@ describe("streamDeploy: relay response handling", () => {
   });
 
   const conflictResponse = () =>
-    ({
-      ok: false,
-      status: 409,
-      statusText: "Conflict",
-      body: null,
-      headers: new Headers(),
-      text: async () => "busy",
-    }) as unknown as Response;
+    new Response("busy", { status: 409, statusText: "Conflict" });
 
   it("relay 409 with a `deploying` capture and a running deploy row of the app: the running deploy owns the card, App.status is not written", async () => {
     // A sibling row of THIS app still `running` (the current one excluded):
@@ -440,14 +401,7 @@ describe("streamDeploy: relay response handling", () => {
   });
 
   it("relay 404 (not a conflict) with a `deploying` capture: deploy failed and app marked unhealthy", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: false,
-      status: 404,
-      statusText: "Not Found",
-      body: null,
-      headers: new Headers(),
-      text: async () => "unknown app",
-    } as unknown as Response);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unknown app", { status: 404, statusText: "Not Found" }));
     await streamDeploy({ ...baseOpts, previousStatus: "deploying" });
     expect(lastCall(mDeployUpdate).data.status).toBe("failed");
     expect(lastCall(mAppUpdate).data).toEqual({ status: "unhealthy" });
@@ -456,14 +410,7 @@ describe("streamDeploy: relay response handling", () => {
   });
 
   it("relay 400 (bad branch): marks the deploy failed without recovery", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: false,
-      status: 400,
-      statusText: "Bad Request",
-      body: null,
-      headers: new Headers(),
-      text: async () => "unknown branch: does-not-exist",
-    } as unknown as Response);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("unknown branch: does-not-exist", { status: 400, statusText: "Bad Request" }));
 
     await streamDeploy(baseOpts);
 
@@ -477,14 +424,7 @@ describe("streamDeploy: relay response handling", () => {
   });
 
   it("relay 500: still routes through recoverBrokenDeploy (not the 4xx no-recovery path)", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: false,
-      status: 500,
-      statusText: "Internal Server Error",
-      body: null,
-      headers: new Headers(),
-      text: async () => "boom",
-    } as unknown as Response);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("boom", { status: 500, statusText: "Internal Server Error" }));
 
     await streamDeploy(baseOpts);
 
@@ -506,15 +446,7 @@ describe("streamDeploy: relay response handling", () => {
   });
 
   it("relay JSON fallback with an unparseable body: stores the failure reason as a JSON step array, not a bare string", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: true,
-      status: 200,
-      body: {} as any,
-      headers: new Headers({ "content-type": "application/json" }),
-      json: async () => {
-        throw new Error("invalid json");
-      },
-    } as unknown as Response);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{not json", { status: 200, headers: { "content-type": "application/json" } }));
 
     await streamDeploy(baseOpts);
 
@@ -561,13 +493,7 @@ describe("streamDeploy: relay response handling", () => {
     fetchSpy.mockRestore();
   });
   const jsonResponse = (body: unknown) =>
-    ({
-      ok: true,
-      status: 200,
-      body: {} as any,
-      headers: new Headers({ "content-type": "application/json" }),
-      json: async () => body,
-    }) as unknown as Response;
+    new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
   const blockedPreflight = {
     passed: false,
     checks: [
@@ -884,5 +810,142 @@ describe("blockedPreflightSteps / normalizeDeployLog", () => {
     ).toEqual([expect.objectContaining({ name: "disk", status: "failure", output: "full" })]);
     const rollback = { success: true, commitBefore: "a" };
     expect(normalizeDeployLog(rollback)).toEqual([rollback]);
+  });
+});
+
+describe("streamDeploy: relay body limits", () => {
+  const MiB = 1024 * 1024;
+  const CAP = 8 * MiB;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mAppFindUnique.mockResolvedValue({ requiredEnvKeys: [] });
+    mProvision.mockResolvedValue({ provisionedKeys: [], wrote: false, missing: [] });
+  });
+
+  /** A body of `total` bytes: `prefix`, then filler, in 64 KiB chunks. */
+  function limitedStream(total: number, prefix = "") {
+    const stats = { cancelled: false };
+    const encoder = new TextEncoder();
+    const filler = encoder.encode("Z".repeat(64 * 1024));
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent === 0 && prefix) {
+          controller.enqueue(encoder.encode(prefix));
+          sent += prefix.length;
+          return;
+        }
+        const size = Math.min(filler.byteLength, total - sent);
+        if (size <= 0) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(size === filler.byteLength ? filler : filler.subarray(0, size));
+        sent += size;
+      },
+      cancel() {
+        stats.cancelled = true;
+      },
+    });
+    return { stream, stats };
+  }
+
+  const json = (init: ResponseInit = {}) => ({ "content-type": "application/json", ...init });
+
+  it("JSON fallback over the cap: the deploy fails as an unusable answer, naming the cap, nothing is recovered, the body is cancelled", async () => {
+    const { stream, stats } = limitedStream(CAP + MiB, '{"result":{"success":true,"pad":"');
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(stream, { status: 200, headers: json() }));
+
+    await streamDeploy(baseOpts);
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    expect(lastCall(mAppUpdate).data.status).toBe("unhealthy");
+    const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+    expect(steps[0].output).toBe(`Relay returned an unusable answer: Relay response exceeded the ${CAP} byte limit`);
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+    expect(stats.cancelled).toBe(true);
+    fetchSpy.mockRestore();
+  });
+
+  it("JSON fallback with a content-length above the cap: refused before the body is read", async () => {
+    const res = new Response('{"result":{"success":true}}', {
+      status: 200,
+      headers: json({ "content-length": String(CAP + 1) }),
+    });
+    const getReader = vi.spyOn(res.body!, "getReader");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(res);
+
+    await streamDeploy(baseOpts);
+
+    expect(getReader).not.toHaveBeenCalled();
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    expect(JSON.parse(lastCall(mDeployUpdate).data.log)[0].output).toContain("unusable answer");
+    fetchSpy.mockRestore();
+  });
+
+  it("JSON fallback of 1 MiB (a legitimate large answer) is still read", async () => {
+    const body = JSON.stringify({ result: { success: true, steps: [{ name: "build", status: "success", output: "x".repeat(MiB) }] } });
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(body, { status: 200, headers: json() }));
+
+    await streamDeploy(baseOpts);
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("success");
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("a 4xx text body is cut at 64 KiB: the rejection reason stays bounded and the deploy still fails without recovery", async () => {
+    const { stream, stats } = limitedStream(256 * 1024);
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(stream, { status: 400, statusText: "Bad Request" }));
+
+    await streamDeploy(baseOpts);
+
+    expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+    const output: string = JSON.parse(lastCall(mDeployUpdate).data.log)[0].output;
+    expect(output).toBe(`Relay rejected the deploy: 400 ${"Z".repeat(64 * 1024)}`);
+    expect(stats.cancelled).toBe(true);
+    fetchSpy.mockRestore();
+  });
+
+  it("an SSE line without a newline aborts the stream past the cap and goes the broken-stream way", async () => {
+    const { stream, stats } = limitedStream(CAP + 4 * MiB, 'event: step\ndata: {"name":"build","output":"');
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } }));
+
+    await streamDeploy(baseOpts);
+
+    expect(stats.cancelled).toBe(true);
+    expect(recoverBrokenDeploy).toHaveBeenCalledOnce();
+    expect(recoverBrokenDeploy).toHaveBeenCalledWith(
+      "d1",
+      "app-1",
+      "srv-a",
+      "thd",
+      `Relay response exceeded the ${CAP} byte limit`,
+    );
+    fetchSpy.mockRestore();
+  });
+
+  it("a 1 MiB SSE event line (under the cap) is still processed", async () => {
+    const step = JSON.stringify({ name: "build", status: "success", durationMs: 1, output: "y".repeat(MiB) });
+    const sse = `event: step\ndata: ${step}\n\nevent: done\ndata: ${JSON.stringify({ success: true })}\n\n`;
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(sse, { status: 200, headers: { "content-type": "text/event-stream" } }));
+
+    await streamDeploy(baseOpts);
+
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+    expect(lastCall(mDeployUpdate).data.status).toBe("success");
+    fetchSpy.mockRestore();
   });
 });

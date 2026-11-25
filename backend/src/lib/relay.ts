@@ -1,6 +1,12 @@
 import { prisma } from "./prisma.js";
 import { connectGuardRequired } from "./connect-guard.js";
 import { relayFetch } from "./relay-fetch.js";
+import {
+  RELAY_ERROR_BODY_MAX_BYTES,
+  RELAY_RESPONSE_MAX_BYTES,
+  readRelayJson,
+  readRelayText,
+} from "./relay-body.js";
 
 export interface RelayRequestOptions {
   serverId: string;
@@ -13,10 +19,16 @@ export interface RelayRequestOptions {
   timeoutMs?: number;
   /** The request actor, when there is one; an admin is never connect-guarded. See `connectGuardRequired`. */
   actor?: { isAdmin: boolean };
+  /**
+   * Cap on the decoded answer body; defaults to `RELAY_RESPONSE_MAX_BYTES`.
+   * Over it the read is aborted and the call fails with a `RelayError` (502).
+   * Only the logs routes raise it (`RELAY_LOGS_MAX_BYTES`).
+   */
+  maxResponseBytes?: number;
 }
 
 export async function relayRequest<T>(options: RelayRequestOptions): Promise<T> {
-  const { serverId, path, method = "GET", body, headers: extraHeaders, timeoutMs = 300_000, actor } = options;
+  const { serverId, path, method = "GET", body, headers: extraHeaders, timeoutMs = 300_000, actor, maxResponseBytes = RELAY_RESPONSE_MAX_BYTES } = options;
 
   const server = await prisma.server.findUnique({ where: { id: serverId } });
   if (!server) throw RelayError.local("Server not found", 404);
@@ -38,11 +50,12 @@ export async function relayRequest<T>(options: RelayRequestOptions): Promise<T> 
   }, { guarded: connectGuardRequired(server, actor) });
 
   if (!response.ok) {
-    const text = await response.text().catch(() => "");
+    // Only ever shown as a message: cut at the cap, never an error of its own.
+    const text = await readRelayText(response, { maxBytes: RELAY_ERROR_BODY_MAX_BYTES, truncate: true }).catch(() => "");
     throw new RelayError(`Relay error (${response.status}): ${text}`, response.status, text);
   }
 
-  return response.json() as Promise<T>;
+  return readRelayJson<T>(response, { maxBytes: maxResponseBytes });
 }
 
 export class RelayError extends Error {

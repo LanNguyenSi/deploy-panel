@@ -35,6 +35,7 @@ import {
 } from "../services/probe-guard.js";
 import { denyPrivateServerTargets } from "../lib/target-guard.js";
 import { relayFetch } from "../lib/relay-fetch.js";
+import { readRelayJson } from "../lib/relay-body.js";
 import { connectGuardRequired, connectGuardRequiredForActor } from "../lib/connect-guard.js";
 import {
   computeRelayOutdated,
@@ -229,7 +230,7 @@ serversRouter.post("/:id/test", async (c) => {
     }, { guarded: connectGuardRequired(server, actor) });
 
     if (response.ok) {
-      const data = await response.json();
+      const data = await readRelayJson(response);
       const relayRevision = normalizeRevision(
         (data as Record<string, unknown> | null)?.revision,
       );
@@ -305,7 +306,7 @@ serversRouter.get("/:id/system", async (c) => {
     }, { guarded: connectGuardRequired(server, actor) });
 
     if (!res.ok) return c.json({ error: "relay_error", status: res.status }, 502);
-    return c.json(await res.json());
+    return c.json(await readRelayJson(res));
   } catch {
     return c.json({ error: "unreachable" }, 502);
   }
@@ -1546,6 +1547,8 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
               headers,
               signal: AbortSignal.timeout(5000),
             }, { guarded: connectGuardRequired(server, actor) });
+            // Only the status counts here; release the connection unread.
+            await response.body?.cancel().catch(() => undefined);
             if (response.ok) {
               healthOk = true;
               break;
@@ -1871,7 +1874,7 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
       );
     }
 
-    const triggerBody = (await triggerRes.json().catch(() => null)) as Record<
+    const triggerBody = (await readRelayJson(triggerRes).catch(() => null)) as Record<
       string,
       unknown
     > | null;
