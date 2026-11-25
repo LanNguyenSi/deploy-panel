@@ -3,6 +3,8 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import { relayRequest } from "./relay.js";
 import { relayAppPath } from "./relay-path.js";
 import { isPrivateOrLoopbackHost } from "../services/probe-guard.js";
+import { ConnectDeniedError } from "./connect-guard.js";
+import { guardedFetch } from "./guarded-fetch.js";
 
 /**
  * Post-deploy health gate.
@@ -315,9 +317,10 @@ interface HostCheck {
  * one fails CLOSED: a host we cannot prove is public is refused rather than
  * fetched blind.
  *
- * Residual risk (out of scope, tracked separately): DNS rebinding / TOCTOU —
- * a resolver can answer public here and private to the subsequent `fetch`.
- * Fully closing it needs resolve-once-then-dial-the-vetted-IP.
+ * This lookup is only the early, readable refusal. The probe itself is sent
+ * through `guardedFetch`, which resolves the host again on the connection and
+ * classifies those addresses before connecting, so a resolver that answers
+ * public here and private to the connection cannot steer the request.
  */
 async function assertPublicHost(hostname: string, lookupImpl?: DnsLookup): Promise<HostCheck> {
   const bare = hostname.replace(/^\[|\]$/g, "");
@@ -347,7 +350,9 @@ async function assertPublicHost(hostname: string, lookupImpl?: DnsLookup): Promi
 /**
  * Issue a single GET against the public route. `ok` is false for a status
  * `isRouteDown` flags, or for a transport error (timeout, DNS, connection
- * refused); otherwise the route is considered reachable.
+ * refused); otherwise the route is considered reachable. A connection the
+ * connect-time guard denies (the host resolved to a non-public address when
+ * the socket was opened) is a refusal, like the pre-check, not a route failure.
  *
  * Before fetching, the URL's host is run through the SSRF guard
  * (`assertPublicHost`): if it is, or resolves to, a non-public address — or
@@ -371,7 +376,7 @@ export async function probeRoute(
     return { ok: true, refused: true, error: `route probe skipped: ${guard.reason}` };
   }
 
-  const fetchImpl = opts.fetchImpl ?? fetch;
+  const fetchImpl = opts.fetchImpl ?? guardedFetch;
   const timeoutMs = opts.timeoutMs ?? 10_000;
   try {
     const res = await fetchImpl(url, {
@@ -382,9 +387,14 @@ export async function probeRoute(
       redirect: "manual",
       signal: AbortSignal.timeout(timeoutMs),
     });
+    // Only the status is read: release the connection without the body.
+    await res.body?.cancel().catch(() => {});
     if (isRouteDown(res.status)) return { ok: false, status: res.status };
     return { ok: true, status: res.status };
   } catch (err) {
+    if (err instanceof Error && err.cause instanceof ConnectDeniedError) {
+      return { ok: true, refused: true, error: `route probe skipped: ${err.cause.message}` };
+    }
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }

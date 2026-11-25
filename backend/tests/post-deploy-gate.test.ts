@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { createServer, type Server } from "node:http";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { _setConnectResolver } from "../src/lib/connect-guard.js";
 import {
   parseComposePs,
   assessContainers,
@@ -204,6 +206,88 @@ describe("probeRoute", () => {
     expect(v).toMatchObject({ ok: true, refused: true });
     expect(v.error).toContain("could not resolve");
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("probeRoute default transport (connect-time guard)", () => {
+  let server: Server | undefined;
+  afterEach(async () => {
+    _setConnectResolver(null);
+    vi.restoreAllMocks();
+    if (server) {
+      server.closeAllConnections();
+      await new Promise<void>((r) => server!.close(() => r()));
+      server = undefined;
+    }
+  });
+
+  it("REFUSES a rebinding answer (public at the pre-check, loopback at connect) without opening a socket", async () => {
+    let connections = 0;
+    server = createServer((_req, res) => res.end("secret"));
+    server.on("connection", () => connections++);
+    await new Promise<void>((r) => server!.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    _setConnectResolver((_host, cb) => cb(null, [{ address: "127.0.0.1", family: 4 }]));
+    const v = await probeRoute(`http://rebind.example.com:${port}/`, { lookupImpl: publicLookup });
+    expect(v).toMatchObject({ ok: true, refused: true });
+    expect(v.error).toContain("route probe skipped");
+    expect(connections).toBe(0);
+  });
+
+  it("REFUSES a rebinding answer in a private range (10.0.0.1)", async () => {
+    _setConnectResolver((_host, cb) => cb(null, [{ address: "10.0.0.1", family: 4 }]));
+    const v = await probeRoute("https://rebind.example.com/", { lookupImpl: publicLookup });
+    expect(v).toMatchObject({ ok: true, refused: true });
+    expect(v.error).toContain("route probe skipped");
+  });
+
+  it("treats a connect-time lookup failure as a refusal too", async () => {
+    _setConnectResolver((_host, cb) => cb(Object.assign(new Error("boom"), { code: "ESERVFAIL" }), []));
+    const v = await probeRoute("https://x.example.com/", { lookupImpl: publicLookup });
+    expect(v).toMatchObject({ ok: true, refused: true });
+  });
+
+  it("keeps a non-denial transport failure a route failure (ok: false)", async () => {
+    // Public answer at connect, and the connection itself fails: no real network.
+    _setConnectResolver((_host, cb) => cb(null, [{ address: "93.184.216.34", family: 4 }]));
+    const { EventEmitter } = await import("node:events");
+    const http = await import("node:http");
+    vi.spyOn(http.default, "request").mockImplementation((() => {
+      const req = new EventEmitter() as EventEmitter & { end: () => void; destroy: () => void };
+      req.end = () => queueMicrotask(() => req.emit("error", Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" })));
+      req.destroy = () => {};
+      return req;
+    }) as unknown as typeof http.request);
+    const v = await probeRoute("http://down.example.com/", { lookupImpl: publicLookup });
+    expect(v.ok).toBe(false);
+    expect(v.refused).toBeUndefined();
+    expect(v.error).toContain("fetch failed");
+  });
+
+  it("counts a 3xx answer as reachable (not followed)", async () => {
+    server = createServer((_req, res) => {
+      res.writeHead(302, { location: "http://127.0.0.1:1/" });
+      res.end();
+    });
+    await new Promise<void>((r) => server!.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    // The classifier would refuse loopback; route the connection to the test
+    // server by letting the guard see a public answer and redirecting the dial.
+    _setConnectResolver((_host, cb) => cb(null, [{ address: "93.184.216.34", family: 4 }]));
+    const http = await import("node:http");
+    const real = http.default.request.bind(http.default);
+    vi.spyOn(http.default, "request").mockImplementation(((url: URL, opts: object, cb: never) =>
+      real(`http://127.0.0.1:${port}/`, { ...(opts as object), lookup: undefined } as never, cb)) as unknown as typeof http.request);
+    const v = await probeRoute("http://moved.example.com/", { lookupImpl: publicLookup });
+    expect(v).toEqual({ ok: true, status: 302 });
+  });
+
+  it("cancels the response body after reading the status", async () => {
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    const fetchImpl = vi.fn().mockResolvedValue({ status: 200, body: { cancel } });
+    const v = await probeRoute("https://x.test/", { fetchImpl, lookupImpl: publicLookup });
+    expect(v).toEqual({ ok: true, status: 200 });
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 });
 
