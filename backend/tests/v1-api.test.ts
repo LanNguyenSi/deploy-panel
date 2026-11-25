@@ -602,6 +602,38 @@ describe("v1 POST /deploy — core flow and ownership", () => {
     expect(res.status).toBe(400);
   });
 
+  // A present-but-non-string value used to pass both guards: `!server` /
+  // `!appName` are truthy for 123/["x"], and `APP_NAME_PATTERN.test` COERCES
+  // (123 -> "123" passes), so the request reached the Prisma unique lookup
+  // with a non-string name and threw there -> app.onError 500. The typeof
+  // check refuses with 400 before any lookup; the body stays the route's
+  // `bad_request` family (same error as the missing-value case above).
+  it.each([
+    ["non-string app (number)", { server: "my-server", app: 123 }],
+    ["non-string app (array)", { server: "my-server", app: ["my-app"] }],
+    ["non-string server (number)", { server: 123, app: "my-app" }],
+    ["non-string both", { server: 42, app: 43 }],
+  ])("%j -> 400 bad_request, no deploy/relay side effects", async (_label, body) => {
+    // Make every later stage succeed: if the type guard did not fire, the
+    // request would 202 (deploy row + streamDeploy), which is what fails.
+    mServer.findFirst.mockResolvedValue(ownedServer);
+    mApp.findUnique.mockResolvedValue(appRecord);
+    mDeploy.create.mockResolvedValue({ id: "deploy-1", status: "running", serverId: "srv-a", appId: "app-a" });
+    mApp.update.mockResolvedValue({});
+
+    const res = await appFor({ userId: "user-a", isAdmin: false }).request("/deploy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as { error: string };
+    expect(json.error).toBe("bad_request");
+    expect(mDeploy.create).not.toHaveBeenCalled();
+    expect(streamDeploy).not.toHaveBeenCalled();
+  });
+
   it("path-traversal app name: 400, no deploy/relay side effects (APP_NAME_PATTERN guard)", async () => {
     // appName is interpolated into the relay path `/api/apps/${appName}/deploy`,
     // so the regex guard is security-relevant. Rejection must happen BEFORE any

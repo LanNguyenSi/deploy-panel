@@ -36,6 +36,10 @@ vi.mock("../src/lib/prisma.js", () => ({
     deploy: {
       create: vi.fn(),
       update: vi.fn().mockResolvedValue({}),
+      // The real recoverBrokenDeploy this file exercises finalizes with a
+      // compare-and-set updateMany scoped to status "running"; count 1 = the
+      // row was still running (the state every test here runs in).
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       findUnique: vi.fn(),
       findFirst: vi.fn().mockResolvedValue(null),
     },
@@ -61,7 +65,9 @@ import { appsRouter } from "../src/routes/apps.js";
 import { clearActiveDeploys } from "../src/lib/deploy-recovery.js";
 
 const mRelay = relayRequest as unknown as ReturnType<typeof vi.fn>;
-const mDeployUpdate = prisma.deploy.update as unknown as ReturnType<typeof vi.fn>;
+// Recovery's verdict write (the only Deploy write on this connection-lost
+// path) goes through the compare-and-set updateMany.
+const mDeployUpdate = prisma.deploy.updateMany as unknown as ReturnType<typeof vi.fn>;
 const mAppUpdate = prisma.app.update as unknown as ReturnType<typeof vi.fn>;
 
 const HEAD = "abc1234";
@@ -115,7 +121,7 @@ describe("rollback route with to_commit omitted: connection-lost recovery", () =
     (prisma.deploy.create as any).mockResolvedValue({ id: "d-rb", status: "running" });
     (prisma.deploy.findUnique as any).mockResolvedValue({ log: null, createdAt: ROW_START });
     (prisma.deploy.findFirst as any).mockResolvedValue(null);
-    mDeployUpdate.mockResolvedValue({});
+    mDeployUpdate.mockResolvedValue({ count: 1 });
     mAppUpdate.mockResolvedValue({});
   });
 

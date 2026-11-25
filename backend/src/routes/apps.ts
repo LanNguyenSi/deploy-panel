@@ -48,6 +48,23 @@ appsRouter.use("*", async (c, next) => {
 
 const APP_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
+// Typed refusal for a name the local APP_NAME_PATTERN refuses, thrown by
+// findOrCreateApp instead of a bare Error. A bare Error thrown inside a route
+// handler reaches app.onError and answers 500, but a refused name is a caller
+// mistake: the deploy route checks the pattern up front (so the refusal
+// answers 400 before any row is created), the rollback route catches this
+// error and answers the same 400, and bulk deploy reports it in-band per
+// app. The name mirrors relay-path.ts's InvalidAppNameError role (a shared
+// backstop that keeps an unvalidated name out of both rows and relay URLs);
+// the two classes stay separate because that one documents itself as thrown
+// by relayAppPath, and its file is not this throw's home.
+export class InvalidAppNameForWriteError extends Error {
+  constructor(readonly invalidName: string) {
+    super(`Invalid app name: must be alphanumeric, hyphens, or underscores (got ${JSON.stringify(invalidName)})`);
+    this.name = "InvalidAppNameForWriteError";
+  }
+}
+
 // GET /api/servers/:serverId/apps — list apps for server
 appsRouter.get("/", async (c) => {
   const serverId = getServerId(c);
@@ -233,6 +250,13 @@ appsRouter.post("/:name/deploy", async (c) => {
   const name = c.req.param("name");
   const body = await c.req.json().catch(() => ({}));
 
+  // Refuse an app name the local pattern rejects BEFORE findOrCreateApp or
+  // any Deploy row: without this the throw inside findOrCreateApp reaches
+  // app.onError and answers 500 for what is a caller mistake. Same 400
+  // invalid_app_name the sibling :name routes (logs, preflight, env,
+  // rollback) answer, and nothing is stored.
+  if (!APP_NAME_PATTERN.test(name)) return c.json({ error: "invalid_app_name" }, 400);
+
   const app = await findOrCreateApp(serverId, name);
 
   // Create deploy record
@@ -334,7 +358,18 @@ appsRouter.post("/:name/rollback", async (c) => {
     throw err;
   }
 
-  const app = await findOrCreateApp(serverId, name);
+  // Same refusal must hold if findOrCreateApp's OWN pattern (which is today
+  // identical to the relay's, but is a separate constant) rejects the name:
+  // map its typed error to the same 400 instead of letting it reach
+  // app.onError as a 500. Backstop — with the two patterns equal the
+  // relayAppPath check above already refused this name.
+  let app: Awaited<ReturnType<typeof findOrCreateApp>>;
+  try {
+    app = await findOrCreateApp(serverId, name);
+  } catch (err) {
+    if (err instanceof InvalidAppNameForWriteError) return c.json({ error: "invalid_app_name" }, 400);
+    throw err;
+  }
   const deploy = await prisma.deploy.create({
     data: { serverId, appId: app.id, status: "running", triggeredBy: "panel" },
   });
@@ -784,7 +819,16 @@ appsRouter.put("/:name/env", async (c) => {
 
   // Fetch current set for diff — relay is source of truth. If the app isn't
   // registered in the panel yet, upsert it so audit rows have a home.
-  const app = await findOrCreateApp(serverId, name);
+  // (Backstop mapping: the APP_NAME_PATTERN check at the top of this route
+  // makes this throw unreachable today; it keeps a future divergence from
+  // turning the refusal into a 500.)
+  let app: Awaited<ReturnType<typeof findOrCreateApp>>;
+  try {
+    app = await findOrCreateApp(serverId, name);
+  } catch (err) {
+    if (err instanceof InvalidAppNameForWriteError) return c.json({ error: "invalid_app_name" }, 400);
+    throw err;
+  }
 
   let current: { key: string; value: string }[] = [];
   try {
@@ -925,7 +969,13 @@ appsRouter.put("/:name/secrets/:key", async (c) => {
     return c.json({ error: "bad_request", message: "value must not contain control characters (newline, NUL, etc.)" }, 400);
   }
 
-  const app = await findOrCreateApp(serverId, name);
+  let app: Awaited<ReturnType<typeof findOrCreateApp>>;
+  try {
+    app = await findOrCreateApp(serverId, name);
+  } catch (err) {
+    if (err instanceof InvalidAppNameForWriteError) return c.json({ error: "invalid_app_name" }, 400);
+    throw err;
+  }
   await setAppSecret(app.id, key, value);
   // Audit the key name only — never the value.
   await audit("app.secret.set", `${name} on server ${serverId}`, `key: ${key}`, getActor(c), getActorUserId(c));
@@ -977,7 +1027,13 @@ appsRouter.put("/:name/required-env-keys", async (c) => {
     keys.push(k);
   }
 
-  const app = await findOrCreateApp(serverId, name);
+  let app: Awaited<ReturnType<typeof findOrCreateApp>>;
+  try {
+    app = await findOrCreateApp(serverId, name);
+  } catch (err) {
+    if (err instanceof InvalidAppNameForWriteError) return c.json({ error: "invalid_app_name" }, 400);
+    throw err;
+  }
   const updated = await prisma.app.update({ where: { id: app.id }, data: { requiredEnvKeys: keys } });
   await audit(
     "app.required_env_keys.updated",
@@ -990,9 +1046,16 @@ appsRouter.put("/:name/required-env-keys", async (c) => {
   return c.json({ requiredEnvKeys: updated.requiredEnvKeys });
 });
 
-async function findOrCreateApp(serverId: string, name: string) {
+// Exported for the backstop test in tests/apps-invalid-app-name-backstop.test.ts:
+// the throw is unreachable from any route handler (every caller checks
+// APP_NAME_PATTERN or relayAppPath first — except bulk deploy, which reports
+// it in-band), so its typed-ness is what the tests pin.
+export async function findOrCreateApp(serverId: string, name: string) {
   if (!APP_NAME_PATTERN.test(name)) {
-    throw new Error("Invalid app name: must be alphanumeric, hyphens, or underscores");
+    // Typed (not a bare Error) so every route that reaches this throw can map
+    // it to the same 400 invalid_app_name its sibling routes answer; a bare
+    // Error would reach app.onError and answer 500.
+    throw new InvalidAppNameForWriteError(name);
   }
 
   return prisma.app.upsert({

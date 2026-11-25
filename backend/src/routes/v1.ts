@@ -124,6 +124,19 @@ v1Router.post("/deploy", async (c) => {
     return c.json({ error: "bad_request", message: "server and app are required" }, 400);
   }
 
+  // Type check BEFORE the pattern: `APP_NAME_PATTERN.test` coerces, so a
+  // non-string (123 -> "123") would pass the guard and then the
+  // `serverId_name` findUnique (and findOwnedServerByIdOrName for `server`)
+  // would throw on the non-string, which app.onError answers as a 500.
+  // Refused with the same `bad_request` body the missing-value check above
+  // answers.
+  if (typeof server !== "string" || typeof appName !== "string") {
+    return c.json({ error: "bad_request", message: "server and app must be strings" }, 400);
+  }
+
+  // Kept body: this route's name refusal stays `bad_request` (its original
+  // shape) rather than switching to the INVALID_APP_NAME_BODY the relay-path
+  // routes answer; the status (400) and the refusal point are what changed.
   if (!APP_NAME_PATTERN.test(appName)) {
     return c.json({ error: "bad_request", message: "Invalid app name: must be alphanumeric, dots, hyphens, or underscores" }, 400);
   }

@@ -185,3 +185,45 @@ describe("apps router: streamDeploy delegation", () => {
     }
   });
 });
+
+// The deploy route is the one :name trigger that used to create the App row
+// first and only then fail: findOrCreateApp's pattern refusal threw a plain
+// Error, app.onError answered 500, and a name the local pattern refuses (a
+// dot, a traversal shape) still left a row's worth of work behind it. It now
+// refuses with the same 400 invalid_app_name the sibling :name routes
+// answer, BEFORE findOrCreateApp or any Deploy row.
+describe("apps POST /:name/deploy — refused app name answers 400 before any row", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mAppUpsert.mockResolvedValue({ id: "app-a", name: "my-app" });
+    mDeployCreate.mockResolvedValue({ id: "deploy-1", status: "running" });
+    mServerFindUnique.mockResolvedValue({ id: "srv-a", relayUrl: "http://relay.example", relayToken: "tok" });
+  });
+
+  // The empty name and a lone `..` segment are not reachable here: Hono will
+  // not match an empty :name segment, and the URL parser collapses a `..`
+  // path segment (even percent-encoded, `%2E%2E` -> `..`) before routing, so
+  // that request 404s on a different path. The traversal shapes that DO
+  // survive parsing (a percent-encoded `%2E%2E%2F...` stays one segment and
+  // decodes into the param) and dotted names are what this route's own
+  // pattern refuses. The empty/`..` shapes are pinned directly against
+  // findOrCreateApp in apps-invalid-app-name-backstop.test.ts; the v1
+  // route's falsy check covers the empty string there.
+  it.each([
+    ["my.app", "my.app"],
+    ["../../etc/passwd", "%2E%2E%2F%2E%2E%2Fetc%2Fpasswd"],
+    ["leading-dot segment", ".hidden"],
+  ])("POST /%s/deploy: 400 invalid_app_name, no App upsert, no Deploy row, no streamDeploy", async (_label, encoded) => {
+    const res = await app().request(`/servers/srv-a/apps/${encoded}/deploy`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("invalid_app_name");
+    expect(mAppUpsert).not.toHaveBeenCalled();
+    expect(mDeployCreate).not.toHaveBeenCalled();
+    expect(mStreamDeploy).not.toHaveBeenCalled();
+  });
+});
