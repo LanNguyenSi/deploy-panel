@@ -287,6 +287,7 @@ function shellTree() {
   return (
     <ConfirmProvider>
       <div className="app-layout">
+        <a className="skip-link" href="#main-content">Skip to main content</a>
         <Sidebar />
         <div className="app-content">
           <ConfirmOpener />
@@ -345,5 +346,125 @@ describe("drawer and confirm dialog share the inert hold on .app-content", () =>
     await user.keyboard("{Escape}");
     expect(content).not.toHaveAttribute("inert");
     expect(screen.getByTestId("confirm-result")).toHaveTextContent("cancelled");
+  });
+});
+
+// The skip link and the mobile bar are direct children of the shell like
+// `.app-content`: each is held inert exactly while at least one of the drawer
+// and the confirm dialog is open, whatever the open and close order.
+describe("skip link and mobile bar inertness across drawer and dialog", () => {
+  function parts(container: HTMLElement) {
+    return {
+      skip: container.querySelector(".skip-link") as HTMLElement,
+      bar: container.querySelector(".mobile-bar") as HTMLElement,
+      content: container.querySelector(".app-content") as HTMLElement,
+    };
+  }
+
+  async function closeDialog(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  }
+
+  it("holds the skip link inert only while the drawer is open on mobile", async () => {
+    mockViewport(true);
+    const user = userEvent.setup();
+    const { container } = render(shellTree());
+    const { skip } = parts(container);
+    expect(skip).not.toHaveAttribute("inert");
+    await user.click(screen.getByRole("button", { name: "Toggle menu" }));
+    expect(skip).toHaveAttribute("inert");
+    await user.keyboard("{Escape}");
+    expect(skip).not.toHaveAttribute("inert");
+  });
+
+  it("never makes the skip link inert on desktop", () => {
+    mockViewport(false);
+    const { container } = render(shellTree());
+    expect(parts(container).skip).not.toHaveAttribute("inert");
+  });
+
+  it("releases the skip link when the viewport grows past the breakpoint with the drawer open", async () => {
+    mockViewport(true);
+    const user = userEvent.setup();
+    const { container } = render(shellTree());
+    const { skip } = parts(container);
+    await user.click(screen.getByRole("button", { name: "Toggle menu" }));
+    expect(skip).toHaveAttribute("inert");
+    fireChange(false);
+    expect(skip).not.toHaveAttribute("inert");
+  });
+
+  it("drawer then dialog: closing the dialog first keeps skip link and bar inert for the drawer", async () => {
+    mockViewport(true);
+    const user = userEvent.setup();
+    const { container } = render(shellTree());
+    const { skip, bar } = parts(container);
+    await user.click(screen.getByRole("button", { name: "Toggle menu" }));
+    await user.click(screen.getByRole("button", { name: "open confirm" }));
+    expect(skip).toHaveAttribute("inert");
+    await closeDialog(user);
+    expect(skip).toHaveAttribute("inert");
+    expect(bar).toHaveAttribute("inert");
+    await user.keyboard("{Escape}");
+    expect(skip).not.toHaveAttribute("inert");
+    expect(bar).not.toHaveAttribute("inert");
+  });
+
+  it("drawer then dialog: closing the drawer first keeps skip link and bar inert for the dialog", async () => {
+    mockViewport(true);
+    const user = userEvent.setup();
+    const { container } = render(shellTree());
+    const { skip, bar } = parts(container);
+    await user.click(screen.getByRole("button", { name: "Toggle menu" }));
+    await user.click(screen.getByRole("button", { name: "open confirm" }));
+    await user.click(screen.getByRole("button", { name: "Close menu" }));
+    expect(skip).toHaveAttribute("inert");
+    expect(bar).toHaveAttribute("inert");
+    await closeDialog(user);
+    expect(skip).not.toHaveAttribute("inert");
+    expect(bar).not.toHaveAttribute("inert");
+  });
+
+  it("dialog then drawer: closing the drawer first keeps skip link and bar inert for the dialog", async () => {
+    mockViewport(true);
+    const user = userEvent.setup();
+    const { container } = render(shellTree());
+    const { skip, bar } = parts(container);
+    await user.click(screen.getByRole("button", { name: "open confirm" }));
+    expect(skip).toHaveAttribute("inert");
+    await user.click(screen.getByRole("button", { name: "Toggle menu" }));
+    await user.click(screen.getByRole("button", { name: "Close menu" }));
+    expect(skip).toHaveAttribute("inert");
+    expect(bar).toHaveAttribute("inert");
+    await closeDialog(user);
+    expect(skip).not.toHaveAttribute("inert");
+    expect(bar).not.toHaveAttribute("inert");
+  });
+
+  it("dialog then drawer: closing the dialog first keeps skip link and bar inert for the drawer", async () => {
+    mockViewport(true);
+    const user = userEvent.setup();
+    const { container } = render(shellTree());
+    const { skip, bar } = parts(container);
+    await user.click(screen.getByRole("button", { name: "open confirm" }));
+    await user.click(screen.getByRole("button", { name: "Toggle menu" }));
+    await closeDialog(user);
+    expect(skip).toHaveAttribute("inert");
+    expect(bar).toHaveAttribute("inert");
+    await user.keyboard("{Escape}");
+    expect(skip).not.toHaveAttribute("inert");
+    expect(bar).not.toHaveAttribute("inert");
+  });
+
+  it("a dialog alone makes the skip link inert and releases it on close (desktop)", async () => {
+    mockViewport(false);
+    const user = userEvent.setup();
+    const { container } = render(shellTree());
+    const { skip } = parts(container);
+    await user.click(screen.getByRole("button", { name: "open confirm" }));
+    expect(skip).toHaveAttribute("inert");
+    await closeDialog(user);
+    expect(skip).not.toHaveAttribute("inert");
   });
 });

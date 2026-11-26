@@ -38,6 +38,7 @@ export default function Sidebar() {
 
   const drawerRef = useRef<HTMLElement>(null);
   const menuBtnRef = useRef<HTMLButtonElement>(null);
+  const barRef = useRef<HTMLElement>(null);
   const wasOpenRef = useRef(false);
 
   const closeMobile = useCallback(() => setMobileOpen(false), []);
@@ -65,26 +66,32 @@ export default function Sidebar() {
     return () => document.removeEventListener("keydown", onKey);
   }, [mobileOpen, closeMobile]);
 
-  // While the drawer is open on mobile, the page content behind the overlay
-  // must leave the tab order. AppShell renders `.app-content` but does not
-  // manage its `inert` attribute, so the drawer's owner (this component,
-  // which owns every close path: Escape, overlay, link click, menu button,
-  // viewport change) holds it through the shared inert counter: a confirm
-  // dialog open at the same time keeps the element inert after this hold is
-  // released (and the other way round). Declared before the focus effect so
-  // the attribute is gone before focus is returned to the menu button.
-  // Keyed on drawerOpen so a desktop render also runs the release even
+  // While the drawer is open on mobile, everything outside it must leave the
+  // tab order and the accessibility tree: the page content (`.app-content`),
+  // the skip link (a direct child of the shell that AppShell renders, ahead of
+  // this component) and the mobile bar (the header rendered below). AppShell
+  // does not manage their `inert` attribute, so the drawer's owner (this
+  // component, which owns every close path: Escape, overlay, link click, menu
+  // button, viewport change) holds them through the shared inert counter: a
+  // confirm dialog open at the same time keeps each element inert after this
+  // hold is released (and the other way round). Declared before the focus
+  // effect so the attributes are gone before focus is returned to the menu
+  // button. Keyed on drawerOpen so a desktop render also runs the release even
   // though mobileOpen may not have changed yet.
   useEffect(() => {
     if (!drawerOpen) return;
-    const content = document.querySelector(".app-content");
-    if (!content) return;
-    acquireInert(content);
-    return () => releaseInert(content);
+    const held = [
+      document.querySelector(".app-content"),
+      document.querySelector(".skip-link"),
+      barRef.current,
+    ].filter((el): el is Element => el !== null);
+    held.forEach((el) => acquireInert(el));
+    return () => held.forEach((el) => releaseInert(el));
   }, [drawerOpen]);
 
-  // Open: move focus into the drawer (nothing else is focusable while open,
-  // the header and the page content are inert). Close (Escape, overlay click,
+  // Open: move focus into the drawer (the header, the page content and the
+  // skip link are inert while open; there is no focus wrap, the browser's own
+  // Tab order simply has nothing else to reach). Close (Escape, overlay click,
   // link click, menu button, all funneling through mobileOpen): return focus
   // to the menu button, but only while still on mobile: when the drawer
   // closes because the viewport grew past the breakpoint, the menu button is
@@ -127,9 +134,10 @@ export default function Sidebar() {
   return (
     <>
       {/* Mobile top bar: fixed positioning, outside flex flow. A <header> so
-          it is the banner landmark (axe: region rule); inert while the drawer
-          is open so Tab cannot escape the drawer through the menu button. */}
-      <header className="mobile-bar" inert={drawerOpen}>
+          it is the banner landmark (axe: region rule); held inert through the
+          shared counter while the drawer is open (see the effect above) so Tab
+          cannot escape the drawer through the menu button. */}
+      <header ref={barRef} className="mobile-bar">
         <button
           ref={menuBtnRef}
           className="mobile-menu-btn"
