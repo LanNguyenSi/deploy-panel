@@ -196,6 +196,74 @@ describe("docker-compose.prod.yml: one prod-only public origin variable", () => 
   });
 });
 
+describe("CI validates docker-compose.prod.yml with the Compose CLI", () => {
+  const ciText = readFileSync(path.join(repoRoot, ".github/workflows/ci.yml"), "utf8");
+
+  interface WorkflowStep {
+    name?: string;
+    env?: Record<string, string>;
+    run?: string;
+    uses?: string;
+  }
+  interface Workflow {
+    jobs: Record<string, { steps: WorkflowStep[] }>;
+  }
+
+  const ci = yaml.load(ciText) as Workflow;
+  const dockerSteps = ci.jobs.docker.steps;
+
+  // The validation step is the one running the Compose CLI against the prod
+  // file; found by its command, not by its name, so renaming it cannot
+  // silently drop the assertions below.
+  const configSteps = dockerSteps.filter(
+    (step) => step.run?.includes("docker-compose.prod.yml") && step.run?.includes("config"),
+  );
+  expect(configSteps, "the docker job has a compose config step for the prod file").toHaveLength(1);
+  const configStep = configSteps[0];
+
+  // Every ${VAR:?name} reference in the prod file, as a set of names.
+  const requiredVars = [...new Set([...prodText.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*):\?[^}]*\}/g)].map((m) => m[1]))].sort();
+
+  it("the config step reads no ambient .env (--env-file /dev/null)", () => {
+    expect(requiredVars.length).toBeGreaterThanOrEqual(2);
+    expect(configStep.run).toContain("--env-file /dev/null");
+    expect(configStep.run).toContain("config -q");
+  });
+
+  it("derives at least the two known required variables from the prod file", () => {
+    // Guards the derivation regex itself: if it ever matched nothing, the
+    // per-variable assertion below would pass vacuously.
+    expect(requiredVars).toEqual(expect.arrayContaining(["ALLOWED_GITHUB_LOGINS", "POSTGRES_PASSWORD"]));
+  });
+
+  it.each(requiredVars)(
+    "%s (required by :? in docker-compose.prod.yml) has a dummy in the config step env",
+    (name) => {
+      const value = configStep.env?.[name];
+      expect(value, `${name} needs a dummy in the config step's env:`).toBeTruthy();
+      expect(typeof value).toBe("string");
+    },
+  );
+});
+
+describe("scripts/smoke-check.sh: printed docker compose commands use the prod file", () => {
+  const smokeText = readFileSync(path.join(repoRoot, "scripts/smoke-check.sh"), "utf8");
+
+  it("every docker compose command the script can print carries -f docker-compose.prod.yml", () => {
+    // The script prints a docker compose command only inside double-quoted
+    // strings (the remediation hints passed to fail()). Today there is
+    // exactly one (the migrate hint after an HTTP 500 on /api/v1/apps);
+    // the assertion covers any number of them, so a future hint cannot
+    // point at the dev file, which pins name: deploy-panel-dev and would
+    // exec into the wrong stack on a prod server.
+    const printed = [...smokeText.matchAll(/"([^"]*docker compose[^"]*)"/g)].map((m) => m[1]);
+    expect(printed.length).toBeGreaterThanOrEqual(1);
+    for (const command of printed) {
+      expect(command).toMatch(/docker compose -f docker-compose\.prod\.yml\b/);
+    }
+  });
+});
+
 describe("docker-compose.prod.yml: frontend start order and backend healthcheck", () => {
   it("frontend waits for the backend to become healthy (not just to start)", () => {
     expect(prod.services.frontend.depends_on).toEqual({ backend: { condition: "service_healthy" } });

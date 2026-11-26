@@ -121,6 +121,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Validate docker-compose.prod.yml with the Compose CLI
+        # docker compose config parses the prod file (YAML, service schema,
+        # variable interpolation) without a daemon, and -q stays silent on a
+        # valid file. --env-file /dev/null is deliberate: it ignores any
+        # stray repo .env, so a value missing from the env: block below
+        # cannot be masked by one. Rule: every ${VAR:?} in
+        # docker-compose.prod.yml needs a dummy here, or this step fails;
+        # backend/tests/compose-prod-hardening.test.ts derives the names
+        # from the file and asserts each has an entry below, so adding a
+        # required variable without a dummy fails the test suite first.
+        # The warn-only ${VAR} references get dummies too, so the log
+        # carries no "not set. Defaulting to a blank string" warnings.
+        env:
+          POSTGRES_PASSWORD: ci-dummy-password
+          ALLOWED_GITHUB_LOGINS: ci-smoke-check
+          PANEL_TOKEN: ci-dummy-panel-token
+          APP_SECRETS_KEY: ci-dummy-app-secrets-key-long-enough
+        run: docker compose --env-file /dev/null -f docker-compose.prod.yml config -q
       - run: docker compose build
 
   migrations:
