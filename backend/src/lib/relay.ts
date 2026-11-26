@@ -1,6 +1,7 @@
 import { prisma } from "./prisma.js";
 import { connectGuardRequired } from "./connect-guard.js";
 import { relayFetch } from "./relay-fetch.js";
+import { openRelayToken } from "./relay-token.js";
 import {
   RELAY_ERROR_BODY_MAX_BYTES,
   RELAY_RESPONSE_MAX_BYTES,
@@ -39,7 +40,10 @@ export async function relayRequest<T>(options: RelayRequestOptions): Promise<T> 
   );
   const headers: Record<string, string> = { ...callerHeaders, "Content-Type": "application/json" };
   if (server.relayToken) {
-    headers["Authorization"] = `Bearer ${server.relayToken}`;
+    // The stored value is sealed (lib/relay-token.ts); a stored token that
+    // does not open throws here, BEFORE the fetch: the request is never
+    // issued, so a value that fails to decrypt can never go out as a bearer.
+    headers["Authorization"] = `Bearer ${openRelayToken(server.relayToken)}`;
   }
 
   const response = await relayFetch(`${server.relayUrl}${path}`, {

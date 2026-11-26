@@ -44,6 +44,7 @@ vi.mock("../src/config/index.js", () => ({
 import { prisma } from "../src/lib/prisma.js";
 import { serversRouter } from "../src/routes/servers.js";
 import { executeSshCommand } from "../src/services/ssh-executor.js";
+import { openRelayToken } from "../src/lib/relay-token.js";
 import { Hono } from "hono";
 
 const mServer = prisma.server as unknown as {
@@ -339,7 +340,11 @@ describe("POST /servers/install-relay (stream): exit code of the install command
     expect(errorEvents(events)).toEqual([]);
     expect(events.some((e) => e.event === "done")).toBe(true);
     expect(mServer.create).toHaveBeenCalledTimes(1);
-    expect(mServer.create.mock.calls[0]?.[0].data.relayToken).toBe("good-tok");
+    // The installer emits plaintext; the created row stores it sealed
+    // (lib/relay-token.ts), never the emitted value itself.
+    const storedToken = mServer.create.mock.calls[0]?.[0].data.relayToken;
+    expect(storedToken).not.toBe("good-tok");
+    expect(openRelayToken(storedToken)).toBe("good-tok");
     expect(auditActions()[0]?.[0]).toBe("server.install-relay.success");
   });
 

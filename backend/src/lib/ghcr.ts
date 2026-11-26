@@ -16,6 +16,7 @@ import {
 import { relayFetch } from "./relay-fetch.js";
 import { readRelayJson } from "./relay-body.js";
 import { connectGuardRequired } from "./connect-guard.js";
+import { openRelayToken } from "./relay-token.js";
 
 export const GHCR_TOKEN_URL =
   "https://ghcr.io/token?scope=repository:lannguyensi/agent-relay:pull";
@@ -234,7 +235,10 @@ export async function fetchRelayHealth(
   try {
     const headers: Record<string, string> = {};
     if (server.relayToken) {
-      headers["Authorization"] = `Bearer ${server.relayToken}`;
+      // Stored sealed (lib/relay-token.ts). A token that does not open
+      // throws into the catch below: the probe reports its failure status
+      // and the fetch never happens, so the stored value is never sent.
+      headers["Authorization"] = `Bearer ${openRelayToken(server.relayToken)}`;
     }
 
     const response = await relayFetch(`${server.relayUrl}/health`, {

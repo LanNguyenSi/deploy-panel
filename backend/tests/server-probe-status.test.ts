@@ -56,6 +56,7 @@ import { prisma } from "../src/lib/prisma.js";
 import { serversRouter } from "../src/routes/servers.js";
 import { syncRouter } from "../src/routes/sync.js";
 import { setServerStatus } from "../src/services/server-status.js";
+import { sealRelayToken } from "../src/lib/relay-token.js";
 
 const mServer = prisma.server as unknown as {
   findUnique: ReturnType<typeof vi.fn>;
@@ -214,6 +215,34 @@ describe("POST /servers/:id/test status taxonomy", () => {
     expect(mSetStatus).toHaveBeenCalledWith(
       expect.objectContaining({ serverId: "srv-1", status: "offline" }),
     );
+  });
+
+  it("a sealed stored token probes with the OPENED bearer (lib/relay-token.ts)", async () => {
+    mServer.findUnique.mockResolvedValue({
+      ...OWNED_SERVER,
+      relayToken: sealRelayToken(OWNED_SERVER.relayToken),
+    } as never);
+    const fetchSpy = vi.fn(() => Response.json({ status: "ok" }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await appFor().request("/servers/srv-1/test", { method: "POST" });
+    expect(res.status).toBe(200);
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect(init.headers).toMatchObject({ Authorization: "Bearer secret-relay-token" });
+  });
+
+  it("a stored token that does not open is a 500 with no probe request and no status write", async () => {
+    // Ciphertext shape that fails to decrypt: the stored value must never
+    // go out as a bearer, so the fetch must not happen at all.
+    mServer.findUnique.mockResolvedValue({
+      ...OWNED_SERVER,
+      relayToken: "v1:AAA:BBB:CCC",
+    } as never);
+    const fetchSpy = vi.fn(() => Response.json({ status: "ok" }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await appFor().request("/servers/srv-1/test", { method: "POST" });
+    expect(res.status).toBe(500);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(mSetStatus).not.toHaveBeenCalled();
   });
 });
 

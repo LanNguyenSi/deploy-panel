@@ -37,6 +37,7 @@ import {
   GHCR_TOKEN_URL,
   resetGhcrCache,
 } from "../src/lib/ghcr.js";
+import { sealRelayToken } from "../src/lib/relay-token.js";
 
 const mServer = prisma.server as unknown as {
   findUnique: ReturnType<typeof vi.fn>;
@@ -200,6 +201,29 @@ describe("POST /servers/:id/relay-self-update reads the relay's own record", () 
       expect((recordCalls[0]?.headers as Record<string, string>).Authorization).toBe(
         "Bearer secret-relay-token",
       );
+    });
+
+    it("a sealed stored row sends the OPENED token on every relay call of the route", async () => {
+      // Encryption at rest (lib/relay-token.ts): the /health probe, the
+      // trigger POST and the record read all open the stored value; the
+      // ciphertext itself never goes out as a bearer.
+      mServer.findUnique.mockResolvedValue({
+        ...OWNED_SERVER,
+        relayToken: sealRelayToken("secret-relay-token"),
+      });
+      relay({
+        healthAfter: OLD_SHA,
+        record: () => jsonRes({ revision: NEW_SHA, state: state({ status: "succeeded" }) }),
+      });
+      const { res } = await selfUpdate();
+      expect(res.status).toBe(200);
+      const relayCalls = fetchMock.mock.calls.filter(([url]) => String(url).startsWith(RELAY));
+      expect(relayCalls.length).toBeGreaterThanOrEqual(3);
+      for (const [, init] of relayCalls) {
+        expect((init?.headers as Record<string, string>)?.Authorization).toBe(
+          "Bearer secret-relay-token",
+        );
+      }
     });
 
     it("failed -> 502 relay_reported_failed carrying the relay's error text (exit code and logs)", async () => {

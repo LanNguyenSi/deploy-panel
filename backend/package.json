@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --coverage",
     "db:generate": "prisma generate",
-    "db:migrate": "sh scripts/migrate.sh"
+    "db:migrate": "sh scripts/migrate.sh",
+    "relay-tokens:decrypt": "tsx src/scripts/relay-tokens-decrypt.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.8",

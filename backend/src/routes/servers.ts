@@ -37,6 +37,7 @@ import { denyPrivateServerTargets } from "../lib/target-guard.js";
 import { relayFetch } from "../lib/relay-fetch.js";
 import { readRelayJson } from "../lib/relay-body.js";
 import { connectGuardRequired, connectGuardRequiredForActor } from "../lib/connect-guard.js";
+import { openRelayToken, sealRelayToken } from "../lib/relay-token.js";
 import {
   computeRelayOutdated,
   fetchRelayHealth,
@@ -132,8 +133,13 @@ serversRouter.post("/", validatedJson(createServerSchema), async (c) => {
     return c.json({ error: "forbidden" }, 403);
   }
 
+  // relayToken arrives as plaintext and is stored sealed (lib/relay-token.ts).
   const server = await prisma.server.create({
-    data: { ...data, userId: ownerUserId },
+    data: {
+      ...data,
+      ...(data.relayToken !== undefined ? { relayToken: sealRelayToken(data.relayToken) } : {}),
+      userId: ownerUserId,
+    },
   });
   audit("server.create", `${server.name} (${server.host})`, undefined, getActor(c), getActorUserId(c));
   return c.json({ server: sanitizeServer(server) }, 201);
@@ -174,8 +180,16 @@ serversRouter.patch("/:id", validatedJson(updateServerSchema), async (c) => {
   });
   if (denied) return denied;
 
+  // A submitted relayToken is plaintext and is stored sealed
+  // (lib/relay-token.ts); other PATCH fields pass through untouched. Sealed
+  // OUTSIDE the try below: a throw there (production without
+  // APP_SECRETS_KEY) must not masquerade as the row's 404.
+  const sealedToken = data.relayToken !== undefined ? sealRelayToken(data.relayToken) : undefined;
   try {
-    const server = await prisma.server.update({ where: { id }, data });
+    const server = await prisma.server.update({
+      where: { id },
+      data: { ...data, ...(sealedToken !== undefined ? { relayToken: sealedToken } : {}) },
+    });
     return c.json({ server: sanitizeServer(server) });
   } catch {
     return c.json({ error: "not_found" }, 404);
@@ -221,7 +235,10 @@ serversRouter.post("/:id/test", async (c) => {
   try {
     const headers: Record<string, string> = {};
     if (server.relayToken) {
-      headers["Authorization"] = `Bearer ${server.relayToken}`;
+      // Stored sealed (lib/relay-token.ts); a token that does not open
+      // throws, is not a probe failure (classifyProbeError → null) and
+      // surfaces as a 500. The stored value never goes out as a bearer.
+      headers["Authorization"] = `Bearer ${openRelayToken(server.relayToken)}`;
     }
 
     const response = await relayFetch(`${server.relayUrl}/health`, {
@@ -298,7 +315,9 @@ serversRouter.get("/:id/system", async (c) => {
 
   try {
     const headers: Record<string, string> = {};
-    if (server.relayToken) headers["Authorization"] = `Bearer ${server.relayToken}`;
+    // Stored sealed (lib/relay-token.ts); a decrypt failure lands in the
+    // catch below (502) and the stored value is never sent.
+    if (server.relayToken) headers["Authorization"] = `Bearer ${openRelayToken(server.relayToken)}`;
 
     const res = await relayFetch(`${server.relayUrl}/api/system`, {
       headers,
@@ -777,7 +796,9 @@ serversRouter.post("/install-relay", async (c) => {
           name: input.name,
           host: input.host,
           relayUrl: parsedOutput.value.relayUrl,
-          relayToken: parsedOutput.value.relayToken,
+          // The installer emits the plaintext token; it is stored sealed
+          // (lib/relay-token.ts).
+          relayToken: sealRelayToken(parsedOutput.value.relayToken),
           userId: actor.isAdmin ? null : actor.userId,
           ...(input.expectedHostKeySha256
             ? { hostKeySha256: input.expectedHostKeySha256 }
@@ -1098,7 +1119,24 @@ serversRouter.post("/:id/install-relay", async (c) => {
       //   - Steady-state: rotateToken=false + emittedToken equals DB →
       //     no relayToken write at all (idempotent re-install).
       const emittedToken = parsedOutput.value.relayToken;
-      const tokenChanged = emittedToken !== server.relayToken;
+      // The stored token is sealed (lib/relay-token.ts) and install.sh emits
+      // plaintext, so the comparison runs on the OPENED stored value: it
+      // compares plaintext against plaintext. A stored value that does not
+      // open cannot be compared; the freshly installed relay is the source
+      // of truth, so it counts as changed and the sealed emitted token
+      // replaces the unusable one (and a no-token row vs an emitted token
+      // differs anyway).
+      let storedToken: string | null;
+      try {
+        storedToken = openRelayToken(server.relayToken);
+      } catch (err) {
+        console.error(
+          `[reinstall-relay] Server ${server.id} stores a relay token that does not decrypt; treating it as changed:`,
+          err,
+        );
+        storedToken = null;
+      }
+      const tokenChanged = emittedToken !== storedToken;
       const tokenDiverged = tokenChanged && !input.rotateToken;
       const shouldUpdateToken = input.rotateToken === true || tokenChanged;
       // `tokenRotated` (on the done event) reports the operator-visible
@@ -1135,7 +1173,7 @@ serversRouter.post("/:id/install-relay", async (c) => {
           status: "online",
           lastSeenAt: new Date(),
           ...(persistableMode ? { relayMode: persistableMode } : {}),
-          ...(shouldUpdateToken ? { relayToken: emittedToken } : {}),
+          ...(shouldUpdateToken ? { relayToken: sealRelayToken(emittedToken) } : {}),
           // Persist relayDir on backfill (legacy rows with a
           // non-default path — /root/git/agent-relay etc). Future
           // calls default to the stored value.
@@ -1541,7 +1579,10 @@ serversRouter.post("/:id/update-relay-image", async (c) => {
           try {
             const headers: Record<string, string> = {};
             if (server.relayToken) {
-              headers["Authorization"] = `Bearer ${server.relayToken}`;
+              // Stored sealed (lib/relay-token.ts); a decrypt failure is
+              // caught per attempt below like any other probe failure,
+              // and the stored value is never sent.
+              headers["Authorization"] = `Bearer ${openRelayToken(server.relayToken)}`;
             }
             const response = await relayFetch(`${server.relayUrl}/health`, {
               headers,
@@ -1798,7 +1839,10 @@ serversRouter.post("/:id/relay-self-update", async (c) => {
       "Content-Type": "application/json",
     };
     if (server.relayToken) {
-      headers["Authorization"] = `Bearer ${server.relayToken}`;
+      // Stored sealed (lib/relay-token.ts); a decrypt failure leaves the
+      // try/finally below uncaught (a 500 from the route), before the
+      // trigger fetch: the stored value is never sent as a bearer.
+      headers["Authorization"] = `Bearer ${openRelayToken(server.relayToken)}`;
     }
 
     let triggerRes: Response;
