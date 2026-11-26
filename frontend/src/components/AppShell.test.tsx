@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import AppShell from "./AppShell";
 
@@ -76,6 +77,43 @@ describe("AppShell skip link", () => {
     expect(container.querySelector(".skip-link")).toBeNull();
     expect(container.querySelector("aside")).toBeNull();
     expect(screen.getByRole("button", { name: "Page action" })).toBeInTheDocument();
+  });
+});
+
+// While the mobile drawer is open the skip link sits outside it and must not
+// be reachable; closing the drawer gives it back as the first focusable.
+describe("AppShell skip link with the mobile drawer", () => {
+  const realMatchMedia = window.matchMedia;
+  afterEach(() => {
+    window.matchMedia = realMatchMedia;
+  });
+
+  function mockMobile() {
+    window.matchMedia = ((query: string) => ({
+      matches: true,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })) as unknown as typeof window.matchMedia;
+  }
+
+  it("is inert while the drawer is open and first in the tab order again after closing", async () => {
+    mockMobile();
+    const user = userEvent.setup();
+    const { container } = renderShell();
+    const skip = container.querySelector(".skip-link") as HTMLElement;
+    expect(skip).not.toHaveAttribute("inert");
+    await user.click(screen.getByRole("button", { name: "Toggle menu" }));
+    expect(skip).toHaveAttribute("inert");
+    await user.keyboard("{Escape}");
+    expect(skip).not.toHaveAttribute("inert");
+    const first = Array.from(container.querySelectorAll(FOCUSABLE)).find((el) => !el.closest("[inert]"));
+    expect(first).toBe(skip);
+  });
+
+  it("stays reachable on desktop", () => {
+    const { container } = renderShell();
+    expect(container.querySelector(".skip-link")).not.toHaveAttribute("inert");
   });
 });
 

@@ -62,14 +62,14 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
 
     // Make the app shell behind the overlay inert (aria-modal alone is not
     // honoured everywhere). The selection is scoped to the shell container:
-    // its own regions (sidebar, mobile bar, page column) are its direct
+    // its own regions (skip link, sidebar, mobile bar, page column) are its direct
     // children, so an aside or a header rendered inside page content is never
     // touched, and a page outside the shell inerts nothing. Ownership goes
     // through the shared counter so a concurrently held element (the drawer's
     // hold on `.app-content`) outlives this dialog.
     const shell = document.querySelector(".app-layout");
     const regions = shell
-      ? Array.from(shell.querySelectorAll(":scope > .app-content, :scope > aside, :scope > header"))
+      ? Array.from(shell.querySelectorAll(":scope > .skip-link, :scope > .app-content, :scope > aside, :scope > header"))
       : [];
     regions.forEach((el) => acquireInert(el));
 
