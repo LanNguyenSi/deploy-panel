@@ -42,6 +42,7 @@ import { prisma } from "../src/lib/prisma.js";
 import { config } from "../src/config/index.js";
 import { serversRouter } from "../src/routes/servers.js";
 import { executeSshCommand } from "../src/services/ssh-executor.js";
+import { openRelayToken, sealRelayToken } from "../src/lib/relay-token.js";
 import { Hono } from "hono";
 
 const installOkOutput = (token: string) =>
@@ -468,6 +469,66 @@ describe("POST /servers/:id/install-relay (re-install)", () => {
     expect(done?.data.tokenRotated).toBe(false);
   });
 
+  // Encryption at rest (lib/relay-token.ts): the stored row is ciphertext
+  // and the installer emits plaintext, so the comparison (and the
+  // idempotency it guards) runs on the OPENED stored value.
+  const reinstallRow = (relayToken: string | null) => ({
+    id: "srv-a",
+    userId: null,
+    name: "a",
+    host: "a.example",
+    relayUrl: "http://a:8222",
+    relayToken,
+    hostKeySha256: "fp==".padEnd(44, "="),
+    relayMode: "greenfield",
+    status: "online",
+    sshKeyPath: null,
+    lastSeenAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
+  it("steady state with a SEALED stored token equal to the emitted one writes no relayToken (comparison opens it)", async () => {
+    mServer.findUnique.mockResolvedValue(reinstallRow(sealRelayToken("same-tok")));
+    mockSshOk({ stdout: installOkOutput("same-tok") });
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-a/install-relay",
+      asJson(validBody),
+    );
+    const events = await readSse(res);
+    expect(events.find((e) => e.event === "done")?.data.tokenDiverged).toBe(false);
+    const updateCall = vi.mocked(prisma.server.update).mock.calls[0]?.[0];
+    expect(updateCall?.data.relayToken).toBeUndefined();
+  });
+
+  it("a diverging emitted token vs a sealed stored row is written back sealed", async () => {
+    mServer.findUnique.mockResolvedValue(reinstallRow(sealRelayToken("old-tok")));
+    mockSshOk({ stdout: installOkOutput("vps-emitted-different-tok") });
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-a/install-relay",
+      asJson(validBody),
+    );
+    const events = await readSse(res);
+    expect(events.find((e) => e.event === "done")?.data.tokenDiverged).toBe(true);
+    const stored = vi.mocked(prisma.server.update).mock.calls[0]?.[0].data.relayToken;
+    expect(stored).not.toBe("vps-emitted-different-tok");
+    expect(openRelayToken(stored)).toBe("vps-emitted-different-tok");
+  });
+
+  it("a sealed stored row that does not decrypt counts as changed and is replaced by the sealed emitted token", async () => {
+    // The value cannot be compared, so the freshly re-installed relay's
+    // token (source of truth) replaces the unusable stored one.
+    mServer.findUnique.mockResolvedValue(reinstallRow("v1:AAA:BBB:CCC"));
+    mockSshOk({ stdout: installOkOutput("fresh-tok") });
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-a/install-relay",
+      asJson(validBody),
+    );
+    await readSse(res);
+    const stored = vi.mocked(prisma.server.update).mock.calls[0]?.[0].data.relayToken;
+    expect(openRelayToken(stored)).toBe("fresh-tok");
+  });
+
   it("captures + persists the host-key fingerprint for a legacy row", async () => {
     mServer.findUnique.mockResolvedValue({
       id: "srv-a",
@@ -641,7 +702,9 @@ describe("POST /servers/:id/install-relay (re-install): exit code of the install
     expect(errorEvents(events)).toEqual([]);
     expect(events.some((e) => e.event === "done")).toBe(true);
     const data = vi.mocked(prisma.server.update).mock.calls[0]?.[0].data as Record<string, unknown>;
-    expect(data.relayToken).toBe("new-tok");
+    // The emitted token is stored sealed (lib/relay-token.ts).
+    expect(data.relayToken).not.toBe("new-tok");
+    expect(openRelayToken(data.relayToken as string)).toBe("new-tok");
     expect(data.status).toBe("online");
     expect(auditActions()[0]?.[0]).toBe("server.reinstall-relay.success");
   });

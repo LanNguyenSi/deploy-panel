@@ -24,6 +24,7 @@ import { normalizeRevision } from "../lib/ghcr.js";
 import { relayFetch } from "../lib/relay-fetch.js";
 import { readRelayJson } from "../lib/relay-body.js";
 import { connectGuardRequired } from "../lib/connect-guard.js";
+import { openRelayToken } from "../lib/relay-token.js";
 
 export type RelayRecordOutcome =
   | { kind: "none" }
@@ -72,7 +73,10 @@ export async function readRelaySelfUpdateOutcome(
   if (!server.relayUrl) return { kind: "none" };
   try {
     const headers: Record<string, string> = {};
-    if (server.relayToken) headers["Authorization"] = `Bearer ${server.relayToken}`;
+    // Stored sealed (lib/relay-token.ts): a token that does not open throws
+    // into the catch below → `{ kind: "none" }`, and the stored value is
+    // never sent as a bearer.
+    if (server.relayToken) headers["Authorization"] = `Bearer ${openRelayToken(server.relayToken)}`;
     const res = await relayFetch(`${server.relayUrl}/api/self-update`, {
       headers,
       signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),

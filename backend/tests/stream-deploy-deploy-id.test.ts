@@ -23,6 +23,7 @@ vi.mock("../src/lib/post-deploy-gate.js", () => ({
 import { prisma } from "../src/lib/prisma.js";
 import { recoverBrokenDeploy } from "../src/lib/deploy-recovery.js";
 import { streamDeploy } from "../src/lib/stream-deploy.js";
+import { sealRelayToken } from "../src/lib/relay-token.js";
 
 const mDeployUpdate = (prisma.deploy as any).update as ReturnType<typeof vi.fn>;
 const mAppUpdate = (prisma.app as any).update as ReturnType<typeof vi.fn>;
@@ -75,6 +76,42 @@ describe("streamDeploy sends the panel deploy id to the relay", () => {
     expect(update.data.log).toContain("Relay rejected the deploy: 400");
     expect(update.data.log).toContain("X-Deploy-Id");
     expect(mAppUpdate.mock.calls[mAppUpdate.mock.calls.length - 1][0].data.status).toBe("unhealthy");
+    fetchSpy.mockRestore();
+  });
+
+  it("opens an encrypted-at-rest token and sends the plaintext bearer (lib/relay-token.ts)", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 400,
+      statusText: "Bad Request",
+      text: async () => "x",
+    } as unknown as Response);
+
+    await streamDeploy({ ...opts, relayToken: sealRelayToken("tok") });
+
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer tok");
+    fetchSpy.mockRestore();
+  });
+
+  it("a stored token that does not open ends the deploy failed BEFORE any fetch, with no connection-lost recovery", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("never", { status: 200 }));
+
+    // previousStatus deploying: like every real caller, which sets the app
+    // row to deploying before dispatch (the blocked finalize then leaves the
+    // app card alone).
+    await streamDeploy({ ...opts, relayToken: "v1:AAA:BBB:CCC", previousStatus: "deploying" });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+    const update = mDeployUpdate.mock.calls[mDeployUpdate.mock.calls.length - 1][0];
+    expect(update.data.status).toBe("failed");
+    expect(update.data.log).toContain("relay-token");
+    expect(update.data.log).toContain("could not be decrypted");
+    // The fake token value never reaches the log or the fetch.
+    expect(update.data.log).not.toContain("AAA");
+    expect(mAppUpdate).not.toHaveBeenCalled();
     fetchSpy.mockRestore();
   });
 });

@@ -5,6 +5,12 @@ import { listActiveDeployIds, readExistingSteps } from "./deploy-recovery.js";
 import { checkDeployTargetDetailed, type RelayEntryEvidence } from "./deploy-target.js";
 import { classifyDeployLogOutcome, isBlockedDeployLog } from "./deploy-log.js";
 import { verifyDeployHealth, type DeployHealthVerdict } from "./post-deploy-gate.js";
+import {
+  isRelayTokenCiphertext,
+  openRelayToken,
+  RelayTokenDecryptError,
+  sealRelayToken,
+} from "./relay-token.js";
 
 // The target check itself lives in deploy-target.ts (shared with
 // recoverBrokenDeploy); these re-exports keep the names this module has
@@ -713,4 +719,145 @@ async function upgradeSelfDeploys(): Promise<void> {
       console.error(`[stuck-sweep] Failed to revisit self-deploy ${deploy.id}:`, err);
     }
   }
+}
+
+/** Counters of one relay-token rewrite pass (never any token value). */
+export interface RelayTokenBackfillSummary {
+  /** Rows this pass CAS-rewrote (sealed, or opened back to plaintext). */
+  rewritten: number;
+  /** Rows already in the target shape: untouched. */
+  unchanged: number;
+  /** Rows the CAS update did not match (changed concurrently): retried next start. */
+  casMisses: number;
+  /** Rows in ciphertext shape that did not decrypt: left untouched, ids logged. */
+  undecryptable: string[];
+}
+
+/**
+ * Startup pass that seals every `Server.relayToken` not yet in ciphertext
+ * shape (lib/relay-token.ts: the column also serves legacy plaintext rows).
+ * Runs from server.ts inside the `serve()` callback: the port is already
+ * listening when it starts, ahead of recoverStuckDeploys and the scheduler,
+ * so a request that arrives mid-pass can still read a plaintext row and
+ * takes the legacy plaintext path of lib/relay-token.ts.
+ *
+ * One row per CAS update (`where: { id, relayToken: <old> }`): a row a
+ * re-install rotated meanwhile matches nothing and is left for the next
+ * start instead of clobbering the newer token. Idempotent: a second run
+ * finds every row in ciphertext shape and changes nothing.
+ *
+ * Production without `APP_SECRETS_KEY`: `sealRelayToken` throws exactly as
+ * the app-secret paths do (secret-crypto fails closed; the backend still
+ * starts, the failure surfaces per use), the caller logs it and startup
+ * continues. Rows in ciphertext shape that do not decrypt (wrong key, a
+ * fake `v1:` plaintext, corruption) are never rewritten and never sent
+ * anywhere: their ids get one error log.
+ */
+export async function backfillRelayTokenCiphertext(): Promise<RelayTokenBackfillSummary> {
+  const rows = await prisma.server.findMany({
+    where: { relayToken: { not: null } },
+    select: { id: true, relayToken: true },
+  });
+  const summary: RelayTokenBackfillSummary = {
+    rewritten: 0,
+    unchanged: 0,
+    casMisses: 0,
+    undecryptable: [],
+  };
+  for (const row of rows) {
+    const stored = row.relayToken as string;
+    if (stored === "") {
+      // An empty stored token means "no token" (the write routes store null
+      // for an empty submission): sealing "" would fabricate a truthy
+      // ciphertext, so the row is left exactly as it is.
+      summary.unchanged++;
+      continue;
+    }
+    if (isRelayTokenCiphertext(stored)) {
+      try {
+        openRelayToken(stored);
+        summary.unchanged++;
+      } catch (err) {
+        summary.undecryptable.push(row.id);
+        console.error(
+          `[startup] Server ${row.id}: stored relay token is in ciphertext shape but did not decrypt; left untouched (wrong APP_SECRETS_KEY, a fake v1-prefixed token or a corrupt row):`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+      continue;
+    }
+    const sealed = sealRelayToken(stored);
+    const { count } = await prisma.server.updateMany({
+      where: { id: row.id, relayToken: stored },
+      data: { relayToken: sealed },
+    });
+    if (count === 0) {
+      summary.casMisses++;
+      console.log(
+        `[startup] Server ${row.id}: relay token changed concurrently during the backfill, left for the next start`,
+      );
+    } else {
+      summary.rewritten++;
+    }
+  }
+  console.log(
+    `[startup] relay-token backfill: encrypted=${summary.rewritten} already-ciphertext=${summary.unchanged} cas-misses=${summary.casMisses} undecryptable=${summary.undecryptable.length}`,
+  );
+  return summary;
+}
+
+/**
+ * The inverse pass for a rollback to an image that predates encryption at
+ * rest: every ciphertext row that decrypts is CAS-written back to its
+ * plaintext (an old image sends the stored value as-is; an old image
+ * reading ciphertext would authenticate with garbage). Plaintext and
+ * undecryptable rows are untouched. Exposed through
+ * `npm run relay-tokens:decrypt --workspace=backend`, which refuses without
+ * `--yes`.
+ */
+export async function unsealAllRelayTokens(): Promise<RelayTokenBackfillSummary> {
+  const rows = await prisma.server.findMany({
+    where: { relayToken: { not: null } },
+    select: { id: true, relayToken: true },
+  });
+  const summary: RelayTokenBackfillSummary = {
+    rewritten: 0,
+    unchanged: 0,
+    casMisses: 0,
+    undecryptable: [],
+  };
+  for (const row of rows) {
+    const stored = row.relayToken as string;
+    if (!isRelayTokenCiphertext(stored)) {
+      summary.unchanged++;
+      continue;
+    }
+    let plaintext: string | null;
+    try {
+      plaintext = openRelayToken(stored);
+    } catch (err) {
+      summary.undecryptable.push(row.id);
+      console.error(
+        `[relay-tokens:decrypt] Server ${row.id}: stored relay token did not decrypt; left untouched:`,
+        err instanceof Error ? err.message : err,
+      );
+      continue;
+    }
+    const { count } = await prisma.server.updateMany({
+      where: { id: row.id, relayToken: stored },
+      data: { relayToken: plaintext },
+    });
+    if (count === 0) {
+      summary.casMisses++;
+      console.log(
+        `[relay-tokens:decrypt] Server ${row.id}: relay token changed concurrently, left as is`,
+      );
+    } else {
+      summary.rewritten++;
+    }
+  }
+  console.log(
+    `[relay-tokens:decrypt] plaintext=${summary.rewritten} untouched=${summary.unchanged + summary.undecryptable.length} (plaintext or undecryptable) cas-misses=${summary.casMisses}`,
+  );
+  return summary;
 }

@@ -37,6 +37,7 @@ vi.mock("../src/services/ssh-executor.js", async () => {
 import { prisma } from "../src/lib/prisma.js";
 import { serversRouter, buildComposeInspectCommand } from "../src/routes/servers.js";
 import { executeSshCommand, SshError } from "../src/services/ssh-executor.js";
+import { sealRelayToken } from "../src/lib/relay-token.js";
 import { Hono } from "hono";
 import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -319,6 +320,26 @@ describe("POST /servers/:id/update-relay-image", () => {
     // Status should also land online in the persisted update.
     const updateCall = vi.mocked(prisma.server.update).mock.calls[0]?.[0];
     expect(updateCall?.data.status).toBe("online");
+  });
+
+  it("post-update /health opens an encrypted-at-rest token and sends the plaintext bearer", async () => {
+    // Encryption at rest (lib/relay-token.ts): the stored row holds
+    // ciphertext; the health probe must open it, not send it raw.
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ status: "ok" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    mServer.findUnique.mockResolvedValue(serverFixture({ relayToken: sealRelayToken("tok") }));
+    const res = await appFor({ userId: null, isAdmin: true }).request(
+      "/servers/srv-a/update-relay-image",
+      asJson(validBody),
+    );
+    const done = (await readSse(res)).find((e) => e.event === "done");
+    expect(done?.data.healthOk).toBe(true);
+    const healthCall = fetchMock.mock.calls.find(([url]) => String(url).includes("/health"));
+    expect(healthCall).toBeDefined();
+    expect(healthCall![1] as RequestInit).toBeDefined();
+    expect((healthCall![1] as RequestInit).headers).toMatchObject({ Authorization: "Bearer tok" });
   });
 
   it("releases the post-update /health connection unread: only its status counts, so the body is cancelled", async () => {

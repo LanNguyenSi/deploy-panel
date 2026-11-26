@@ -12,6 +12,7 @@ import { verifyDeployHealth } from "./post-deploy-gate.js";
 import { provisionAndCheckAppSecrets, type ProvisionResult } from "./provision-secrets.js";
 import { envUnreadableRelayMessage, RelayError } from "./relay.js";
 import { InvalidAppNameError, relayAppPath } from "./relay-path.js";
+import { openRelayToken, RelayTokenDecryptError } from "./relay-token.js";
 import {
   CONFLICT_STEP_KIND,
   PREFLIGHT_CHECK_KIND,
@@ -379,7 +380,7 @@ export async function streamDeploy(opts: {
     // the stuck-sweep and connection-lost recovery can find it by id
     // (deploy-target.ts). A relay 400 for the id lands in the 4xx branch below.
     const headers: Record<string, string> = { "Content-Type": "application/json", "X-Deploy-Id": deployId };
-    if (relayToken) headers["Authorization"] = `Bearer ${relayToken}`;
+    if (relayToken) headers["Authorization"] = `Bearer ${openRelayToken(relayToken)}`;
 
     // Silence limits instead of a fixed per-wait cap (the total ceiling, armed
     // at the start of the dispatch above, bounds the whole deploy). The timer
@@ -658,6 +659,29 @@ export async function streamDeploy(opts: {
       // refuses this name at its own preflight.
       console.log(`[stream-deploy] ${appName}: refused before deploy: ${err.message}`);
       steps.push({ name: "env-preflight", kind: PREFLIGHT_CHECK_KIND, status: "failure", durationMs: 0, message: err.message, output: err.message });
+      await finalizeBlockedDeploy({
+        deployId,
+        appId,
+        previousStatus,
+        steps,
+        duration: Date.now() - startedAt,
+        keepAppStatus: previousStatus === "deploying",
+      }).catch((dbErr) => {
+        console.error(`[stream-deploy] failed to finalize refused deploy ${deployId}:`, dbErr);
+      });
+      return;
+    }
+    if (err instanceof RelayTokenDecryptError) {
+      // The server's stored relay token is ciphertext that does not open
+      // (lib/relay-token.ts): a wrong APP_SECRETS_KEY, a fake v1-prefixed
+      // plaintext or a corrupt row. Positionally the same as the name
+      // refusal above: nothing reached the relay and the stored value was
+      // never sent as a bearer. Fail the row with a named step so the
+      // operator can re-install the relay (the only recovery without the
+      // original key) instead of seeing a lost-connection recovery.
+      const message = `Relay token of server ${serverId} could not be decrypted: ${err.message}. Set APP_SECRETS_KEY to the key that encrypted it, or re-install the relay to store a new token.`;
+      console.log(`[stream-deploy] ${appName}: refused before deploy: ${err.message}`);
+      steps.push({ name: "relay-token", kind: PREFLIGHT_CHECK_KIND, status: "failure", durationMs: 0, message, output: message });
       await finalizeBlockedDeploy({
         deployId,
         appId,
