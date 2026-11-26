@@ -206,7 +206,9 @@ export default function EnvVarsPanel({
             <tr style={{ color: "var(--muted)", textAlign: "left" }}>
               <th style={{ padding: "var(--space-1) 0", width: "30%" }}>Key</th>
               <th style={{ padding: "var(--space-1) 0" }}>Value</th>
-              <th style={{ padding: "var(--space-1) 0", width: "6rem" }}></th>
+              <th style={{ padding: "var(--space-1) 0", width: "6rem" }}>
+                <span className="sr-only">Actions</span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -220,6 +222,7 @@ export default function EnvVarsPanel({
                       value={e.key}
                       onChange={(ev) => updateKey(idx, ev.target.value)}
                       placeholder="KEY"
+                      aria-label={`Key of variable ${idx + 1}`}
                       className="input-native"
                       style={{
                         width: "100%",
@@ -234,6 +237,7 @@ export default function EnvVarsPanel({
                       value={e.value}
                       onChange={(ev) => updateValue(idx, ev.target.value)}
                       placeholder="value"
+                      aria-label={e.key ? `Value of ${e.key}` : `Value of variable ${idx + 1}`}
                       className="input-native"
                       style={{ width: "100%", fontFamily: "var(--font-mono-stack, monospace)" }}
                     />

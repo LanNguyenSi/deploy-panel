@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import {
   getAppSecrets,
   setAppSecret,
@@ -23,6 +23,7 @@ export interface AppSecretsPanelProps {
 export default function AppSecretsPanel({ serverId, appName, onError }: AppSecretsPanelProps) {
   const [secrets, setSecrets] = useState<MaskedSecret[]>([]);
   const [requiredEnvKeys, setRequiredKeys] = useState<string[]>([]);
+  const requiredInputId = useId();
   const [loading, setLoading] = useState(true);
   const [newKey, setNewKey] = useState("");
   const [newValue, setNewValue] = useState("");
@@ -121,7 +122,9 @@ export default function AppSecretsPanel({ serverId, appName, onError }: AppSecre
               <th style={{ padding: "var(--space-1) 0", width: "40%" }}>Key</th>
               <th style={{ padding: "var(--space-1) 0" }}>Status</th>
               <th style={{ padding: "var(--space-1) 0" }}>Updated</th>
-              <th style={{ padding: "var(--space-1) 0", width: "6rem" }}></th>
+              <th style={{ padding: "var(--space-1) 0", width: "6rem" }}>
+                <span className="sr-only">Actions</span>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -156,6 +159,7 @@ export default function AppSecretsPanel({ serverId, appName, onError }: AppSecre
           value={newKey}
           onChange={(e) => setNewKey(e.target.value)}
           placeholder="KEY (e.g. METRICS_API_TOKEN)"
+          aria-label="Secret name"
           className="input-native"
           style={{ fontFamily: "var(--font-mono-stack, monospace)" }}
         />
@@ -164,6 +168,7 @@ export default function AppSecretsPanel({ serverId, appName, onError }: AppSecre
           value={newValue}
           onChange={(e) => setNewValue(e.target.value)}
           placeholder="value"
+          aria-label="Secret value"
           className="input-native"
           style={{ fontFamily: "var(--font-mono-stack, monospace)" }}
         />
@@ -178,12 +183,13 @@ export default function AppSecretsPanel({ serverId, appName, onError }: AppSecre
       </div>
 
       <div>
-        <label style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)" }}>
+        <label htmlFor={requiredInputId} style={{ display: "block", fontSize: "var(--text-xs)", color: "var(--muted)", marginBottom: "var(--space-1)" }}>
           Required env keys (comma-separated) — preflight and every deploy hard-fail if one of these
           resolves empty
         </label>
         <div style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
           <input
+            id={requiredInputId}
             value={requiredInput}
             onChange={(e) => setRequiredInput(e.target.value)}
             placeholder="METRICS_API_TOKEN, DB_PASSWORD"
