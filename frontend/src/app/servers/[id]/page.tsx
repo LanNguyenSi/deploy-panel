@@ -658,7 +658,7 @@ export default function ServerDetailPage() {
                       checked={selected.has(app.name)}
                       onChange={() => toggleSelect(app.name)}
                       aria-label={`Select ${app.name}`}
-                      style={{ accentColor: "var(--primary)" }}
+                      style={{ accentColor: "var(--primary)", width: 24, height: 24, margin: 0, flexShrink: 0 }}
                     />
                   )}
                   <span className={`status-dot status-dot-${app.status}`} />
