@@ -4,6 +4,14 @@ COPY package.json package-lock.json ./
 COPY frontend/package.json frontend/
 RUN npm ci --workspace=frontend
 
+# Runtime-only dependencies for the final image: the build stages need the dev
+# tree (typescript, Next's build tooling), the running server does not.
+FROM node:22-alpine AS runtime-deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY frontend/package.json frontend/
+RUN npm ci --workspace=frontend --omit=dev && npm cache clean --force
+
 FROM node:22-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules node_modules/
@@ -19,8 +27,11 @@ WORKDIR /app
 COPY --from=builder /app/frontend/.next/standalone ./
 COPY --from=builder /app/frontend/.next/static .next/static/
 COPY --from=builder /app/frontend/public public/
-# Standalone in workspace monorepo needs full node_modules
-COPY --from=deps /app/node_modules node_modules/
+# The standalone output in this workspace monorepo does not trace the hoisted
+# packages, so the runtime needs node_modules. It comes from the runtime-deps
+# stage (npm ci --omit=dev), not from deps, so the image carries no
+# devDependencies (vitest, typescript, jsdom, ...).
+COPY --from=runtime-deps /app/node_modules node_modules/
 USER app
 EXPOSE 3000
 ENV PORT=3000

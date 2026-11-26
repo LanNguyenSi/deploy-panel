@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- The frontend image no longer ships devDependencies. Its final stage copied the full `node_modules` of the install stage (including `typescript`, `vitest`, `jsdom` and the coverage tooling); it now copies the tree of a separate `runtime-deps` stage built with `npm ci --workspace=frontend --omit=dev`, the same pattern the backend image uses. The standalone layout, `CMD`, port, user and `HEALTHCHECK` are unchanged. The `node_modules` directory shrinks from about 447 MB to about 333 MB and the image from about 182 MB to about 153 MB. Tests: `backend/tests/dockerfile-frontend-runtime-deps.test.ts`.
+
 ### Security
 
 - The post-deploy route probe of an app's `liveUrl` now goes through `guardedFetch`, so its connection resolves the host once and connects only to an address classified at connect time. Before, `probeRoute` checked the host's addresses and then used the global `fetch`, which resolved again, so a resolver answering public to the check and private to the connection could steer the probe to an internal address. A connect-time denial is now a refusal like the existing pre-check (`route probe skipped`, never a failed route); other transport errors still fail the route. The response body is cancelled once the status is read. The pre-check (`assertPublicHost`) stays for its readable reasons. Tests: `backend/tests/post-deploy-gate.test.ts`.
