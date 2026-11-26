@@ -44,12 +44,20 @@ function nodeModulesSources(finalStage: Stage): string[] {
 }
 
 function stageInstallsWithoutDev(stage: Stage): boolean {
-  const installs = stage.lines.filter((l) => /^RUN\s.*\bnpm\s+ci\b/.test(l));
-  return installs.length > 0 && installs.every((l) => /\s--omit=dev\b/.test(l));
+  // Every `npm ci` command, also one chained with &&, ; or || on the same
+  // RUN line, must carry --omit=dev in its own argument list.
+  const installs = stage.lines
+    .filter((l) => /^RUN\s/.test(l))
+    .flatMap((l) => [...l.matchAll(/\bnpm\s+ci\b([^&;|]*)/g)].map((m) => m[1]));
+  return (
+    installs.length > 0 && installs.every((args) => /\s--omit=dev\b/.test(args))
+  );
 }
 
 describe("frontend/Dockerfile runtime dependencies", () => {
-  const stages = parseStages(readFileSync(path.join(repoRoot, "frontend/Dockerfile"), "utf8"));
+  const stages = parseStages(
+    readFileSync(path.join(repoRoot, "frontend/Dockerfile"), "utf8"),
+  );
   const final = stages[stages.length - 1];
 
   it("copies node_modules into the final stage", () => {
@@ -59,7 +67,10 @@ describe("frontend/Dockerfile runtime dependencies", () => {
   it("copies node_modules only from stages whose npm ci omits dev dependencies", () => {
     for (const source of nodeModulesSources(final)) {
       const stage = stages.find((s) => s.name === source);
-      expect(stage, `final stage copies from unknown stage ${source}`).toBeDefined();
+      expect(
+        stage,
+        `final stage copies from unknown stage ${source}`,
+      ).toBeDefined();
       expect(
         stageInstallsWithoutDev(stage!),
         `stage ${source} must run npm ci with --omit=dev`,
@@ -94,8 +105,15 @@ describe("frontend/Dockerfile runtime dependencies", () => {
     it("rejects an omit-dev stage that lost the flag", () => {
       expect(verdict(sample("rt", ""))).toBe(false);
     });
+    it("rejects a second npm ci without the flag chained on the same line", () => {
+      expect(
+        verdict(sample("rt", "--omit=dev && npm ci --workspace=frontend")),
+      ).toBe(false);
+    });
     it("ignores a commented-out copy", () => {
-      const t = sample("rt", "--omit=dev") + "\n# COPY --from=deps /app/node_modules node_modules/";
+      const t =
+        sample("rt", "--omit=dev") +
+        "\n# COPY --from=deps /app/node_modules node_modules/";
       expect(verdict(t)).toBe(true);
     });
   });
