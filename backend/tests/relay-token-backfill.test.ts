@@ -149,6 +149,17 @@ describe("backfillRelayTokenCiphertext", () => {
     expect(allLogged()).not.toContain("AAA");
   });
 
+  it("leaves an empty-string row unchanged: empty means no token, a sealed empty string would not be", async () => {
+    // The write routes store null for an empty submission; a legacy "" row
+    // must survive the pass untouched, never sealed into a truthy bearer.
+    table.set("empty", "");
+    table.set("real", "plain-token");
+    const summary = await backfillRelayTokenCiphertext();
+    expect(summary).toMatchObject({ rewritten: 1, unchanged: 1, casMisses: 0, undecryptable: [] });
+    expect(table.get("empty")).toBe("");
+    expect(openRelayToken(table.get("real")!)).toBe("plain-token");
+  });
+
   it("production without APP_SECRETS_KEY: the pass rejects (secret-crypto fails closed) and writes nothing", async () => {
     table.set("s1", "plain-token");
     delete process.env.APP_SECRETS_KEY;

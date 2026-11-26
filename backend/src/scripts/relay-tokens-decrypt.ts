@@ -4,6 +4,16 @@
  *
  *   npm run relay-tokens:decrypt --workspace=backend -- --yes
  *
+ *   docker compose -f docker-compose.prod.yml exec backend \
+ *     node backend/dist/scripts/relay-tokens-decrypt.js --yes
+ *
+ * The npm script runs the compiled build (node dist/...), so `npm run build`
+ * must have run first; the production image has neither the sources nor the
+ * dev toolchain, so there the compiled form above is the only one (guard:
+ * backend/tests/relay-tokens-decrypt-command.test.ts). Run the pass
+ * immediately before switching back to the pre-encryption image: any restart
+ * of the new image re-encrypts what this pass restored.
+ *
  * Writes every decryptable `Server.relayToken` ciphertext back to plaintext,
  * for a ROLLBACK to a panel image that predates encryption at rest: an old
  * image sends the stored value to the relay as the bearer directly, so a

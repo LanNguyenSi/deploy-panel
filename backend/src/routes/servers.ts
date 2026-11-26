@@ -133,11 +133,11 @@ serversRouter.post("/", validatedJson(createServerSchema), async (c) => {
     return c.json({ error: "forbidden" }, 403);
   }
 
-  // relayToken arrives as plaintext and is stored sealed (lib/relay-token.ts).
+  // relayToken arrives as plaintext and is stored sealed; "" stores null.
   const server = await prisma.server.create({
     data: {
       ...data,
-      ...(data.relayToken !== undefined ? { relayToken: sealRelayToken(data.relayToken) } : {}),
+      ...(data.relayToken !== undefined ? { relayToken: data.relayToken === "" ? null : sealRelayToken(data.relayToken) } : {}),
       userId: ownerUserId,
     },
   });
@@ -180,11 +180,11 @@ serversRouter.patch("/:id", validatedJson(updateServerSchema), async (c) => {
   });
   if (denied) return denied;
 
-  // A submitted relayToken is plaintext and is stored sealed
-  // (lib/relay-token.ts); other PATCH fields pass through untouched. Sealed
-  // OUTSIDE the try below: a throw there (production without
-  // APP_SECRETS_KEY) must not masquerade as the row's 404.
-  const sealedToken = data.relayToken !== undefined ? sealRelayToken(data.relayToken) : undefined;
+  // A submitted relayToken is plaintext and is stored sealed (empty stores
+  // null: a sealed "" is a truthy ciphertext, so the panel would send an
+  // empty bearer and report hasRelayToken true). Sealed OUTSIDE the try: a
+  // throw there (no APP_SECRETS_KEY) must not masquerade as the row's 404.
+  const sealedToken = data.relayToken !== undefined ? (data.relayToken === "" ? null : sealRelayToken(data.relayToken)) : undefined;
   try {
     const server = await prisma.server.update({
       where: { id },

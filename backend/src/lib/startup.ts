@@ -736,9 +736,10 @@ export interface RelayTokenBackfillSummary {
 /**
  * Startup pass that seals every `Server.relayToken` not yet in ciphertext
  * shape (lib/relay-token.ts: the column also serves legacy plaintext rows).
- * Runs from server.ts before the scheduler starts, next to
- * recoverStuckDeploys, so no request can read a plaintext row between
- * startup and the pass.
+ * Runs from server.ts inside the `serve()` callback: the port is already
+ * listening when it starts, ahead of recoverStuckDeploys and the scheduler,
+ * so a request that arrives mid-pass can still read a plaintext row and
+ * takes the legacy plaintext path of lib/relay-token.ts.
  *
  * One row per CAS update (`where: { id, relayToken: <old> }`): a row a
  * re-install rotated meanwhile matches nothing and is left for the next
@@ -765,6 +766,13 @@ export async function backfillRelayTokenCiphertext(): Promise<RelayTokenBackfill
   };
   for (const row of rows) {
     const stored = row.relayToken as string;
+    if (stored === "") {
+      // An empty stored token means "no token" (the write routes store null
+      // for an empty submission): sealing "" would fabricate a truthy
+      // ciphertext, so the row is left exactly as it is.
+      summary.unchanged++;
+      continue;
+    }
     if (isRelayTokenCiphertext(stored)) {
       try {
         openRelayToken(stored);

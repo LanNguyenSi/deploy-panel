@@ -119,6 +119,24 @@ describe("POST /api/servers seals a submitted relayToken", () => {
     expect(res.status).toBe(201);
     expect(mServer.create.mock.calls[0]?.[0].data.relayToken).toBeUndefined();
   });
+
+  it("an empty submitted relayToken stores null, not a sealed empty string", async () => {
+    // "" submitted means "no token": sealing it would be a truthy
+    // ciphertext, so the panel would send `Bearer ` and report
+    // hasRelayToken true.
+    mServer.findUnique.mockResolvedValue(null);
+    mServer.create.mockResolvedValue(row(null));
+    const res = await appFor().request(
+      "/servers",
+      asJson("POST", { name: "vps", host: "203.0.113.10", relayToken: "" }),
+    );
+    expect(res.status).toBe(201);
+    const data = mServer.create.mock.calls[0]?.[0].data;
+    expect("relayToken" in data).toBe(true); // submitted: the key is written...
+    expect(data.relayToken).toBeNull(); // ...as null, never as ciphertext
+    const body = await res.json();
+    expect(body.server.hasRelayToken).toBe(false);
+  });
 });
 
 describe("PATCH /api/servers/:id seals a submitted relayToken", () => {
@@ -138,6 +156,16 @@ describe("PATCH /api/servers/:id seals a submitted relayToken", () => {
     const res = await appFor().request("/servers/srv-a", asJson("PATCH", { name: "renamed" }));
     expect(res.status).toBe(200);
     expect(mServer.update.mock.calls[0]?.[0].data.relayToken).toBeUndefined();
+  });
+
+  it("an empty submitted relayToken clears the column to null instead of sealing it", async () => {
+    mServer.findUnique.mockResolvedValue(row("old-plain-token"));
+    mServer.update.mockResolvedValue(row(null));
+    const res = await appFor().request("/servers/srv-a", asJson("PATCH", { relayToken: "" }));
+    expect(res.status).toBe(200);
+    const data = mServer.update.mock.calls[0]?.[0].data;
+    expect("relayToken" in data).toBe(true); // submitted: the column is written...
+    expect(data.relayToken).toBeNull(); // ...with null, never with sealed ""
   });
 });
 

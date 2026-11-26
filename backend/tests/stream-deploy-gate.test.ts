@@ -46,6 +46,8 @@ import { prisma } from "../src/lib/prisma.js";
 import { provisionAndCheckAppSecrets } from "../src/lib/provision-secrets.js";
 import { recoverBrokenDeploy } from "../src/lib/deploy-recovery.js";
 import { RelayError } from "../src/lib/relay.js";
+import { sealRelayToken } from "../src/lib/relay-token.js";
+import { __resetSecretCryptoStateForTests } from "../src/lib/secret-crypto.js";
 import { streamDeploy } from "../src/lib/stream-deploy.js";
 import { blockedDeployLogSteps, blockedPreflightSteps, isBlockedDeployLog, normalizeDeployLog } from "../src/lib/deploy-log.js";
 
@@ -1054,5 +1056,55 @@ describe("streamDeploy: relay body limits", () => {
     expect(recoverBrokenDeploy).not.toHaveBeenCalled();
     expect(lastCall(mDeployUpdate).data.status).toBe("success");
     fetchSpy.mockRestore();
+  });
+});
+
+// A stored relay token that is ciphertext the APP_SECRETS_KEY does not open
+// (lib/relay-token.ts) throws at the bearer header build, positionally before
+// any fetch: the deploy must end blocked through finalizeBlockedDeploy with a
+// `relay-token` preflight step, never through recoverBrokenDeploy (stream-
+// deploy-deploy-id.test.ts pins that shape). Pinned here too: the
+// keepAppStatus rule for a `deploying` capture (same rule as the env-409 and
+// missing-keys branches above) — the app card belongs to the deploy that set
+// `deploying`, so a token-refusal must not write it. The history fallback of
+// statusAfterBlocked is mocked to answer, so a dropped keepAppStatus reaches
+// prisma.app.update instead of throwing on a missing mock and passing blind.
+describe("streamDeploy: relay token that does not open", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mDeployFindMany.mockReset();
+    mDeployFindMany.mockResolvedValue([]);
+    mAppFindUnique.mockResolvedValue({ requiredEnvKeys: [] });
+    mProvision.mockResolvedValue({ provisionedKeys: [], wrote: false, missing: [] });
+  });
+
+  it("a token sealed under another key with a `deploying` capture: the app row is not written", async () => {
+    const originalKey = process.env.APP_SECRETS_KEY;
+    process.env.APP_SECRETS_KEY = "the-key-that-sealed-this-token!!";
+    __resetSecretCryptoStateForTests();
+    const sealedUnderOtherKey = sealRelayToken("bearer-under-the-other-key");
+    process.env.APP_SECRETS_KEY = "a-different-key-that-opens-nothing";
+    __resetSecretCryptoStateForTests();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    try {
+      await streamDeploy({ ...baseOpts, relayToken: sealedUnderOtherKey, previousStatus: "deploying" });
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(recoverBrokenDeploy).not.toHaveBeenCalled();
+      expect(mAppUpdate).not.toHaveBeenCalled();
+      expect(lastCall(mDeployUpdate).data.status).toBe("failed");
+      const steps = JSON.parse(lastCall(mDeployUpdate).data.log);
+      expect(steps.at(-1)).toMatchObject({ name: "relay-token", kind: "preflight-check", status: "failure" });
+      expect(steps.at(-1).message).toContain("could not be decrypted");
+      // The sealed value and its plaintext never reach the log.
+      expect(steps.at(-1).output).not.toContain("bearer-under-the-other-key");
+      expect(isBlockedDeployLog(lastCall(mDeployUpdate).data.log)).toBe(true);
+    } finally {
+      if (originalKey === undefined) delete process.env.APP_SECRETS_KEY;
+      else process.env.APP_SECRETS_KEY = originalKey;
+      __resetSecretCryptoStateForTests();
+      fetchSpy.mockRestore();
+    }
   });
 });
