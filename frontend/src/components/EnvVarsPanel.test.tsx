@@ -94,6 +94,30 @@ describe("EnvVarsPanel accessible names", () => {
       await user.click(screen.getByRole("button", { name: "+ Add variable" }));
       expect(screen.getByRole("textbox", { name: "Value of variable 3" })).toBeInTheDocument();
       expect(screen.getByRole("textbox", { name: "Value of variable 4" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Remove variable 3" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Remove variable 4" })).toBeInTheDocument();
+    });
+
+    it("names Hide buttons of two rows sharing a sensitive key per row", async () => {
+      const user = userEvent.setup();
+      renderPanel();
+      await screen.findByRole("textbox", { name: "Value of NODE_ENV" });
+      await addRow(user, "API_TOKEN");
+      await addRow(user, "API_TOKEN");
+      expect(screen.getByRole("button", { name: "Hide API_TOKEN (variable 3)" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Hide API_TOKEN (variable 4)" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Hide API_TOKEN" })).toBeNull();
+    });
+
+    it("returns the remaining row to its plain names after removing a duplicate", async () => {
+      const user = userEvent.setup();
+      renderPanel();
+      await screen.findByRole("textbox", { name: "Value of NODE_ENV" });
+      await addRow(user, "NODE_ENV");
+      await user.click(screen.getByRole("button", { name: "Remove NODE_ENV (variable 3)" }));
+      expect(screen.getByRole("textbox", { name: "Value of NODE_ENV" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Remove NODE_ENV" })).toBeInTheDocument();
+      expect(screen.queryByRole("textbox", { name: /\(variable/ })).toBeNull();
     });
 
     it("names Remove and Reveal buttons per row", async () => {
