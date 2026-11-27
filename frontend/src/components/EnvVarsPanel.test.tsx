@@ -53,4 +53,59 @@ describe("EnvVarsPanel accessible names", () => {
     await screen.findByRole("textbox", { name: "Value of NODE_ENV" });
     expect(screen.getByRole("columnheader", { name: "Actions" })).toBeInTheDocument();
   });
+
+  describe("rows sharing a key", () => {
+    async function addRow(user: ReturnType<typeof userEvent.setup>, key: string) {
+      await user.click(screen.getByRole("button", { name: "+ Add variable" }));
+      const keys = screen.getAllByPlaceholderText("KEY");
+      await user.type(keys[keys.length - 1], key);
+    }
+
+    it("gives duplicate-key value inputs distinct names, and plain names again once unique", async () => {
+      const user = userEvent.setup();
+      renderPanel();
+      await screen.findByRole("textbox", { name: "Value of NODE_ENV" });
+      await addRow(user, "NODE_ENV");
+      expect(screen.getByRole("textbox", { name: "Value of NODE_ENV (variable 1)" })).toBeInTheDocument();
+      expect(screen.getByRole("textbox", { name: "Value of NODE_ENV (variable 3)" })).toBeInTheDocument();
+      expect(screen.queryByRole("textbox", { name: "Value of NODE_ENV" })).toBeNull();
+      await user.type(screen.getByRole("textbox", { name: "Key of variable 3" }), "2");
+      await waitFor(() =>
+        expect(screen.getByRole("textbox", { name: "Value of NODE_ENV" })).toBeInTheDocument(),
+      );
+      expect(screen.getByRole("textbox", { name: "Value of NODE_ENV2" })).toBeInTheDocument();
+    });
+
+    it("suffixes only the duplicated keys among three rows", async () => {
+      const user = userEvent.setup();
+      renderPanel();
+      await screen.findByRole("textbox", { name: "Value of NODE_ENV" });
+      await addRow(user, "DATABASE_URL");
+      expect(screen.getByLabelText("Value of DATABASE_URL (variable 2)")).toBeInTheDocument();
+      expect(screen.getByLabelText("Value of DATABASE_URL (variable 3)")).toBeInTheDocument();
+      expect(screen.getByRole("textbox", { name: "Value of NODE_ENV" })).toBeInTheDocument();
+    });
+
+    it("keeps the positional name for several rows with an empty key", async () => {
+      const user = userEvent.setup();
+      renderPanel();
+      await screen.findByRole("textbox", { name: "Value of NODE_ENV" });
+      await user.click(screen.getByRole("button", { name: "+ Add variable" }));
+      await user.click(screen.getByRole("button", { name: "+ Add variable" }));
+      expect(screen.getByRole("textbox", { name: "Value of variable 3" })).toBeInTheDocument();
+      expect(screen.getByRole("textbox", { name: "Value of variable 4" })).toBeInTheDocument();
+    });
+
+    it("names Remove and Reveal buttons per row", async () => {
+      const user = userEvent.setup();
+      renderPanel();
+      await screen.findByRole("textbox", { name: "Value of NODE_ENV" });
+      expect(screen.getByRole("button", { name: "Remove NODE_ENV" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Remove DATABASE_URL" })).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Reveal DATABASE_URL" }));
+      expect(screen.getByRole("button", { name: "Hide DATABASE_URL" })).toBeInTheDocument();
+      await addRow(user, "NODE_ENV");
+      expect(screen.getByRole("button", { name: "Remove NODE_ENV (variable 3)" })).toBeInTheDocument();
+    });
+  });
 });
