@@ -215,6 +215,7 @@ export default function EnvVarsPanel({
             {entries.map((e, idx) => {
               const dup = duplicateKeys.has(e.key);
               const invalid = e.key && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(e.key);
+              const rowLabel = e.key ? (dup ? `${e.key} (variable ${idx + 1})` : e.key) : `variable ${idx + 1}`;
               return (
                 <tr key={idx}>
                   <td style={{ padding: "var(--space-1) var(--space-2) var(--space-1) 0" }}>
@@ -237,7 +238,7 @@ export default function EnvVarsPanel({
                       value={e.value}
                       onChange={(ev) => updateValue(idx, ev.target.value)}
                       placeholder="value"
-                      aria-label={e.key ? `Value of ${e.key}` : `Value of variable ${idx + 1}`}
+                      aria-label={`Value of ${rowLabel}`}
                       className="input-native"
                       style={{ width: "100%", fontFamily: "var(--font-mono-stack, monospace)" }}
                     />
@@ -249,6 +250,7 @@ export default function EnvVarsPanel({
                         onClick={() => toggleReveal(idx)}
                         className="btn btn-secondary btn-sm"
                         title={e.revealed ? "Hide value" : "Reveal value"}
+                        aria-label={`${e.revealed ? "Hide" : "Reveal"} ${rowLabel}`}
                       >
                         {e.revealed ? "Hide" : "Reveal"}
                       </button>
@@ -256,6 +258,7 @@ export default function EnvVarsPanel({
                     <button
                       type="button"
                       onClick={() => removeRow(idx)}
+                      aria-label={`Remove ${rowLabel}`}
                       className="btn btn-danger btn-sm"
                       style={{ marginLeft: "var(--space-1)" }}
                     >
