@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 // server.ts is deliberately excluded from coverage (backend/vitest.config.ts:
 // "the side-effecting server entrypoint") and the project's own convention
@@ -46,25 +47,60 @@ describe("server.ts: unhandledRejection backstop is registered", () => {
 // nothing but running the real image could observe their wiring; they now
 // live behind runStartupTasks (backend/src/lib/boot.ts), tested in
 // tests/startup-tasks.test.ts. What that test suite CANNOT see is that
-// server.ts still calls the seam from the callback at all, so the text
-// assertions below pin exactly that, in the same read-the-source-text
-// style as the two assertions above.
+// server.ts still calls the seam from the callback at all, so the checks
+// below pin exactly that. They walk the parsed syntax tree rather than
+// match text: a commented-out call, a call in dead code and a call moved
+// out of the serve() callback must all fail.
+function isCallTo(node: ts.Node, name: string): node is ts.CallExpression {
+  return ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === name;
+}
+
+function collectCalls(root: ts.Node, name: string): ts.CallExpression[] {
+  const found: ts.CallExpression[] = [];
+  const visit = (node: ts.Node): void => {
+    if (isCallTo(node, name)) found.push(node);
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+  return found;
+}
+
 describe("server.ts: boot tasks are wired through runStartupTasks", () => {
-  it("awaits runStartupTasks inside the serve() callback, after the app-secrets log line", () => {
-    const serveCallIndex = serverSrc.indexOf("serve({");
-    const appSecretsIndex = serverSrc.indexOf("app-secrets:");
-    // Awaited: an un-awaited call would turn a startScheduler throw into an
-    // unobservable floating rejection instead of the callback rejection the
-    // unhandledRejection backstop above (and the old inline body) produced.
-    const startupCall = serverSrc.match(/await\s+runStartupTasks\s*\(/);
-    expect(serveCallIndex).toBeGreaterThan(-1);
-    expect(appSecretsIndex).toBeGreaterThan(-1);
-    expect(startupCall, `no awaited runStartupTasks() call found in server.ts:\n${serverSrc}`).not.toBeNull();
-    const callIndex = startupCall?.index ?? -1;
-    // Inside the callback (the callback is everything after `serve({` in
-    // this file) and after both boot log lines, as the old body was.
-    expect(callIndex).toBeGreaterThan(serveCallIndex);
-    expect(callIndex).toBeGreaterThan(appSecretsIndex);
+  const sourceFile = ts.createSourceFile("server.ts", serverSrc, ts.ScriptTarget.Latest, true);
+
+  it("awaits runStartupTasks as a top-level statement of the serve() callback, after the app-secrets log line", () => {
+    const serveStatements = sourceFile.statements.filter(
+      (stmt): stmt is ts.ExpressionStatement => ts.isExpressionStatement(stmt) && isCallTo(stmt.expression, "serve"),
+    );
+    expect(serveStatements, "expected exactly one top-level serve(...) call in server.ts").toHaveLength(1);
+    const serveCall = serveStatements[0].expression as ts.CallExpression;
+    const callback = serveCall.arguments[1];
+    expect(callback, "serve() must be called with a listening callback as its second argument").toBeDefined();
+    expect(ts.isArrowFunction(callback) || ts.isFunctionExpression(callback)).toBe(true);
+    const body = (callback as ts.ArrowFunction | ts.FunctionExpression).body;
+    expect(ts.isBlock(body), "the serve() callback must have a block body").toBe(true);
+    const statements = (body as ts.Block).statements;
+
+    // The await keeps the callback shape identical to the old inline body.
+    // serve() does not await its listener, so a rejection reaches the
+    // unhandledRejection backstop above whether or not the call is awaited.
+    const startupIndex = statements.findIndex(
+      (stmt) =>
+        ts.isExpressionStatement(stmt) &&
+        ts.isAwaitExpression(stmt.expression) &&
+        isCallTo(stmt.expression.expression, "runStartupTasks"),
+    );
+    const appSecretsIndex = statements.findIndex(
+      (stmt) =>
+        ts.isExpressionStatement(stmt) &&
+        ts.isCallExpression(stmt.expression) &&
+        stmt.expression.arguments.some((arg) => ts.isTemplateExpression(arg) && arg.head.text.startsWith("app-secrets:")),
+    );
+    expect(startupIndex, "no top-level `await runStartupTasks();` statement in the serve() callback").toBeGreaterThan(-1);
+    expect(appSecretsIndex, "no top-level app-secrets log statement in the serve() callback").toBeGreaterThan(-1);
+    expect(startupIndex).toBeGreaterThan(appSecretsIndex);
+
+    expect(collectCalls(sourceFile, "runStartupTasks"), "runStartupTasks must be called exactly once in server.ts").toHaveLength(1);
   });
 
   it("does not call the three boot tasks directly any more", () => {

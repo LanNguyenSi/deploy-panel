@@ -33,8 +33,9 @@ export const defaultStartupDeps: StartupDeps = {
  * Runs the three boot tasks in order, each awaited: the relay-token
  * backfill, the stuck-deploy recovery sweep, then startScheduler.
  *
- * The backfill first: it is a DB rewrite the scheduler could otherwise
- * race with a deploy it starts 5s after boot. The sweep awaited before
+ * The backfill first: it runs once the port is listening, as server.ts
+ * always ran it, so a request arriving mid-pass reads a still-plaintext
+ * row through the legacy path in lib/relay-token.ts. The sweep awaited before
  * startScheduler: the sweep's own boot pass may await the post-deploy
  * health gate for minutes (see deploy-outcome-trust-chain.md), and the
  * first scheduler tick must not start before it settles.
