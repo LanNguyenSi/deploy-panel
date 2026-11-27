@@ -1,8 +1,7 @@
 import { serve } from "@hono/node-server";
 import { config } from "./config/index.js";
 import { createApp } from "./app.js";
-import { recoverStuckDeploys, backfillRelayTokenCiphertext } from "./lib/startup.js";
-import { startScheduler } from "./lib/scheduler.js";
+import { runStartupTasks } from "./lib/boot.js";
 
 // Defence in depth against an unhandled promise rejection killing this
 // process. Every known fire-and-forget call site (streamDeploy's and both
@@ -32,24 +31,10 @@ serve({ fetch: app.fetch, port: config.PORT }, async (info) => {
   // schema treats it as optional).
   console.log(`app-secrets: ${config.APP_SECRETS_KEY ? "configured" : "absent"}`);
 
-  // Seal every stored relay token that is still plaintext (see
-  // backfillRelayTokenCiphertext in lib/startup.ts). A throw (production
-  // without APP_SECRETS_KEY) is logged and startup continues, exactly as
-  // for the app-secret paths: reads still serve legacy plaintext rows
-  // through lib/relay-token.ts, so a failed pass delays protection, it
-  // does not break the panel.
-  try {
-    await backfillRelayTokenCiphertext();
-  } catch (err) {
-    console.error("[startup] Failed to backfill relay-token ciphertext:", err);
-  }
-
-  // Run startup recovery after server is listening
-  try {
-    await recoverStuckDeploys();
-  } catch (err) {
-    console.error("[startup] Failed to recover stuck deploys:", err);
-  }
-
-  startScheduler();
+  // Backfill, stuck-deploy recovery and the scheduler now run behind one
+  // seam (runStartupTasks in lib/boot.ts): the same tasks, the same order,
+  // each awaited, each failure logged with the same message while startup
+  // continues. The wiring is tested in tests/startup-tasks.test.ts, which
+  // this file is out of reach for (importing it runs serve()).
+  await runStartupTasks();
 });
