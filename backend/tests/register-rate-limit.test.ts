@@ -290,9 +290,23 @@ describe("register-from-project-pilot failure budget", () => {
 
     it("a 2xx GitHub body without a login answers 500 and leaves no failure recorded", async () => {
       mockedFetch.mockResolvedValueOnce({} as never);
-      const res = await call({ githubAccessToken: "gho_x" });
+      // The claimed login makes the request reach the mismatch check if the
+      // route lets the body through; the route's own 500 body tells it apart
+      // from the global handler's internal_error.
+      const res = await call({ githubAccessToken: "gho_x", githubLogin: "lan" });
       expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: "internal" });
       expect(_loginFailureCount(REGISTER_KEY)).toBe(0);
+      expect(mUser.upsert).not.toHaveBeenCalled();
+    });
+
+    it("a 2xx GitHub body with an empty login answers 500 and leaves no failure recorded", async () => {
+      mockedFetch.mockResolvedValueOnce({ id: 1, login: "" } as never);
+      const res = await call({ githubAccessToken: "gho_x", githubLogin: "lan" });
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: "internal" });
+      expect(_loginFailureCount(REGISTER_KEY)).toBe(0);
+      expect(mUser.upsert).not.toHaveBeenCalled();
     });
 
     it("a burst of 503s leaves no failure recorded", async () => {
