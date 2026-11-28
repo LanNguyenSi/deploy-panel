@@ -25,6 +25,21 @@
  * `POST /api/auth/register-from-project-pilot` uses the same functions and
  * constants under a separate key namespace (`registerClientKey`), so its
  * failures never spend the login budget and vice versa.
+ *
+ * Lookup slots (`acquireLookupSlot`): a caller that awaits a credential
+ * lookup between the blocked check and the record (requireAuth's `dp_` key
+ * and `user_session` lookups) takes a slot per key first. A slot is granted
+ * only while recent failures plus slots in use stay below LOGIN_RATE_MAX, so
+ * a concurrent burst cannot get more lookups evaluated than the remaining
+ * budget. Further callers wait in FIFO order per key and re-run the blocked
+ * check once they hold a slot: a waiter answers 429 when the budget was spent
+ * meanwhile and is evaluated otherwise, so a burst of valid presentations is
+ * delayed, never refused for it. A slot is released after the lookup: with
+ * `fail()` (records the failure in the same synchronous turn) or `release()`
+ * (success or a thrown lookup, nothing recorded). A caller beyond
+ * LOOKUP_WAITERS_MAX waiters of its key, or one that waited
+ * LOOKUP_WAIT_TIMEOUT_MS without a slot, gets `busy`, which records nothing.
+ * The per-key slot state is deleted once no slot is held and nobody waits.
  */
 import { BlockList, isIP, isIPv4, isIPv6 } from "node:net";
 import { getConnInfo } from "@hono/node-server/conninfo";
@@ -220,6 +235,164 @@ export function refundLoginFailure(key: string): void {
   if (!stamps) return;
   stamps.pop();
   if (stamps.length === 0) failureHistory.delete(key);
+}
+
+export const LOOKUP_WAITERS_MAX = 100;
+export const LOOKUP_WAIT_TIMEOUT_MS = 10_000;
+
+/** Count of failures inside the window for `key`, without touching the map. */
+function recentFailureCount(key: string, now: number): number {
+  const cutoff = now - LOGIN_RATE_WINDOW_MS;
+  let n = 0;
+  for (const t of failureHistory.get(key) ?? []) if (t > cutoff) n++;
+  return n;
+}
+
+interface SlotWaiter {
+  wake: (granted: boolean) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface SlotState {
+  inFlight: number;
+  waiters: SlotWaiter[];
+}
+
+const lookupSlots = new Map<string, SlotState>();
+let waitersMax = LOOKUP_WAITERS_MAX;
+let waitTimeoutMs = LOOKUP_WAIT_TIMEOUT_MS;
+
+/** A held lookup slot. Exactly one of `fail` or `release` takes effect; later calls are no-ops. */
+export interface LookupSlot {
+  /** Record one failure for the key and release the slot, in the same synchronous turn. */
+  fail: () => void;
+  /** Release the slot without recording anything (success, or a lookup that threw). */
+  release: () => void;
+}
+
+export type LookupSlotResult =
+  | { status: "acquired"; slot: LookupSlot }
+  | { status: "blocked"; retryAfterSec: number }
+  | { status: "busy" };
+
+function dropIfIdle(key: string, state: SlotState): void {
+  if (state.inFlight === 0 && state.waiters.length === 0 && lookupSlots.get(key) === state) {
+    lookupSlots.delete(key);
+  }
+}
+
+/**
+ * Hand slots to waiting callers in FIFO order. A waiter is woken while a slot
+ * is free, and also once the budget is spent (it then answers 429 on its own
+ * blocked check instead of waiting for the timeout). The woken waiter's slot
+ * is counted here, synchronously, so no later caller can take it first.
+ */
+function pumpWaiters(key: string, state: SlotState): void {
+  while (state.waiters.length > 0) {
+    const recent = recentFailureCount(key, Date.now());
+    if (recent < LOGIN_RATE_MAX && recent + state.inFlight >= LOGIN_RATE_MAX) break;
+    const waiter = state.waiters.shift()!;
+    clearTimeout(waiter.timer);
+    state.inFlight++;
+    waiter.wake(true);
+  }
+}
+
+function releaseSlot(key: string, state: SlotState): void {
+  state.inFlight--;
+  pumpWaiters(key, state);
+  dropIfIdle(key, state);
+}
+
+function makeSlot(key: string, state: SlotState): LookupSlot {
+  let done = false;
+  return {
+    fail: () => {
+      if (done) return;
+      done = true;
+      recordLoginFailure(key);
+      releaseSlot(key, state);
+    },
+    release: () => {
+      if (done) return;
+      done = true;
+      releaseSlot(key, state);
+    },
+  };
+}
+
+/**
+ * Take a lookup slot for `key` before awaiting a credential lookup. Resolves
+ * `acquired` with the slot, `blocked` when the key has used up its failure
+ * budget (checked again after waiting), or `busy` when the waiter cap of the
+ * key is reached or the wait timed out. Only `acquired` holds a slot.
+ */
+export async function acquireLookupSlot(key: string): Promise<LookupSlotResult> {
+  let state = lookupSlots.get(key);
+  if (!state) {
+    state = { inFlight: 0, waiters: [] };
+    lookupSlots.set(key, state);
+  }
+  const s = state;
+  pumpWaiters(key, s);
+  if (s.waiters.length === 0) {
+    const recent = recentFailureCount(key, Date.now());
+    if (recent >= LOGIN_RATE_MAX) {
+      dropIfIdle(key, s);
+      return { status: "blocked", retryAfterSec: checkLoginBlocked(key).retryAfterSec };
+    }
+    if (recent + s.inFlight < LOGIN_RATE_MAX) {
+      s.inFlight++;
+      return { status: "acquired", slot: makeSlot(key, s) };
+    }
+  }
+  if (s.waiters.length >= waitersMax) {
+    dropIfIdle(key, s);
+    return { status: "busy" };
+  }
+  const granted = await new Promise<boolean>((resolve) => {
+    const waiter: SlotWaiter = {
+      wake: resolve,
+      timer: setTimeout(() => {
+        const i = s.waiters.indexOf(waiter);
+        if (i !== -1) s.waiters.splice(i, 1);
+        dropIfIdle(key, s);
+        resolve(false);
+      }, waitTimeoutMs),
+    };
+    (waiter.timer as { unref?: () => void }).unref?.();
+    s.waiters.push(waiter);
+  });
+  if (!granted) return { status: "busy" };
+  const limit = checkLoginBlocked(key);
+  if (limit.blocked) {
+    releaseSlot(key, s);
+    return { status: "blocked", retryAfterSec: limit.retryAfterSec };
+  }
+  return { status: "acquired", slot: makeSlot(key, s) };
+}
+
+/** Test-only: lower the waiter cap and the wait timeout; no argument restores the defaults. */
+export function _setLookupSlotLimits(limits: { waitersMax?: number; waitTimeoutMs?: number } = {}): void {
+  waitersMax = limits.waitersMax ?? LOOKUP_WAITERS_MAX;
+  waitTimeoutMs = limits.waitTimeoutMs ?? LOOKUP_WAIT_TIMEOUT_MS;
+}
+
+/** Test-only: number of keys with lookup-slot state (held slots or waiters). */
+export function _lookupSlotStateSize(): number {
+  return lookupSlots.size;
+}
+
+/** Test-only: slots held for `key` (0 when untracked). */
+export function _lookupSlotsInFlight(key: string): number {
+  return lookupSlots.get(key)?.inFlight ?? 0;
+}
+
+/** Test-only: drop all lookup-slot state and restore the default limits. */
+export function _resetLookupSlots(): void {
+  for (const state of lookupSlots.values()) for (const w of state.waiters) clearTimeout(w.timer);
+  lookupSlots.clear();
+  _setLookupSlotLimits();
 }
 
 /** Test-only: drop all recorded failures. */
