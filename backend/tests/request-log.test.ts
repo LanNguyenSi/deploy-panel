@@ -75,6 +75,11 @@ describe("stripQuery unit cases", () => {
     expect(stripQuery("--> GET /x? 200 3ms")).toBe("--> GET /x 200 3ms");
   });
 
+  it("cuts at the first '?' when the query itself holds another '?'", () => {
+    expect(stripQuery("<-- GET /x?a=1?b=2")).toBe("<-- GET /x");
+    expect(stripQuery("--> GET /x?a=1?b=2 200 3ms")).toBe("--> GET /x 200 3ms");
+  });
+
   it("keeps an ANSI-colored status and elapsed on an outgoing line with a query", () => {
     expect(stripQuery("--> GET /x?y=1 \u001b[32m200\u001b[0m 5ms")).toBe(
       "--> GET /x \u001b[32m200\u001b[0m 5ms",
