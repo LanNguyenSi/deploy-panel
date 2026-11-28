@@ -15,6 +15,7 @@ import { apiKeysRouter } from "./routes/api-keys.js";
 import { ENV_REPLACE_MAX_BODY_BYTES } from "./routes/apps.js";
 import { requireAuth, requirePanelAuth } from "./middleware/auth.js";
 import { trimTrailingSlashes } from "./lib/origin.js";
+import { stripQuery } from "./lib/request-log.js";
 
 // One cap for every /api/* request body. /api/auth/login and /api/auth/check
 // answer without authentication, so an uncapped body grows the heap. The
@@ -33,7 +34,11 @@ const ENV_REPLACE_PATH = /^\/api\/servers\/[^/]+\/apps\/[^/]+\/env$/;
 export function createApp(corsOrigins: string) {
   const app = new Hono();
 
-  app.use("*", logger());
+  // The request log never prints a query string: the OAuth callback carries
+  // `code` and `state` in the URL, and Hono's logger otherwise writes them
+  // to stdout on every login (lib/request-log.ts). The query is dropped for
+  // every route, one rule for all of them.
+  app.use("*", logger((line, ...rest) => console.log(stripQuery(line), ...rest)));
 
   app.use("*", async (c, next) => {
     await next();
