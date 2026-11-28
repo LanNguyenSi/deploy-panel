@@ -25,6 +25,23 @@
  * `POST /api/auth/register-from-project-pilot` uses the same functions and
  * constants under a separate key namespace (`registerClientKey`), so its
  * failures never spend the login budget and vice versa.
+ *
+ * Lookup slots (`acquireLookupSlot`): a caller that awaits a credential
+ * lookup between the blocked check and the record (requireAuth's `dp_` key
+ * and `user_session` lookups) takes a slot per key first. A slot is granted
+ * only while recent failures plus slots in use stay below LOGIN_RATE_MAX, so
+ * a concurrent burst cannot get more lookups evaluated than the remaining
+ * budget. Failures recorded without a slot (synchronous comparisons) are not
+ * held back by it. Further callers wait in FIFO order per key; when a slot is
+ * released, each waiter is woken with a verdict decided at that moment: a
+ * counted slot while one is free, or blocked (429, no slot) once the budget
+ * is spent. A granted waiter re-checks only to tighten. A burst of valid
+ * presentations is delayed, never refused for it. A slot is released after the lookup: with
+ * `fail()` (records the failure in the same synchronous turn) or `release()`
+ * (success or a thrown lookup, nothing recorded). A caller beyond
+ * LOOKUP_WAITERS_MAX waiters of its key, or one that waited
+ * LOOKUP_WAIT_TIMEOUT_MS without a slot, gets `busy`, which records nothing.
+ * The per-key slot state is deleted once no slot is held and nobody waits.
  */
 import { BlockList, isIP, isIPv4, isIPv6 } from "node:net";
 import { getConnInfo } from "@hono/node-server/conninfo";
@@ -220,6 +237,214 @@ export function refundLoginFailure(key: string): void {
   if (!stamps) return;
   stamps.pop();
   if (stamps.length === 0) failureHistory.delete(key);
+}
+
+export const LOOKUP_WAITERS_MAX = 100;
+export const LOOKUP_WAIT_TIMEOUT_MS = 10_000;
+
+/**
+ * Failures inside the window for `key` at `now`, without touching the map,
+ * and the Retry-After (seconds, at least 1) that applies when they reach
+ * LOGIN_RATE_MAX. Both come from the same clock read, so a blocked verdict
+ * never carries a Retry-After of 0. The window boundary is the one
+ * checkLoginBlocked uses: a stamp counts while it is newer than
+ * `now - LOGIN_RATE_WINDOW_MS`, so a stamp exactly one window old no longer
+ * counts.
+ */
+function recentFailures(key: string, now: number): { count: number; retryAfterSec: number } {
+  const cutoff = now - LOGIN_RATE_WINDOW_MS;
+  let count = 0;
+  let oldest = Infinity;
+  for (const t of failureHistory.get(key) ?? []) {
+    if (t > cutoff) {
+      count++;
+      if (t < oldest) oldest = t;
+    }
+  }
+  const retryAfterSec =
+    count === 0 ? 0 : Math.max(1, Math.ceil((oldest + LOGIN_RATE_WINDOW_MS - now) / 1000));
+  return { count, retryAfterSec };
+}
+
+/** How a waiter is woken: with a counted slot, or blocked (no slot) with its Retry-After. */
+type WakeVerdict = { granted: true } | { granted: false; retryAfterSec: number };
+
+interface SlotWaiter {
+  wake: (verdict: WakeVerdict | null) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface SlotState {
+  inFlight: number;
+  waiters: SlotWaiter[];
+}
+
+const lookupSlots = new Map<string, SlotState>();
+let waitersMax = LOOKUP_WAITERS_MAX;
+let waitTimeoutMs = LOOKUP_WAIT_TIMEOUT_MS;
+
+/** A held lookup slot. Exactly one of `fail` or `release` takes effect; later calls are no-ops. */
+export interface LookupSlot {
+  /** Record one failure for the key and release the slot, in the same synchronous turn. */
+  fail: () => void;
+  /** Release the slot without recording anything (success, or a lookup that threw). */
+  release: () => void;
+}
+
+export type LookupSlotResult =
+  | { status: "acquired"; slot: LookupSlot }
+  | { status: "blocked"; retryAfterSec: number }
+  | { status: "busy" };
+
+function dropIfIdle(key: string, state: SlotState): void {
+  if (state.inFlight === 0 && state.waiters.length === 0 && lookupSlots.get(key) === state) {
+    lookupSlots.delete(key);
+  }
+}
+
+/**
+ * Hand slots to waiting callers in FIFO order. The verdict for each waiter is
+ * decided here, from one clock read, and passed through `wake`: while a slot
+ * is free the waiter is woken granted and its slot is counted synchronously,
+ * so no later caller can take it first; once the budget is spent it is woken
+ * blocked, without a slot, so it answers 429 instead of waiting for the
+ * timeout. A blocked verdict is final: the waiter never re-reads the clock to
+ * turn it into a grant (an expiring stamp cannot let a flood of woken waiters
+ * through).
+ */
+function pumpWaiters(key: string, state: SlotState): void {
+  while (state.waiters.length > 0) {
+    const recent = recentFailures(key, Date.now());
+    if (recent.count >= LOGIN_RATE_MAX) {
+      const waiter = state.waiters.shift()!;
+      clearTimeout(waiter.timer);
+      waiter.wake({ granted: false, retryAfterSec: recent.retryAfterSec });
+      continue;
+    }
+    if (recent.count + state.inFlight >= LOGIN_RATE_MAX) break;
+    const waiter = state.waiters.shift()!;
+    clearTimeout(waiter.timer);
+    state.inFlight++;
+    waiter.wake({ granted: true });
+  }
+}
+
+function releaseSlot(key: string, state: SlotState): void {
+  state.inFlight--;
+  pumpWaiters(key, state);
+  dropIfIdle(key, state);
+}
+
+function makeSlot(key: string, state: SlotState): LookupSlot {
+  let done = false;
+  return {
+    fail: () => {
+      if (done) return;
+      done = true;
+      recordLoginFailure(key);
+      releaseSlot(key, state);
+    },
+    release: () => {
+      if (done) return;
+      done = true;
+      releaseSlot(key, state);
+    },
+  };
+}
+
+/**
+ * Take a lookup slot for `key` before awaiting a credential lookup. Resolves
+ * `acquired` with the slot, `blocked` when the key has used up its failure
+ * budget (decided when a waiter is woken, and checked again after a grant),
+ * or `busy` when the waiter cap of the key is reached or the wait timed out.
+ * Only `acquired` holds a slot.
+ */
+export async function acquireLookupSlot(key: string): Promise<LookupSlotResult> {
+  let state = lookupSlots.get(key);
+  if (!state) {
+    state = { inFlight: 0, waiters: [] };
+    lookupSlots.set(key, state);
+  }
+  const s = state;
+  pumpWaiters(key, s);
+  if (s.waiters.length === 0) {
+    const recent = recentFailures(key, Date.now());
+    if (recent.count >= LOGIN_RATE_MAX) {
+      dropIfIdle(key, s);
+      return { status: "blocked", retryAfterSec: recent.retryAfterSec };
+    }
+    if (recent.count + s.inFlight < LOGIN_RATE_MAX) {
+      s.inFlight++;
+      return { status: "acquired", slot: makeSlot(key, s) };
+    }
+  }
+  if (s.waiters.length >= waitersMax) {
+    dropIfIdle(key, s);
+    return { status: "busy" };
+  }
+  const verdict = await new Promise<WakeVerdict | null>((resolve) => {
+    const waiter: SlotWaiter = {
+      wake: resolve,
+      timer: setTimeout(() => {
+        const i = s.waiters.indexOf(waiter);
+        if (i !== -1) s.waiters.splice(i, 1);
+        dropIfIdle(key, s);
+        resolve(null);
+      }, waitTimeoutMs),
+    };
+    (waiter.timer as { unref?: () => void }).unref?.();
+    s.waiters.push(waiter);
+  });
+  if (verdict === null) return { status: "busy" };
+  if (!verdict.granted) return { status: "blocked", retryAfterSec: verdict.retryAfterSec };
+  // Granted: re-check only to tighten. A failure recorded between the pump
+  // and this turn (a synchronous comparison of another request) can block the
+  // key; an expired stamp only frees budget and never reaches here as blocked.
+  const limit = checkLoginBlocked(key);
+  if (limit.blocked) {
+    releaseSlot(key, s);
+    return { status: "blocked", retryAfterSec: limit.retryAfterSec };
+  }
+  return { status: "acquired", slot: makeSlot(key, s) };
+}
+
+/** Test-only: lower the waiter cap and the wait timeout; no argument restores the defaults. */
+export function _setLookupSlotLimits(limits: { waitersMax?: number; waitTimeoutMs?: number } = {}): void {
+  waitersMax = limits.waitersMax ?? LOOKUP_WAITERS_MAX;
+  waitTimeoutMs = limits.waitTimeoutMs ?? LOOKUP_WAIT_TIMEOUT_MS;
+}
+
+/** Test-only: recentFailures for `key` at `now` (count in the window and the Retry-After it implies). */
+export function _recentFailures(key: string, now: number): { count: number; retryAfterSec: number } {
+  return recentFailures(key, now);
+}
+
+/** Test-only: replace the recorded failures of `key` with `stamps` (oldest first). */
+export function _setLoginFailures(key: string, stamps: number[]): void {
+  if (stamps.length === 0) failureHistory.delete(key);
+  else failureHistory.set(key, [...stamps]);
+}
+
+/** Test-only: callers waiting for a slot of `key`. */
+export function _lookupSlotWaiters(key: string): number {
+  return lookupSlots.get(key)?.waiters.length ?? 0;
+}
+
+/** Test-only: number of keys with lookup-slot state (held slots or waiters). */
+export function _lookupSlotStateSize(): number {
+  return lookupSlots.size;
+}
+
+/** Test-only: slots held for `key` (0 when untracked). */
+export function _lookupSlotsInFlight(key: string): number {
+  return lookupSlots.get(key)?.inFlight ?? 0;
+}
+
+/** Test-only: drop all lookup-slot state and restore the default limits. */
+export function _resetLookupSlots(): void {
+  for (const state of lookupSlots.values()) for (const w of state.waiters) clearTimeout(w.timer);
+  lookupSlots.clear();
+  _setLookupSlotLimits();
 }
 
 /** Test-only: drop all recorded failures. */

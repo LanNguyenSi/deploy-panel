@@ -5,7 +5,13 @@ import { prisma } from "../lib/prisma.js";
 import { buildClearUserSessionCookie, readUserSessionCookie, validateSession } from "../lib/session.js";
 import { parsePanelSessionCookie, safeCompare } from "../lib/panel-token.js";
 import { validatePanelSession } from "../lib/panel-session.js";
-import { checkLoginBlocked, loginClientKey, recordLoginFailure } from "../lib/login-rate-limit.js";
+import {
+  acquireLookupSlot,
+  checkLoginBlocked,
+  loginClientKey,
+  recordLoginFailure,
+  type LookupSlotResult,
+} from "../lib/login-rate-limit.js";
 
 /** Set-Cookie value that clears `panel_session` (same attributes as logout). */
 export const CLEAR_PANEL_SESSION_COOKIE = "panel_session=; Path=/; HttpOnly; Max-Age=0";
@@ -74,10 +80,25 @@ export function hashApiKey(key: string): string {
  * with a Set-Cookie on the response (and on the 429 when the request carried
  * it), so a browser holding a stale cookie (an admin session the server
  * dropped after a restart, logout or expiry, a revoked or expired GitHub
- * session) stops spending the budget. Requests already
- * past the blocked check when the limit is reached are still evaluated, so
- * concurrent `dp_` and `user_session` lookups can each record a failure
- * beyond the limit.
+ * session) stops spending the budget.
+ *
+ * The two awaited lookups (a `dp_` key, a `user_session` cookie) each take a
+ * lookup slot of the client key first (`acquireLookupSlot`): at most the
+ * remaining budget (LOGIN_RATE_MAX minus the failures already counted) of
+ * lookups run at once per client, so a concurrent burst cannot get more of
+ * these two lookups evaluated than the budget. The synchronous comparisons
+ * (a non-`dp_` Bearer, a `panel_session` cookie, a malformed `user_session`)
+ * take no slot: their failures, recorded while lookups are in flight, are not
+ * held back, so one mixed burst can get up to about twice the budget
+ * evaluated across credential kinds, each kind at most the budget. Further
+ * requests wait for a slot: once the budget is spent they answer the 429
+ * above, otherwise they are evaluated, so a burst of valid presentations is
+ * delayed, not refused or logged out. A failed lookup records its failure as
+ * it releases the slot; a successful or thrown one records nothing. A
+ * request beyond the per-client waiter cap, or one that waited longer than
+ * the wait timeout, gets 503 `auth_busy` with Retry-After: 1: the lookup
+ * records nothing and the `user_session` cookie is not cleared (a failure
+ * the same request's synchronous comparisons recorded before stays recorded).
  */
 export async function requireAuth(c: Context, next: Next) {
   const token = config.PANEL_TOKEN;
@@ -107,16 +128,30 @@ export async function requireAuth(c: Context, next: Next) {
   const clearUserCookie = () =>
     c.header("Set-Cookie", clearUserSessionCookie(), { append: true });
 
-  const limit = checkLoginBlocked(clientKey);
-  if (limit.blocked) {
-    if (panelCookie !== null) clearPanelCookie();
+  let panelCookieCleared = false;
+  const rateLimited = (retryAfterSec: number) => {
+    if (panelCookie !== null && !panelCookieCleared) clearPanelCookie();
     if (userSession.carried) clearUserCookie();
-    c.header("Retry-After", String(limit.retryAfterSec));
+    c.header("Retry-After", String(retryAfterSec));
     return c.json(
       { error: "rate_limited", message: "too many failed authentication attempts; retry later" },
       429,
     );
-  }
+  };
+  // A request that got no lookup slot: blocked answers the normal 429; busy
+  // (waiter cap or wait timeout): the lookup records nothing and the
+  // user_session cookie is not cleared.
+  const refuseWithoutSlot = (r: Exclude<LookupSlotResult, { status: "acquired" }>) => {
+    if (r.status === "blocked") return rateLimited(r.retryAfterSec);
+    c.header("Retry-After", "1");
+    return c.json(
+      { error: "auth_busy", message: "too many authentication requests in flight; retry shortly" },
+      503,
+    );
+  };
+
+  const limit = checkLoginBlocked(clientKey);
+  if (limit.blocked) return rateLimited(limit.retryAfterSec);
 
   // Check Authorization header
   const auth = c.req.header("Authorization");
@@ -126,8 +161,18 @@ export async function requireAuth(c: Context, next: Next) {
     // API Key (prefixed with dp_)
     if (bearer.startsWith("dp_")) {
       const keyHash = hashApiKey(bearer);
-      const apiKey = await prisma.apiKey.findUnique({ where: { keyHash } });
+      const acquired = await acquireLookupSlot(clientKey);
+      if (acquired.status !== "acquired") return refuseWithoutSlot(acquired);
+      const { slot } = acquired;
+      let apiKey;
+      try {
+        apiKey = await prisma.apiKey.findUnique({ where: { keyHash } });
+      } catch (err) {
+        slot.release();
+        throw err;
+      }
       if (apiKey && !apiKey.revokedAt) {
+        slot.release();
         // Update lastUsedAt (fire-and-forget)
         prisma.apiKey.update({ where: { id: apiKey.id }, data: { lastUsedAt: new Date() } }).catch(() => {});
         c.set("authType", "api_key");
@@ -141,7 +186,7 @@ export async function requireAuth(c: Context, next: Next) {
         }
         return next();
       }
-      recordLoginFailure(clientKey);
+      slot.fail();
       return c.json({ error: "unauthorized", message: "Invalid or revoked API key" }, 401);
     }
 
@@ -164,20 +209,35 @@ export async function requireAuth(c: Context, next: Next) {
     }
     recordLoginFailure(clientKey);
     clearPanelCookie();
+    panelCookieCleared = true;
   }
 
   // Check user_session cookie (native GitHub OAuth login). Non-admin;
   // userId comes from the session row. A malformed cookie is not looked up
   // and fails like an unknown session.
   if (userSession.carried) {
-    const userId = userSession.token ? await validateSession(userSession.token) : null;
-    if (userId) {
-      c.set("authType", "session");
-      c.set("userId", userId);
-      c.set("isAdmin", false);
-      return next();
+    let userId: string | null = null;
+    if (userSession.token) {
+      const acquired = await acquireLookupSlot(clientKey);
+      if (acquired.status !== "acquired") return refuseWithoutSlot(acquired);
+      const { slot } = acquired;
+      try {
+        userId = await validateSession(userSession.token);
+      } catch (err) {
+        slot.release();
+        throw err;
+      }
+      if (userId) {
+        slot.release();
+        c.set("authType", "session");
+        c.set("userId", userId);
+        c.set("isAdmin", false);
+        return next();
+      }
+      slot.fail();
+    } else {
+      recordLoginFailure(clientKey);
     }
-    recordLoginFailure(clientKey);
     clearUserCookie();
   }
 
