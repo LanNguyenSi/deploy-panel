@@ -56,6 +56,7 @@ runs:
         APP: ${{ inputs.app }}
         FORCE: ${{ inputs.force }}
       run: |
+        while [ "${PANEL_URL%/}" != "$PANEL_URL" ]; do PANEL_URL="${PANEL_URL%/}"; done
         echo "::group::Preflight checks"
         BODY=$(jq -n --arg server "$SERVER" --arg app "$APP" '{server:$server, app:$app}')
         RESULT=$(curl -sf -X POST "$PANEL_URL/api/v1/preflight" \
@@ -82,6 +83,7 @@ runs:
         APP: ${{ inputs.app }}
         FORCE: ${{ inputs.force }}
       run: |
+        while [ "${PANEL_URL%/}" != "$PANEL_URL" ]; do PANEL_URL="${PANEL_URL%/}"; done
         BODY=$(jq -n --arg server "$SERVER" --arg app "$APP" \
           --argjson force "$( [ "$FORCE" = "true" ] && echo true || echo false )" \
           '{server:$server, app:$app, force:$force}')
@@ -105,6 +107,7 @@ runs:
         TIMEOUT: ${{ inputs.timeout }}
       run: |
         set -euo pipefail
+        while [ "${PANEL_URL%/}" != "$PANEL_URL" ]; do PANEL_URL="${PANEL_URL%/}"; done
 
         # test harness knob: shrinks the backoff base so tests run instantly
         BASE="${DEPLOY_PANEL_ACTION_TEST_POLL_BASE:-10}"

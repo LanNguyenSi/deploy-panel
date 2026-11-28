@@ -51,7 +51,7 @@ Or wire it into an MCP client (for example, Claude Desktop):
 
 | Variable               | Required | Description                                                                 |
 |------------------------|----------|-----------------------------------------------------------------------------|
-| `DEPLOY_PANEL_URL`     | Yes      | Base URL of the deploy-panel backend. A trailing slash is trimmed.          |
+| `DEPLOY_PANEL_URL`     | Yes      | Base URL of the deploy-panel backend. Trailing slashes are trimmed (an inner path is kept).          |
 | `DEPLOY_PANEL_API_KEY` | Yes      | A `dp_` API key (create one under API keys in the panel). Sent as a Bearer token. |
 
 The server exits on startup if either variable is missing. It authenticates as
