@@ -29,12 +29,14 @@ import {
   LOGIN_RATE_MAX_KEYS,
   LOGIN_RATE_WINDOW_MS,
   UNKNOWN_CLIENT_KEY,
+  _loginFailureCount,
   _loginRateLimitHas,
   _loginRateLimitSize,
   _resetLoginRateLimit,
   checkLoginBlocked,
   isTrustedProxyPeer,
   recordLoginFailure,
+  refundLoginFailure,
   resolveLoginClientKey,
 } from "../src/lib/login-rate-limit.js";
 
@@ -537,5 +539,36 @@ describe("login failure window", () => {
     expect(_loginRateLimitSize()).toBe(1);
     expect(checkLoginBlocked("k", t0 + LOGIN_RATE_WINDOW_MS + 1).blocked).toBe(false);
     expect(_loginRateLimitSize()).toBe(0);
+  });
+});
+
+describe("refundLoginFailure", () => {
+  beforeEach(() => _resetLoginRateLimit());
+
+  it("removes the newest failure and keeps the window anchored at the oldest", () => {
+    const t0 = 1_000_000;
+    const t1 = t0 + 60_000;
+    recordLoginFailure("k", t0);
+    recordLoginFailure("k", t1);
+    refundLoginFailure("k");
+    expect(_loginFailureCount("k")).toBe(1);
+    for (let i = 0; i < LOGIN_RATE_MAX - 1; i++) recordLoginFailure("k", t1);
+    // the oldest remaining failure is still t0, not t1
+    const r = checkLoginBlocked("k", t1);
+    expect(r.blocked).toBe(true);
+    expect(r.retryAfterSec).toBe((LOGIN_RATE_WINDOW_MS - 60_000) / 1000);
+  });
+
+  it("drops the key when its last failure is refunded", () => {
+    recordLoginFailure("k", 1_000_000);
+    refundLoginFailure("k");
+    expect(_loginRateLimitHas("k")).toBe(false);
+  });
+
+  it("is a no-op on an untracked key", () => {
+    recordLoginFailure("other", 1_000_000);
+    refundLoginFailure("k");
+    expect(_loginRateLimitHas("k")).toBe(false);
+    expect(_loginFailureCount("other")).toBe(1);
   });
 });

@@ -34,7 +34,9 @@ import {
 import {
   checkLoginBlocked,
   loginClientKey,
+  registerClientKey,
   recordLoginFailure,
+  refundLoginFailure,
 } from "../lib/login-rate-limit.js";
 import { audit } from "../lib/audit.js";
 
@@ -231,7 +233,17 @@ authRouter.get("/github/callback", async (c) => {
 //   POST /api/auth/register-from-project-pilot
 //   Body:     { githubAccessToken, githubLogin? }
 //   Response: { apiToken, userId, githubLogin }
-//   Errors:   401 bad/mismatched token | 503 GitHub unreachable | 400 malformed
+//   Errors:   401 bad/mismatched token | 403 login not allowed | 429 too many
+//             failed verifications (Retry-After) | 503 GitHub unreachable |
+//             400 malformed
+//
+// Failed verifications (GitHub rejects the token, claimed login mismatch,
+// allowlist refusal) count against a registration budget of their own (same
+// limit and window as /login, separate key namespace); a blocked client is
+// answered 429 before any GitHub call. 400, 503 and 500 are not counted.
+// Because the GitHub call is awaited, a failure is recorded provisionally
+// before it (parallel requests cannot all pass the check first) and refunded
+// when the outcome is 503, 500 or success.
 //
 // The broker (project-pilot) obtains a user's GitHub OAuth access-token and
 // calls this endpoint on their behalf. deploy-panel does NOT trust the
@@ -262,6 +274,19 @@ authRouter.post(
   async (c) => {
     const body = c.req.valid("json");
 
+    const registerKey = registerClientKey(c);
+    const limit = checkLoginBlocked(registerKey);
+    if (limit.blocked) {
+      c.header("Retry-After", String(limit.retryAfterSec));
+      return c.json(
+        { error: "rate_limited", message: "too many failed registrations; retry later" },
+        429,
+      );
+    }
+
+    // Provisional failure, taken back below unless the client caused one.
+    recordLoginFailure(registerKey);
+
     let githubUser;
     try {
       githubUser = await fetchGitHubUser(body.githubAccessToken);
@@ -273,6 +298,7 @@ authRouter.post(
         );
       }
       if (err instanceof GitHubUnreachableError) {
+        refundLoginFailure(registerKey);
         return c.json(
           {
             error: "upstream_unavailable",
@@ -281,6 +307,14 @@ authRouter.post(
           503,
         );
       }
+      refundLoginFailure(registerKey);
+      return c.json({ error: "internal" }, 500);
+    }
+
+    // A 2xx answer without a usable login is a server-side fault, not a
+    // failed verification by the client.
+    if (typeof githubUser?.login !== "string" || githubUser.login === "") {
+      refundLoginFailure(registerKey);
       return c.json({ error: "internal" }, 500);
     }
 
@@ -310,6 +344,9 @@ authRouter.post(
         403,
       );
     }
+
+    // Verified and allowed: not a failure, give the provisional one back.
+    refundLoginFailure(registerKey);
 
     const githubId = String(githubUser.id);
     const user = await prisma.user.upsert({
