@@ -51,6 +51,7 @@ import { hashApiKey } from "../src/middleware/auth.js";
 import { _resetPanelSessions } from "../src/lib/panel-session.js";
 import {
   LOGIN_RATE_MAX,
+  LOGIN_RATE_WINDOW_MS,
   LOOKUP_WAITERS_MAX,
   LOOKUP_WAIT_TIMEOUT_MS,
   UNKNOWN_CLIENT_KEY,
@@ -64,6 +65,7 @@ import {
   recordLoginFailure,
 } from "../src/lib/login-rate-limit.js";
 
+const CLEAR = "panel_session=; Path=/; HttpOnly; Max-Age=0";
 const CLEAR_USER = "user_session=; HttpOnly; SameSite=Lax; Max-Age=0; Path=/";
 const VALID_KEY = "dp_valid_key";
 const WRONG_KEY = "dp_wrong_key";
@@ -537,5 +539,140 @@ describe("acquireLookupSlot", () => {
     if (other.status === "acquired") other.slot.release();
     for (const h of held) if (h.status === "acquired") h.slot.release();
     expect(_lookupSlotStateSize()).toBe(0);
+  });
+});
+
+describe("synchronous comparisons next to the lookups", () => {
+  it("mixed burst: failures of synchronous comparisons are not held back by the slots (pinned at twice the budget)", async () => {
+    const t = holdCalls(mApiKey.findUnique);
+    const lookups = Array.from({ length: LOGIN_RATE_MAX }, () =>
+      servers({ Authorization: `Bearer ${WRONG_KEY}` }),
+    );
+    await until(() => t.held.length === LOGIN_RATE_MAX);
+    // Wrong non-dp_ Bearers take no slot: each one is compared and recorded
+    // until the recorded failures alone reach the budget.
+    const sync = await Promise.all(
+      Array.from({ length: 15 }, () => servers({ Authorization: "Bearer wrong" })),
+    );
+    expect(count(sync, 401)).toBe(LOGIN_RATE_MAX);
+    expect(count(sync, 429)).toBe(5);
+    const done = await drain(t, lookups, () => ({ value: null }));
+    expect(statuses(done)).toEqual(Array(LOGIN_RATE_MAX).fill(401));
+    // Each kind at most the budget, together twice the budget.
+    expect(failures()).toBe(2 * LOGIN_RATE_MAX);
+    expect(mApiKey.findUnique).toHaveBeenCalledTimes(LOGIN_RATE_MAX);
+  });
+
+  for (const valid of [true, false]) {
+    it(`budget edge: 9 failures, a wrong Bearer next to a ${valid ? "valid" : "missing"} user_session answers 429 before the lookup and clears the cookie`, async () => {
+      for (let i = 0; i < LOGIN_RATE_MAX - 1; i++) recordLoginFailure(UNKNOWN_CLIENT_KEY);
+      if (valid) mSession.findUnique.mockResolvedValue(LIVE_SESSION());
+      const res = await servers({ Authorization: "Bearer wrong", Cookie: LIVE_USER });
+      expect(res.status).toBe(429);
+      expect(await res.json()).toMatchObject({ error: "rate_limited" });
+      expect(Number(res.headers.get("Retry-After"))).toBeGreaterThanOrEqual(1);
+      expect(res.headers.getSetCookie()).toEqual([CLEAR_USER]);
+      expect(mSession.findUnique).not.toHaveBeenCalled();
+      expect(failures()).toBe(LOGIN_RATE_MAX);
+    });
+  }
+
+  it("a failed panel_session and a user_session woken blocked: one clear per cookie", async () => {
+    const t = holdCalls(mApiKey.findUnique);
+    const lookups = Array.from({ length: LOGIN_RATE_MAX - 1 }, () =>
+      servers({ Authorization: `Bearer ${WRONG_KEY}` }),
+    );
+    await until(() => t.held.length === LOGIN_RATE_MAX - 1);
+    // Its panel_session fails (1 failure), so 1 + 9 slots in flight: it waits.
+    const mixed = servers({ Cookie: `panel_session=wrong; ${LIVE_USER}` });
+    await settle();
+    expect(failures()).toBe(1);
+    const done = await drain(t, [...lookups, mixed], () => ({ value: null }));
+    const res = done[done.length - 1];
+    expect(res.status).toBe(429);
+    expect(res.headers.getSetCookie()).toEqual([CLEAR, CLEAR_USER]);
+    expect(mSession.findUnique).not.toHaveBeenCalled();
+    expect(failures()).toBe(LOGIN_RATE_MAX);
+  });
+});
+
+describe("waiter verdicts and the clock", () => {
+  const KEY = "203.0.113.60";
+  const T0 = 1_900_000_000_000;
+
+  it("a blocked verdict is final: a stamp expiring after the pump lets no woken waiter through", async () => {
+    let clock = T0;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    try {
+      for (let i = 0; i < LOGIN_RATE_MAX - 1; i++) recordLoginFailure(KEY, T0);
+      const first = await acquireLookupSlot(KEY);
+      if (first.status !== "acquired") throw new Error("not acquired");
+      const waiting = Array.from({ length: 20 }, () => acquireLookupSlot(KEY));
+      expect(_lookupSlotsInFlight(KEY)).toBe(1);
+      // The tenth failure lands in the last millisecond of the oldest stamps...
+      clock = T0 + LOGIN_RATE_WINDOW_MS - 1;
+      first.slot.fail();
+      // ...and they expire before the woken waiters run.
+      clock = T0 + LOGIN_RATE_WINDOW_MS + 1;
+      const got = await Promise.all(waiting);
+      expect(got.map((g) => g.status)).toEqual(Array(20).fill("blocked"));
+      for (const g of got) {
+        if (g.status === "blocked") expect(g.retryAfterSec).toBeGreaterThanOrEqual(1);
+      }
+      expect(_lookupSlotsInFlight(KEY)).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("an arrival wakes waiters whose budget freed up by stamp expiry, before any release", async () => {
+    let clock = T0 + 1;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    try {
+      for (let i = 0; i < LOGIN_RATE_MAX - 1; i++) recordLoginFailure(KEY, T0);
+      const held = await acquireLookupSlot(KEY);
+      if (held.status !== "acquired") throw new Error("not acquired");
+      const waiting = Array.from({ length: 3 }, () => acquireLookupSlot(KEY));
+      expect(_lookupSlotsInFlight(KEY)).toBe(1);
+      clock = T0 + LOGIN_RATE_WINDOW_MS + 1;
+      const arrival = acquireLookupSlot(KEY);
+      // The queued waiters got their slots ahead of the arrival, synchronously.
+      expect(_lookupSlotsInFlight(KEY)).toBe(5);
+      const got = await Promise.all([...waiting, arrival]);
+      expect(got.map((g) => g.status)).toEqual(Array(4).fill("acquired"));
+      for (const g of got) if (g.status === "acquired") g.slot.release();
+      held.slot.release();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("a granted waiter re-checks to tighten: a failure recorded before it runs blocks it", async () => {
+    const held = [];
+    for (let i = 0; i < LOGIN_RATE_MAX; i++) held.push(await acquireLookupSlot(KEY));
+    const waiter = acquireLookupSlot(KEY);
+    const [h0, ...rest] = held;
+    if (h0.status !== "acquired") throw new Error("not acquired");
+    h0.slot.release();
+    expect(_lookupSlotsInFlight(KEY)).toBe(LOGIN_RATE_MAX);
+    // Synchronous failures of other requests land before the waiter's turn.
+    for (let i = 0; i < LOGIN_RATE_MAX; i++) recordLoginFailure(KEY);
+    const got = await waiter;
+    expect(got.status).toBe("blocked");
+    expect(_lookupSlotsInFlight(KEY)).toBe(LOGIN_RATE_MAX - 1);
+    for (const h of rest) if (h.status === "acquired") h.slot.release();
+  });
+
+  it("an acquire on a spent budget answers blocked with Retry-After from the same clock read", async () => {
+    let clock = T0;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    try {
+      for (let i = 0; i < LOGIN_RATE_MAX; i++) recordLoginFailure(KEY, T0);
+      clock = T0 + LOGIN_RATE_WINDOW_MS - 1;
+      const r = await acquireLookupSlot(KEY);
+      expect(r).toEqual({ status: "blocked", retryAfterSec: 1 });
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

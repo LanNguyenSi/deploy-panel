@@ -85,15 +85,20 @@ export function hashApiKey(key: string): string {
  * The two awaited lookups (a `dp_` key, a `user_session` cookie) each take a
  * lookup slot of the client key first (`acquireLookupSlot`): at most the
  * remaining budget (LOGIN_RATE_MAX minus the failures already counted) of
- * lookups run at once per client, so a concurrent burst cannot get more
- * guesses evaluated than a sequential client. Further requests wait for a
- * slot and re-run the blocked check when they get one: once the budget is
- * spent they answer the 429 above, otherwise they are evaluated, so a burst
- * of valid presentations is delayed, not refused or logged out. A failed
- * lookup records its failure as it releases the slot; a successful or thrown
- * one records nothing. A request beyond the per-client waiter cap, or one
- * that waited longer than the wait timeout, gets 503 `auth_busy` with
- * Retry-After: 1, records nothing and clears no cookie.
+ * lookups run at once per client, so a concurrent burst cannot get more of
+ * these two lookups evaluated than the budget. The synchronous comparisons
+ * (a non-`dp_` Bearer, a `panel_session` cookie, a malformed `user_session`)
+ * take no slot: their failures, recorded while lookups are in flight, are not
+ * held back, so one mixed burst can get up to about twice the budget
+ * evaluated across credential kinds, each kind at most the budget. Further
+ * requests wait for a slot: once the budget is spent they answer the 429
+ * above, otherwise they are evaluated, so a burst of valid presentations is
+ * delayed, not refused or logged out. A failed lookup records its failure as
+ * it releases the slot; a successful or thrown one records nothing. A
+ * request beyond the per-client waiter cap, or one that waited longer than
+ * the wait timeout, gets 503 `auth_busy` with Retry-After: 1: the lookup
+ * records nothing and the `user_session` cookie is not cleared (a failure
+ * the same request's synchronous comparisons recorded before stays recorded).
  */
 export async function requireAuth(c: Context, next: Next) {
   const token = config.PANEL_TOKEN;
