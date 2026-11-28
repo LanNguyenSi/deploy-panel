@@ -15,6 +15,12 @@ import {
 } from "../middleware/auth.js";
 import { parsePanelSessionCookie, safeCompare } from "../lib/panel-token.js";
 import {
+  buildPanelSessionCookie,
+  createPanelSession,
+  revokePanelSession,
+  validatePanelSession,
+} from "../lib/panel-session.js";
+import {
   buildAuthorizationUrl,
   exchangeCodeForToken,
   fetchGitHubUser,
@@ -46,8 +52,10 @@ const loginSchema = z.object({
   token: z.string().min(1).max(1024),
 });
 
-// POST /api/auth/login: set session cookie. Failed attempts are counted per
-// client key; a key over the limit gets 429 before any token comparison.
+// POST /api/auth/login: trade the PANEL_TOKEN for an admin session cookie (a
+// random token held in the server's in-memory store, never the PANEL_TOKEN
+// itself). Failed attempts are counted per client key; a key over the limit
+// gets 429 before any token comparison.
 authRouter.post("/login", validatedJson(loginSchema), async (c) => {
   const { token } = c.req.valid("json");
 
@@ -66,22 +74,27 @@ authRouter.post("/login", validatedJson(loginSchema), async (c) => {
     return c.json({ error: "unauthorized", message: "Invalid token" }, 401);
   }
 
-  // Set httpOnly cookie
+  // A login from a browser that still holds a live session replaces it.
+  const previous = parsePanelSessionCookie(c.req.header("Cookie"));
+  if (previous !== null) revokePanelSession(previous);
+
   c.header(
     "Set-Cookie",
-    `panel_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${config.NODE_ENV === "production" ? "; Secure" : ""}`,
+    buildPanelSessionCookie(createPanelSession(), config.NODE_ENV === "production"),
   );
 
   return c.json({ success: true });
 });
 
-// POST /api/auth/logout: revoke the presented user session and clear all
-// session cookies (panel + user). Reachable without auth: it only revokes what
-// the caller presents. The panel_session cookie holds the raw PANEL_TOKEN and
-// is not revocable; only its cookie is cleared. A malformed cookie or a DB
-// error is logged and never turns logout into a failure.
+// POST /api/auth/logout: revoke the presented admin session and user session
+// and clear both session cookies (panel + user). Reachable without auth: it
+// only revokes what the caller presents. A missing, malformed or already
+// revoked cookie, or a DB error, is logged at most and never turns logout
+// into a failure.
 authRouter.post("/logout", async (c) => {
   try {
+    const panelSession = parsePanelSessionCookie(c.req.header("Cookie"));
+    if (panelSession !== null) revokePanelSession(panelSession);
     const rawSession = readUserSessionCookie(c.req.header("Cookie"));
     if (rawSession) await deleteSession(rawSession);
   } catch (err) {
@@ -412,9 +425,10 @@ authRouter.post(
 // GET /api/auth/check: check if authenticated. Shares the failure budget of
 // /login: a blocked client key gets 429 before any comparison, and every
 // failed presentation (Bearer, then panel_session cookie) records one
-// failure, also when the other one succeeds. A failed panel_session cookie
-// is cleared, so a stale cookie after a PANEL_TOKEN rotation stops costing
-// attempts. A user_session cookie is not evaluated here (neither accepted nor
+// failure, also when the other one succeeds. A panel_session cookie counts as
+// presented correctly only when it is a live admin session (the raw
+// PANEL_TOKEN is not); a failed one is cleared, so a stale cookie (a session
+// dropped by a restart, logout or expiry) stops costing attempts. A user_session cookie is not evaluated here (neither accepted nor
 // counted), so it is cleared only on the 429, like every carried cookie.
 authRouter.get("/check", async (c) => {
   const token = config.PANEL_TOKEN;
@@ -442,7 +456,7 @@ authRouter.get("/check", async (c) => {
   }
 
   if (panelCookie !== null) {
-    if (safeCompare(panelCookie, token)) return c.json({ authenticated: true });
+    if (validatePanelSession(panelCookie)) return c.json({ authenticated: true });
     recordLoginFailure(clientKey);
     c.header("Set-Cookie", CLEAR_PANEL_SESSION_COOKIE, { append: true });
   }

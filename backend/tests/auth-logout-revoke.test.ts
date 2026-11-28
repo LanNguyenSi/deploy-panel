@@ -30,6 +30,11 @@ vi.mock("../src/config/index.js", () => ({
 import { prisma } from "../src/lib/prisma.js";
 import { authRouter } from "../src/routes/auth.js";
 import { hashSessionToken, validateSession } from "../src/lib/session.js";
+import {
+  _resetPanelSessions,
+  createPanelSession,
+  validatePanelSession,
+} from "../src/lib/panel-session.js";
 
 const mSession = prisma.session as unknown as {
   findUnique: ReturnType<typeof vi.fn>;
@@ -60,6 +65,7 @@ describe("POST /auth/logout revokes the user session", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    _resetPanelSessions();
     mSession.deleteMany.mockResolvedValue({ count: 1 });
     errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
   });
@@ -107,6 +113,62 @@ describe("POST /auth/logout revokes the user session", () => {
     expect(res.status).toBe(200);
     expect(mSession.deleteMany).not.toHaveBeenCalled();
     expectBothCookiesCleared(res);
+  });
+
+  it("revokes the presented admin session: the same cookie is dead afterwards", async () => {
+    const panel = createPanelSession();
+    expect(validatePanelSession(panel)).toBe(true);
+    const res = await logout(`panel_session=${panel}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ success: true });
+    expectBothCookiesCleared(res);
+    expect(validatePanelSession(panel)).toBe(false);
+    expect(mSession.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("revokes only the presented admin session, another one stays live", async () => {
+    const mine = createPanelSession();
+    const other = createPanelSession();
+    await logout(`panel_session=${mine}`);
+    expect(validatePanelSession(mine)).toBe(false);
+    expect(validatePanelSession(other)).toBe(true);
+  });
+
+  it("revokes the admin session and the user session when both are presented", async () => {
+    const panel = createPanelSession();
+    const res = await logout(`panel_session=${panel}; user_session=${RAW}`);
+    expect(res.status).toBe(200);
+    expect(validatePanelSession(panel)).toBe(false);
+    expect(mSession.deleteMany).toHaveBeenCalledWith({
+      where: { tokenHash: hashSessionToken(RAW) },
+    });
+  });
+
+  it("revokes the admin session even when the user session delete fails", async () => {
+    mSession.deleteMany.mockRejectedValue(new Error("db down"));
+    const panel = createPanelSession();
+    const res = await logout(`panel_session=${panel}; user_session=${RAW}`);
+    expect(res.status).toBe(200);
+    expectBothCookiesCleared(res);
+    expect(validatePanelSession(panel)).toBe(false);
+  });
+
+  it("revokes the admin session even when the user_session value is malformed", async () => {
+    const panel = createPanelSession();
+    const res = await logout(`panel_session=${panel}; user_session=%E0%A4%A`);
+    expect(res.status).toBe(200);
+    expectBothCookiesCleared(res);
+    expect(validatePanelSession(panel)).toBe(false);
+  });
+
+  it("answers 200 for an unknown or already revoked admin session", async () => {
+    const panel = createPanelSession();
+    await logout(`panel_session=${panel}`);
+    const again = await logout(`panel_session=${panel}`);
+    expect(again.status).toBe(200);
+    expectBothCookiesCleared(again);
+    const unknown = await logout(`panel_session=${"0".repeat(64)}`);
+    expect(unknown.status).toBe(200);
   });
 
   it("answers 200 and clears the cookies when the cookie value is malformed (URIError)", async () => {

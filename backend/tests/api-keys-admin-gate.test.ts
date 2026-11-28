@@ -46,6 +46,8 @@ vi.mock("../src/config/index.js", () => ({
 import { prisma } from "../src/lib/prisma.js";
 import { audit } from "../src/lib/audit.js";
 import { createApp } from "../src/app.js";
+import { _resetLoginRateLimit } from "../src/lib/login-rate-limit.js";
+import { createPanelSession } from "../src/lib/panel-session.js";
 
 const PANEL = "panel-token-must-be-16chars";
 
@@ -61,7 +63,10 @@ const app = createApp("http://localhost:3000");
 
 type Creds = Record<string, string>;
 const panelBearer: Creds = { Authorization: `Bearer ${PANEL}` };
-const panelCookie: Creds = { Cookie: `panel_session=${PANEL}` };
+// A live admin session, as POST /api/auth/login issues it.
+const panelCookie: Creds = { Cookie: `panel_session=${createPanelSession()}` };
+// The raw PANEL_TOKEN is a Bearer credential only, not a session cookie.
+const rawTokenCookie: Creds = { Cookie: `panel_session=${PANEL}` };
 const userSession: Creds = { Cookie: "user_session=raw-user-session-token" };
 const adminApiKey: Creds = { Authorization: "Bearer dp_legacyadminkey" };
 const userApiKey: Creds = { Authorization: "Bearer dp_userboundkey" };
@@ -124,6 +129,20 @@ describe("non-admin GitHub OAuth user_session is refused on every api-keys route
     const res = await revoke(userSession);
     expect(res.status).toBe(403);
     expect(((await res.json()) as { error: string }).error).toBe("forbidden");
+    expect(mApiKey.delete).not.toHaveBeenCalled();
+    expect(audit).not.toHaveBeenCalled();
+  });
+});
+
+describe("the raw PANEL_TOKEN as panel_session cookie is refused on every api-keys route", () => {
+  beforeEach(() => _resetLoginRateLimit());
+
+  it("GET, POST and DELETE answer 401 and touch nothing", async () => {
+    expect((await list(rawTokenCookie)).status).toBe(401);
+    expect((await create(rawTokenCookie)).status).toBe(401);
+    expect((await revoke(rawTokenCookie)).status).toBe(401);
+    expect(mApiKey.findMany).not.toHaveBeenCalled();
+    expect(mApiKey.create).not.toHaveBeenCalled();
     expect(mApiKey.delete).not.toHaveBeenCalled();
     expect(audit).not.toHaveBeenCalled();
   });

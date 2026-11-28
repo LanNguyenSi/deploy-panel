@@ -1,6 +1,8 @@
 /**
  * GET /api/auth/check and POST /api/auth/login compare the panel token in
- * constant time (safeCompare, backend/src/lib/panel-token.ts).
+ * constant time (safeCompare, backend/src/lib/panel-token.ts). The
+ * `panel_session` cookie is not compared with the token at all: it is a random
+ * admin session token looked up by its SHA-256 digest (lib/panel-session.ts).
  *
  * The comparison hashes both values with SHA-256 before timingSafeEqual, so
  * an input whose string length matches PANEL_TOKEN but whose UTF-8 byte
@@ -13,8 +15,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // The createHash spy is a structural guard, not a behavioral one: it proves
-// the credential comparison goes through safeCompare's SHA-256 digest (a
-// plain === never hashes). If the helper changes (different digest, fewer
+// the Bearer comparison goes through safeCompare's SHA-256 digests and the
+// cookie lookup through one SHA-256 digest of the cookie value (a plain ===
+// never hashes). If the helper changes (different digest, fewer
 // digests), update these expectations to match the helper, do not remove the
 // guard.
 vi.mock("node:crypto", async (importOriginal) => {
@@ -37,6 +40,7 @@ vi.mock("../src/config/index.js", () => ({
 import { createHash } from "node:crypto";
 import { authRouter } from "../src/routes/auth.js";
 import { _resetLoginRateLimit } from "../src/lib/login-rate-limit.js";
+import { _resetPanelSessions, createPanelSession } from "../src/lib/panel-session.js";
 
 const TOKEN = "panel-token-must-be-16chars";
 // Same string length as TOKEN (27 chars) but a different UTF-8 byte length
@@ -48,54 +52,66 @@ function check(headers: Record<string, string>) {
   return authRouter.request("/check", { headers });
 }
 
-// The credential comparison must go through safeCompare, which digests both
-// values with SHA-256 (node:crypto is spied in this file). A plain === never
-// hashes, so the digest spy is the discriminator; timingSafeEqual itself is
-// real (the spy only wraps createHash).
+// The Bearer comparison must go through safeCompare, which digests both
+// values with SHA-256 (node:crypto is spied in this file), and the cookie
+// lookup digests the cookie value once. A plain === never hashes, so the
+// digest spy is the discriminator; timingSafeEqual itself is real (the spy
+// only wraps createHash).
 function expectDigests(calls: number) {
   expect(vi.mocked(createHash)).toHaveBeenCalledTimes(calls);
   vi.mocked(createHash).mockClear();
 }
 
 describe("GET /auth/check — constant-time credential comparison", () => {
+  let session = "";
+
   beforeEach(() => {
     _resetLoginRateLimit();
+    _resetPanelSessions();
+    session = createPanelSession();
     vi.mocked(createHash).mockClear();
   });
 
-  it("accepts the correct panel_session cookie", async () => {
-    const res = await check({ Cookie: `panel_session=${TOKEN}` });
+  it("accepts a live admin session cookie", async () => {
+    const res = await check({ Cookie: `panel_session=${session}` });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ authenticated: true });
-    expectDigests(2); // the cookie value and the token, both digested
+    expectDigests(1); // the cookie value, digested for the store lookup
   });
 
-  it("accepts the correct cookie among other cookies", async () => {
-    const res = await check({ Cookie: `other=1; panel_session=${TOKEN}; x=2` });
+  it("accepts the live session among other cookies", async () => {
+    const res = await check({ Cookie: `other=1; panel_session=${session}; x=2` });
     expect(res.status).toBe(200);
-    expectDigests(2);
+    expectDigests(1);
+  });
+
+  it("rejects the raw PANEL_TOKEN as cookie: it is no session", async () => {
+    const res = await check({ Cookie: `panel_session=${TOKEN}` });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ authenticated: false });
+    expectDigests(1); // looked up as a session, never compared with the token
   });
 
   it("rejects a wrong cookie of equal length", async () => {
-    const res = await check({ Cookie: `panel_session=${"z".repeat(TOKEN.length)}` });
+    const res = await check({ Cookie: `panel_session=${"z".repeat(session.length)}` });
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ authenticated: false });
-    expectDigests(2);
+    expectDigests(1);
   });
 
-  it("rejects a cookie whose value is the token followed by more after an =", async () => {
-    // The comparison is against the FULL cookie value: the old
+  it("rejects a cookie whose value is a live session followed by more after an =", async () => {
+    // The lookup is on the FULL cookie value: the old
     // session.split("=")[1] === token form truncated at the next "=" and
     // accepted this value.
-    const res = await check({ Cookie: `panel_session=${TOKEN}=x` });
+    const res = await check({ Cookie: `panel_session=${session}=x` });
     expect(res.status).toBe(401);
-    expectDigests(2);
+    expectDigests(1);
   });
 
-  it("rejects a multi-byte cookie (equal string length, different byte length) with 401, not 500", async () => {
+  it("rejects a multi-byte cookie with 401, not 500", async () => {
     const res = await check({ Cookie: `panel_session=${MULTIBYTE}` });
     expect(res.status).toBe(401);
-    expectDigests(2);
+    expectDigests(1);
   });
 
   it("accepts the correct Bearer token", async () => {
@@ -122,7 +138,7 @@ describe("GET /auth/check — constant-time credential comparison", () => {
       Authorization: `Bearer ${"z".repeat(TOKEN.length)}`,
     });
     expect(res.status).toBe(401);
-    expectDigests(4); // cookie path digests twice, then the Bearer path twice
+    expectDigests(3); // the Bearer path digests twice, then the cookie lookup once
   });
 });
 

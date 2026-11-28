@@ -2,12 +2,13 @@
  * Failed credential presentations on GET /api/auth/check and in the
  * requireAuth middleware share the failure budget of POST /api/auth/login
  * (lib/login-rate-limit.ts). Without this, the 10-per-15-minutes limit on
- * /login could be bypassed by guessing PANEL_TOKEN as a Bearer header or a
- * panel_session cookie on any requireAuth route or on /check.
+ * /login could be bypassed by guessing PANEL_TOKEN as a Bearer header, or a
+ * panel_session value as a cookie, on any requireAuth route or on /check.
  *
  * Rules pinned here:
  * - every failed presentation records one failure: a non-dp_ Bearer, a
- *   panel_session cookie, an unknown or revoked dp_ key, a user_session
+ *   panel_session cookie that is not a live panel session (the raw
+ *   PANEL_TOKEN included), an unknown or revoked dp_ key, a user_session
  *   cookie without a valid session; a failing Bearer next to a succeeding
  *   cookie still records one;
  * - a successful presentation never records and never clears other failures;
@@ -16,8 +17,9 @@
  * - a failed panel_session or user_session cookie is cleared with a
  *   Set-Cookie (also on the 429 when carried), a request without one or with
  *   a valid one gets no clearing header;
- * - a stale cookie after a PANEL_TOKEN rotation costs one failure per request
- *   (no dedupe), so one dashboard load with its two parallel requests costs 2.
+ * - a stale cookie (a session the server no longer holds, for example after a
+ *   restart or a PANEL_TOKEN rotation) costs one failure per request (no
+ *   dedupe), so one dashboard load with its two parallel requests costs 2.
  *
  * Direct app.request() calls have no socket, so every request here lands on
  * the shared "unknown" key (the key rule itself is tested in
@@ -52,6 +54,7 @@ vi.mock("../src/config/index.js", () => ({
 import { prisma } from "../src/lib/prisma.js";
 import { config } from "../src/config/index.js";
 import { createApp } from "../src/app.js";
+import { _resetPanelSessions, createPanelSession } from "../src/lib/panel-session.js";
 import {
   LOGIN_RATE_MAX,
   UNKNOWN_CLIENT_KEY,
@@ -61,7 +64,7 @@ import {
 } from "../src/lib/login-rate-limit.js";
 
 const PANEL = "panel-token-must-be-16chars";
-const OLD_PANEL = "old-panel-token-before-rotation";
+const STALE_SESSION = "0".repeat(64);
 const CLEAR = "panel_session=; Path=/; HttpOnly; Max-Age=0";
 // Attributes of the cookie the OAuth callback issues (buildUserSessionCookie),
 // Secure only in production.
@@ -71,6 +74,9 @@ const mApiKey = prisma.apiKey as unknown as { findUnique: ReturnType<typeof vi.f
 const mSession = prisma.session as unknown as { findUnique: ReturnType<typeof vi.fn> };
 
 const app = createApp("http://localhost:3000");
+
+// A live admin session, as POST /api/auth/login issues it.
+let session = "";
 
 const servers = (headers: Record<string, string>) => app.request("/api/servers", { headers });
 const check = (headers: Record<string, string>) => app.request("/api/auth/check", { headers });
@@ -85,6 +91,8 @@ beforeEach(() => {
   config.PANEL_TOKEN = PANEL;
   config.NODE_ENV = "test";
   _resetLoginRateLimit();
+  _resetPanelSessions();
+  session = createPanelSession();
   mApiKey.findUnique.mockResolvedValue(null);
   mSession.findUnique.mockResolvedValue(null);
 });
@@ -98,9 +106,23 @@ describe("GET /api/auth/check records failed presentations", () => {
   });
 
   it("the correct panel_session cookie answers 200, records nothing and keeps the cookie", async () => {
-    const res = await check({ Cookie: `panel_session=${PANEL}` });
+    const res = await check({ Cookie: `panel_session=${session}` });
     expect(res.status).toBe(200);
     expect(failures()).toBe(0);
+    expect(setCookies(res)).toEqual([]);
+  });
+
+  it("the raw PANEL_TOKEN as cookie answers 401, records one failure and clears the cookie", async () => {
+    const res = await check({ Cookie: `panel_session=${PANEL}` });
+    expect(res.status).toBe(401);
+    expect(failures()).toBe(1);
+    expect(setCookies(res)).toEqual([CLEAR]);
+  });
+
+  it("a live panel session as Bearer answers 401 and records one failure", async () => {
+    const res = await check({ Authorization: `Bearer ${session}` });
+    expect(res.status).toBe(401);
+    expect(failures()).toBe(1);
     expect(setCookies(res)).toEqual([]);
   });
 
@@ -118,7 +140,7 @@ describe("GET /api/auth/check records failed presentations", () => {
   });
 
   it("a wrong Bearer next to the correct cookie answers 200 and still records one failure", async () => {
-    const res = await check({ Authorization: "Bearer wrong", Cookie: `panel_session=${PANEL}` });
+    const res = await check({ Authorization: "Bearer wrong", Cookie: `panel_session=${session}` });
     expect(res.status).toBe(200);
     expect(failures()).toBe(1);
     expect(setCookies(res)).toEqual([]);
@@ -165,7 +187,7 @@ describe("GET /api/auth/check records failed presentations", () => {
 
   it("a blocked key answers 429 for the correct cookie and clears it", async () => {
     block();
-    const res = await check({ Cookie: `panel_session=${PANEL}` });
+    const res = await check({ Cookie: `panel_session=${session}` });
     expect(res.status).toBe(429);
     expect(res.headers.get("Retry-After")).not.toBeNull();
     expect(setCookies(res)).toEqual([CLEAR]);
@@ -195,14 +217,30 @@ describe("requireAuth records failed presentations (GET /api/servers)", () => {
   });
 
   it("the correct panel_session cookie passes, records nothing and keeps the cookie", async () => {
-    const res = await servers({ Cookie: `panel_session=${PANEL}` });
+    const res = await servers({ Cookie: `panel_session=${session}` });
     expect(res.status).toBe(200);
     expect(failures()).toBe(0);
     expect(setCookies(res)).toEqual([]);
   });
 
+  it("the raw PANEL_TOKEN as cookie answers 401, records one failure and clears the cookie", async () => {
+    const res = await servers({ Cookie: `panel_session=${PANEL}` });
+    expect(res.status).toBe(401);
+    expect(failures()).toBe(1);
+    expect(setCookies(res)).toEqual([CLEAR]);
+  });
+
+  it("a live panel session as Bearer answers 401 and records one failure, the session stays valid as cookie", async () => {
+    const bearer = await servers({ Authorization: `Bearer ${session}` });
+    expect(bearer.status).toBe(401);
+    expect(failures()).toBe(1);
+    expect(setCookies(bearer)).toEqual([]);
+    const cookie = await servers({ Cookie: `panel_session=${session}` });
+    expect(cookie.status).toBe(200);
+  });
+
   it("a wrong Bearer next to the correct cookie passes and still records one failure", async () => {
-    const res = await servers({ Authorization: "Bearer wrong", Cookie: `panel_session=${PANEL}` });
+    const res = await servers({ Authorization: "Bearer wrong", Cookie: `panel_session=${session}` });
     expect(res.status).toBe(200);
     expect(failures()).toBe(1);
   });
@@ -309,7 +347,7 @@ describe("requireAuth on a blocked key answers 429 before any comparison", () =>
   });
 
   it("the correct panel_session cookie, which is cleared", async () => {
-    const res = await servers({ Cookie: `panel_session=${PANEL}` });
+    const res = await servers({ Cookie: `panel_session=${session}` });
     expect(res.status).toBe(429);
     expect(res.headers.get("Retry-After")).not.toBeNull();
     expect(setCookies(res)).toEqual([CLEAR]);
@@ -331,7 +369,7 @@ describe("requireAuth on a blocked key answers 429 before any comparison", () =>
   });
 
   it("both carried cookies are cleared", async () => {
-    const res = await servers({ Cookie: `panel_session=${PANEL}; user_session=live` });
+    const res = await servers({ Cookie: `panel_session=${session}; user_session=live` });
     expect(res.status).toBe(429);
     expect(setCookies(res)).toEqual([CLEAR, CLEAR_USER]);
   });
@@ -343,9 +381,9 @@ describe("requireAuth on a blocked key answers 429 before any comparison", () =>
   });
 });
 
-describe("stale panel_session cookie after a PANEL_TOKEN rotation", () => {
+describe("stale panel_session cookie (a session the server no longer holds)", () => {
   it("one dashboard load (two parallel requests) costs 2 failures, clears the cookie, and the next login succeeds", async () => {
-    const cookie = { Cookie: `panel_session=${OLD_PANEL}` };
+    const cookie = { Cookie: `panel_session=${STALE_SESSION}` };
     const [a, b] = await Promise.all([
       app.request("/api/servers", { headers: cookie }),
       app.request("/api/deploys", { headers: cookie }),
@@ -429,9 +467,9 @@ describe("client key: failures are counted per client, not globally", () => {
     }
     expect(_loginFailureCount(A)).toBe(LOGIN_RATE_MAX);
     expect(failures()).toBe(0);
-    const b = await app.request("/api/auth/check", { headers: { Cookie: `panel_session=${PANEL}` } }, nodeEnv(B));
+    const b = await app.request("/api/auth/check", { headers: { Cookie: `panel_session=${session}` } }, nodeEnv(B));
     expect(b.status).toBe(200);
-    const a = await app.request("/api/auth/check", { headers: { Cookie: `panel_session=${PANEL}` } }, nodeEnv(A));
+    const a = await app.request("/api/auth/check", { headers: { Cookie: `panel_session=${session}` } }, nodeEnv(A));
     expect(a.status).toBe(429);
   });
 });
@@ -457,7 +495,7 @@ describe("malformed user_session value (bad percent-encoding) never answers 500"
   });
 
   it("requireAuth: a valid panel_session next to it passes, records and clears nothing", async () => {
-    const res = await servers({ Cookie: `panel_session=${PANEL}; ${BAD}` });
+    const res = await servers({ Cookie: `panel_session=${session}; ${BAD}` });
     expect(res.status).toBe(200);
     expect(failures()).toBe(0);
     expect(setCookies(res)).toEqual([]);
@@ -486,7 +524,7 @@ describe("malformed user_session value (bad percent-encoding) never answers 500"
   });
 
   it("/check: a valid panel_session next to it answers 200", async () => {
-    const res = await check({ Cookie: `panel_session=${PANEL}; ${BAD}` });
+    const res = await check({ Cookie: `panel_session=${session}; ${BAD}` });
     expect(res.status).toBe(200);
     expect(failures()).toBe(0);
   });

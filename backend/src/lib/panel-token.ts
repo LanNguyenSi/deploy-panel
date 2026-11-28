@@ -1,9 +1,11 @@
 /**
  * Shared panel-credential comparison and `panel_session` cookie parsing.
  *
- * Used by middleware/auth.ts (Bearer and cookie paths) and routes/auth.ts
- * (/login and /check) so every gate that decides "is this the PANEL_TOKEN"
- * decides identically.
+ * `safeCompare` decides "is this the PANEL_TOKEN" for the Bearer path
+ * (middleware/auth.ts, routes/auth.ts /check) and the login secret (/login)
+ * identically. The `panel_session` cookie is not the PANEL_TOKEN: its value is
+ * a random admin session token, checked against lib/panel-session.ts. Only
+ * the cookie parsing lives here so every gate reads the same value.
  */
 import { createHash, timingSafeEqual } from "node:crypto";
 
