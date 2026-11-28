@@ -29,8 +29,8 @@
 set -u
 
 DEPLOY_PANEL_URL="${DEPLOY_PANEL_URL:-http://localhost:3001}"
-# Strip trailing slash so we can interpolate safely.
-DEPLOY_PANEL_URL="${DEPLOY_PANEL_URL%/}"
+# Strip trailing slashes so we can interpolate safely.
+while [ "${DEPLOY_PANEL_URL%/}" != "$DEPLOY_PANEL_URL" ]; do DEPLOY_PANEL_URL="${DEPLOY_PANEL_URL%/}"; done
 
 if [ -z "${PANEL_TOKEN:-}" ]; then
   echo "FAIL — PANEL_TOKEN is not set" >&2

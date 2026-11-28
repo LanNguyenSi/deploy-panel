@@ -17,5 +17,8 @@ export function loadConfig(): Config {
     process.exit(1);
   }
 
-  return { apiUrl: apiUrl.replace(/\/$/, ""), apiKey };
+  // Trim every trailing slash (same semantics as the backend's
+  // trimTrailingSlashes in src/lib/origin.ts): only trailing slashes go,
+  // an inner path survives, the empty string stays empty.
+  return { apiUrl: apiUrl.replace(/\/+$/, ""), apiKey };
 }

@@ -30,14 +30,30 @@ describe("loadConfig", () => {
     expect(loadConfig().apiUrl).toBe("https://panel.example.com");
   });
 
-  // The source regex is `/\/$/` (anchored, non-global): it removes exactly
-  // one trailing slash, not a run of them. Pins that exact behavior so a
-  // mutant widening the regex (e.g. to `/\/+$/`) is caught.
-  it("removes only one trailing slash, not repeated ones", () => {
+  // The source regex is `/\/+$/`: it removes a whole run of trailing
+  // slashes, matching the backend's trimTrailingSlashes (src/lib/origin.ts),
+  // so a configured "https://panel.example.com//" never reaches the API as
+  // "...//api/...".
+  it("strips repeated trailing slashes", () => {
     vi.stubEnv("DEPLOY_PANEL_URL", "https://panel.example.com//");
     vi.stubEnv("DEPLOY_PANEL_API_KEY", "secret-key");
 
-    expect(loadConfig().apiUrl).toBe("https://panel.example.com/");
+    expect(loadConfig().apiUrl).toBe("https://panel.example.com");
+  });
+
+  it("strips a run of three trailing slashes", () => {
+    vi.stubEnv("DEPLOY_PANEL_URL", "https://panel.example.com///");
+    vi.stubEnv("DEPLOY_PANEL_API_KEY", "secret-key");
+
+    expect(loadConfig().apiUrl).toBe("https://panel.example.com");
+  });
+
+  // Only TRAILING slashes go: a URL configured with a path prefix keeps it.
+  it("keeps an inner path when trimming trailing slashes", () => {
+    vi.stubEnv("DEPLOY_PANEL_URL", "https://x/panel/");
+    vi.stubEnv("DEPLOY_PANEL_API_KEY", "secret-key");
+
+    expect(loadConfig().apiUrl).toBe("https://x/panel");
   });
 
   it("logs to stderr and exits with code 1 when DEPLOY_PANEL_URL is missing", () => {
