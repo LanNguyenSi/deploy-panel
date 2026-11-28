@@ -713,6 +713,27 @@ describe("waiter verdicts and the clock", () => {
     }
   });
 
+  it("waiters woken blocked by a spent budget settle in arrival order", async () => {
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => T0);
+    try {
+      _setLoginFailures(KEY, Array(LOGIN_RATE_MAX - 1).fill(T0 - 1000));
+      const held = await acquireLookupSlot(KEY);
+      if (held.status !== "acquired") throw new Error("not acquired");
+      const settled: string[] = [];
+      for (const name of ["w1", "w2", "w3"]) {
+        void acquireLookupSlot(KEY).then((r) => settled.push(`${name}:${r.status}`));
+      }
+      expect(_lookupSlotWaiters(KEY)).toBe(3);
+      // The held lookup fails: the budget is spent and the pump wakes every waiter blocked.
+      held.slot.fail();
+      for (let i = 0; i < 20; i++) await null;
+      expect(settled).toEqual(["w1:blocked", "w2:blocked", "w3:blocked"]);
+      expect(_lookupSlotWaiters(KEY)).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("an acquire on a spent budget answers blocked with Retry-After from the same clock read", async () => {
     let clock = T0;
     const spy = vi.spyOn(Date, "now").mockImplementation(() => clock);
