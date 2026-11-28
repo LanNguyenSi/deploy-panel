@@ -21,6 +21,10 @@
  * bounded by LOGIN_RATE_MAX_KEYS: when a new key arrives at the cap, expired
  * keys are pruned first and, if it is still full, the key with the oldest
  * last failure is evicted, so the limiter never refuses a new client.
+ *
+ * `POST /api/auth/register-from-project-pilot` uses the same functions and
+ * constants under a separate key namespace (`registerClientKey`), so its
+ * failures never spend the login budget and vice versa.
  */
 import { BlockList, isIP, isIPv4, isIPv6 } from "node:net";
 import { getConnInfo } from "@hono/node-server/conninfo";
@@ -138,6 +142,15 @@ export function loginClientKey(c: Context): string {
   return resolveLoginClientKey(peer, c.req.header("X-Forwarded-For"));
 }
 
+/**
+ * Rate-limit key of the identity-broker registration: the login client key in
+ * its own namespace, so registration failures and login failures keep
+ * separate budgets for the same client.
+ */
+export function registerClientKey(c: Context): string {
+  return `register:${loginClientKey(c)}`;
+}
+
 function pruneHistory(now: number): void {
   const cutoff = now - LOGIN_RATE_WINDOW_MS;
   for (const [key, stamps] of failureHistory) {
@@ -194,6 +207,19 @@ export function recordLoginFailure(key: string, now: number = Date.now()): void 
   const recent = (failureHistory.get(key) ?? []).filter((t) => t > cutoff);
   recent.push(now);
   failureHistory.set(key, recent);
+}
+
+/**
+ * Take back the most recent failure recorded for `key` (no-op when none is
+ * tracked). For a caller that records a provisional failure before an await,
+ * so parallel requests cannot all pass the check first, and gives it back when
+ * the outcome turns out not to be the client's fault.
+ */
+export function refundLoginFailure(key: string): void {
+  const stamps = failureHistory.get(key);
+  if (!stamps) return;
+  stamps.pop();
+  if (stamps.length === 0) failureHistory.delete(key);
 }
 
 /** Test-only: drop all recorded failures. */
