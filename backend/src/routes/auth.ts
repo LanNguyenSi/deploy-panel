@@ -34,6 +34,7 @@ import {
 import {
   checkLoginBlocked,
   loginClientKey,
+  registerClientKey,
   recordLoginFailure,
 } from "../lib/login-rate-limit.js";
 import { audit } from "../lib/audit.js";
@@ -231,7 +232,14 @@ authRouter.get("/github/callback", async (c) => {
 //   POST /api/auth/register-from-project-pilot
 //   Body:     { githubAccessToken, githubLogin? }
 //   Response: { apiToken, userId, githubLogin }
-//   Errors:   401 bad/mismatched token | 503 GitHub unreachable | 400 malformed
+//   Errors:   401 bad/mismatched token | 403 login not allowed | 429 too many
+//             failed verifications (Retry-After) | 503 GitHub unreachable |
+//             400 malformed
+//
+// Failed verifications (GitHub rejects the token, claimed login mismatch,
+// allowlist refusal) count against a registration budget of their own (same
+// limit and window as /login, separate key namespace); a blocked client is
+// answered 429 before any GitHub call. 400, 503 and 500 are not counted.
 //
 // The broker (project-pilot) obtains a user's GitHub OAuth access-token and
 // calls this endpoint on their behalf. deploy-panel does NOT trust the
@@ -262,11 +270,22 @@ authRouter.post(
   async (c) => {
     const body = c.req.valid("json");
 
+    const registerKey = registerClientKey(c);
+    const limit = checkLoginBlocked(registerKey);
+    if (limit.blocked) {
+      c.header("Retry-After", String(limit.retryAfterSec));
+      return c.json(
+        { error: "rate_limited", message: "too many failed registrations; retry later" },
+        429,
+      );
+    }
+
     let githubUser;
     try {
       githubUser = await fetchGitHubUser(body.githubAccessToken);
     } catch (err) {
       if (err instanceof GitHubAuthError) {
+        recordLoginFailure(registerKey);
         return c.json(
           { error: "unauthorized", message: "GitHub access-token verification failed" },
           401,
@@ -288,6 +307,7 @@ authRouter.post(
       body.githubLogin &&
       normalizeGitHubLogin(body.githubLogin) !== normalizeGitHubLogin(githubUser.login)
     ) {
+      recordLoginFailure(registerKey);
       return c.json(
         {
           error: "unauthorized",
@@ -302,6 +322,7 @@ authRouter.post(
     // broker flow to a fresh GitHub account doesn't grant full panel
     // access. Empty list = back-compat accept-all.
     if (!isAllowedGitHubLogin(githubUser.login)) {
+      recordLoginFailure(registerKey);
       return c.json(
         {
           error: "forbidden_github_login",

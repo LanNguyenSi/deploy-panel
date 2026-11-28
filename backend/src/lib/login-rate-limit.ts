@@ -21,6 +21,10 @@
  * bounded by LOGIN_RATE_MAX_KEYS: when a new key arrives at the cap, expired
  * keys are pruned first and, if it is still full, the key with the oldest
  * last failure is evicted, so the limiter never refuses a new client.
+ *
+ * `POST /api/auth/register-from-project-pilot` uses the same functions and
+ * constants under a separate key namespace (`registerClientKey`), so its
+ * failures never spend the login budget and vice versa.
  */
 import { BlockList, isIP, isIPv4, isIPv6 } from "node:net";
 import { getConnInfo } from "@hono/node-server/conninfo";
@@ -136,6 +140,15 @@ export function loginClientKey(c: Context): string {
     peer = undefined;
   }
   return resolveLoginClientKey(peer, c.req.header("X-Forwarded-For"));
+}
+
+/**
+ * Rate-limit key of the identity-broker registration: the login client key in
+ * its own namespace, so registration failures and login failures keep
+ * separate budgets for the same client.
+ */
+export function registerClientKey(c: Context): string {
+  return `register:${loginClientKey(c)}`;
 }
 
 function pruneHistory(now: number): void {
