@@ -246,7 +246,10 @@ export const LOOKUP_WAIT_TIMEOUT_MS = 10_000;
  * Failures inside the window for `key` at `now`, without touching the map,
  * and the Retry-After (seconds, at least 1) that applies when they reach
  * LOGIN_RATE_MAX. Both come from the same clock read, so a blocked verdict
- * never carries a Retry-After of 0.
+ * never carries a Retry-After of 0. The window boundary is the one
+ * checkLoginBlocked uses: a stamp counts while it is newer than
+ * `now - LOGIN_RATE_WINDOW_MS`, so a stamp exactly one window old no longer
+ * counts.
  */
 function recentFailures(key: string, now: number): { count: number; retryAfterSec: number } {
   const cutoff = now - LOGIN_RATE_WINDOW_MS;
@@ -352,8 +355,9 @@ function makeSlot(key: string, state: SlotState): LookupSlot {
 /**
  * Take a lookup slot for `key` before awaiting a credential lookup. Resolves
  * `acquired` with the slot, `blocked` when the key has used up its failure
- * budget (decided when a waiter is woken, and checked again after a grant), or `busy` when the waiter cap of the
- * key is reached or the wait timed out. Only `acquired` holds a slot.
+ * budget (decided when a waiter is woken, and checked again after a grant),
+ * or `busy` when the waiter cap of the key is reached or the wait timed out.
+ * Only `acquired` holds a slot.
  */
 export async function acquireLookupSlot(key: string): Promise<LookupSlotResult> {
   let state = lookupSlots.get(key);
@@ -408,6 +412,22 @@ export async function acquireLookupSlot(key: string): Promise<LookupSlotResult> 
 export function _setLookupSlotLimits(limits: { waitersMax?: number; waitTimeoutMs?: number } = {}): void {
   waitersMax = limits.waitersMax ?? LOOKUP_WAITERS_MAX;
   waitTimeoutMs = limits.waitTimeoutMs ?? LOOKUP_WAIT_TIMEOUT_MS;
+}
+
+/** Test-only: recentFailures for `key` at `now` (count in the window and the Retry-After it implies). */
+export function _recentFailures(key: string, now: number): { count: number; retryAfterSec: number } {
+  return recentFailures(key, now);
+}
+
+/** Test-only: replace the recorded failures of `key` with `stamps` (oldest first). */
+export function _setLoginFailures(key: string, stamps: number[]): void {
+  if (stamps.length === 0) failureHistory.delete(key);
+  else failureHistory.set(key, [...stamps]);
+}
+
+/** Test-only: callers waiting for a slot of `key`. */
+export function _lookupSlotWaiters(key: string): number {
+  return lookupSlots.get(key)?.waiters.length ?? 0;
 }
 
 /** Test-only: number of keys with lookup-slot state (held slots or waiters). */

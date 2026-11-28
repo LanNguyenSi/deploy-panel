@@ -61,6 +61,10 @@ import {
   _resetLoginRateLimit,
   _resetLookupSlots,
   _setLookupSlotLimits,
+  _lookupSlotWaiters,
+  _recentFailures,
+  _setLoginFailures,
+  checkLoginBlocked,
   acquireLookupSlot,
   recordLoginFailure,
 } from "../src/lib/login-rate-limit.js";
@@ -617,7 +621,8 @@ describe("waiter verdicts and the clock", () => {
       const got = await Promise.all(waiting);
       expect(got.map((g) => g.status)).toEqual(Array(20).fill("blocked"));
       for (const g of got) {
-        if (g.status === "blocked") expect(g.retryAfterSec).toBeGreaterThanOrEqual(1);
+        // Oldest stamp T0, decided at T0 + window - 1: 1 ms left, rounded up to 1 s.
+        if (g.status === "blocked") expect(g.retryAfterSec).toBe(1);
       }
       expect(_lookupSlotsInFlight(KEY)).toBe(0);
     } finally {
@@ -647,32 +652,182 @@ describe("waiter verdicts and the clock", () => {
     }
   });
 
-  it("a granted waiter re-checks to tighten: a failure recorded before it runs blocks it", async () => {
-    const held = [];
-    for (let i = 0; i < LOGIN_RATE_MAX; i++) held.push(await acquireLookupSlot(KEY));
-    const waiter = acquireLookupSlot(KEY);
-    const [h0, ...rest] = held;
-    if (h0.status !== "acquired") throw new Error("not acquired");
-    h0.slot.release();
-    expect(_lookupSlotsInFlight(KEY)).toBe(LOGIN_RATE_MAX);
-    // Synchronous failures of other requests land before the waiter's turn.
-    for (let i = 0; i < LOGIN_RATE_MAX; i++) recordLoginFailure(KEY);
-    const got = await waiter;
-    expect(got.status).toBe("blocked");
-    expect(_lookupSlotsInFlight(KEY)).toBe(LOGIN_RATE_MAX - 1);
-    for (const h of rest) if (h.status === "acquired") h.slot.release();
+  it("a granted waiter re-checks to tighten: a failure recorded before it runs blocks it, with the exact Retry-After", async () => {
+    const clock = T0 + 300_000;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => clock);
+    try {
+      const held = [];
+      for (let i = 0; i < LOGIN_RATE_MAX; i++) held.push(await acquireLookupSlot(KEY));
+      const waiter = acquireLookupSlot(KEY);
+      const [h0, ...rest] = held;
+      if (h0.status !== "acquired") throw new Error("not acquired");
+      h0.slot.release();
+      expect(_lookupSlotsInFlight(KEY)).toBe(LOGIN_RATE_MAX);
+      // Synchronous failures of other requests land before the waiter's turn:
+      // the oldest at T0, nine at T0 + 100 s.
+      recordLoginFailure(KEY, T0);
+      for (let i = 0; i < LOGIN_RATE_MAX - 1; i++) recordLoginFailure(KEY, T0 + 100_000);
+      const got = await waiter;
+      // Oldest T0 leaves the window at T0 + 900 s; now is T0 + 300 s: 600 s.
+      expect(got).toEqual({ status: "blocked", retryAfterSec: 600 });
+      expect(_lookupSlotsInFlight(KEY)).toBe(LOGIN_RATE_MAX - 1);
+      for (const h of rest) if (h.status === "acquired") h.slot.release();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("an acquire on a spent budget answers blocked with Retry-After from the same clock read", async () => {
     let clock = T0;
     const spy = vi.spyOn(Date, "now").mockImplementation(() => clock);
     try {
-      for (let i = 0; i < LOGIN_RATE_MAX; i++) recordLoginFailure(KEY, T0);
+      _setLoginFailures(KEY, [T0, ...Array(LOGIN_RATE_MAX - 1).fill(T0 + 100_000)]);
+      clock = T0 + 250_000;
+      // Oldest T0 leaves the window at T0 + 900 s; now is T0 + 250 s: 650 s.
+      expect(await acquireLookupSlot(KEY)).toEqual({ status: "blocked", retryAfterSec: 650 });
       clock = T0 + LOGIN_RATE_WINDOW_MS - 1;
-      const r = await acquireLookupSlot(KEY);
-      expect(r).toEqual({ status: "blocked", retryAfterSec: 1 });
+      // 1 ms left before the oldest stamp leaves: rounded up to 1 s, never 0.
+      expect(await acquireLookupSlot(KEY)).toEqual({ status: "blocked", retryAfterSec: 1 });
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+describe("recentFailures: exact window count and Retry-After", () => {
+  const KEY = "203.0.113.70";
+  const W = LOGIN_RATE_WINDOW_MS; // 900_000 ms
+  const NOW = 2_000_000_000_000;
+
+  // stamps (oldest first) and now -> exact count and Retry-After (seconds).
+  // Boundary: a stamp counts while it is newer than now - W; a stamp exactly
+  // at now - W does not count, as in checkLoginBlocked.
+  const rows: { name: string; stamps: number[]; count: number; retryAfterSec: number }[] = [
+    { name: "empty", stamps: [], count: 0, retryAfterSec: 0 },
+    { name: "one stamp now", stamps: [NOW], count: 1, retryAfterSec: 900 },
+    { name: "all stamps equal, 1 s old", stamps: [NOW - 1000, NOW - 1000, NOW - 1000], count: 3, retryAfterSec: 899 },
+    {
+      name: "mixed ages: oldest decides, not newest",
+      stamps: [NOW - 400_000, NOW - 340_000, NOW - 100_000],
+      count: 3,
+      retryAfterSec: 500,
+    },
+    { name: "fractional remainder rounds up", stamps: [NOW - W + 1500], count: 1, retryAfterSec: 2 },
+    { name: "exactly at now - W does not count", stamps: [NOW - W], count: 0, retryAfterSec: 0 },
+    { name: "1 ms inside the window counts", stamps: [NOW - W + 1], count: 1, retryAfterSec: 1 },
+    { name: "1 ms outside the window does not count", stamps: [NOW - W - 1], count: 0, retryAfterSec: 0 },
+    {
+      name: "boundary stamp next to newer ones: oldest counted one decides",
+      stamps: [NOW - W, NOW - 600_000, NOW - 1000],
+      count: 2,
+      retryAfterSec: 300,
+    },
+    {
+      name: "expired, boundary and inside stamps mixed",
+      stamps: [NOW - W - 5000, NOW - W, NOW - W + 1, NOW],
+      count: 2,
+      retryAfterSec: 1,
+    },
+  ];
+
+  for (const row of rows) {
+    it(row.name, () => {
+      _setLoginFailures(KEY, row.stamps);
+      expect(_recentFailures(KEY, NOW)).toEqual({ count: row.count, retryAfterSec: row.retryAfterSec });
+    });
+  }
+
+  it("agrees with checkLoginBlocked at the window boundary", () => {
+    // Nine inside the window plus one exactly at now - W: 9 counted, not blocked.
+    const inside = Array(LOGIN_RATE_MAX - 1).fill(NOW - 200_000);
+    _setLoginFailures(KEY, [NOW - W, ...inside]);
+    expect(_recentFailures(KEY, NOW).count).toBe(LOGIN_RATE_MAX - 1);
+    expect(checkLoginBlocked(KEY, NOW)).toEqual({ blocked: false, retryAfterSec: 0 });
+    // One ms later in the past, the tenth stamp counts for both: blocked, same Retry-After.
+    _setLoginFailures(KEY, [NOW - W + 1, ...inside]);
+    expect(_recentFailures(KEY, NOW)).toEqual({ count: LOGIN_RATE_MAX, retryAfterSec: 1 });
+    expect(checkLoginBlocked(KEY, NOW)).toEqual({ blocked: true, retryAfterSec: 1 });
+    // Mixed ages: both take the oldest counted stamp.
+    _setLoginFailures(KEY, [NOW - 700_000, ...inside]);
+    expect(_recentFailures(KEY, NOW)).toEqual({ count: LOGIN_RATE_MAX, retryAfterSec: 200 });
+    expect(checkLoginBlocked(KEY, NOW)).toEqual({ blocked: true, retryAfterSec: 200 });
+    _setLoginFailures(KEY, []);
+  });
+});
+
+describe("exact Retry-After on every slot path (fixed clock, mixed-age stamps)", () => {
+  const T0 = 2_100_000_000_000;
+  const NOW = T0 + 300_000;
+  // Valid until long after the fixed clock and the real one.
+  const FAR_SESSION = () => ({ userId: "u1", expiresAt: new Date(8_000_000_000_000) });
+  let spy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    spy = vi.spyOn(Date, "now").mockImplementation(() => NOW);
+  });
+  afterEach(() => {
+    spy.mockRestore();
+  });
+
+  it("pump-blocked waiter: Retry-After from the oldest stamp, not the newest", async () => {
+    const KEY = "203.0.113.80";
+    // Nine failures: the oldest at T0, eight at T0 + 100 s.
+    _setLoginFailures(KEY, [T0, ...Array(LOGIN_RATE_MAX - 2).fill(T0 + 100_000)]);
+    const first = await acquireLookupSlot(KEY);
+    if (first.status !== "acquired") throw new Error("not acquired");
+    const waiting = Array.from({ length: 5 }, () => acquireLookupSlot(KEY));
+    first.slot.fail(); // tenth failure at NOW
+    const got = await Promise.all(waiting);
+    // Oldest T0 leaves at T0 + 900 s, now T0 + 300 s: 600 s (the newest would give 900).
+    expect(got).toEqual(Array(5).fill({ status: "blocked", retryAfterSec: 600 }));
+  });
+
+  it("middleware 429 from a woken waiter carries the exact Retry-After", async () => {
+    const f = 7;
+    _setLoginFailures(UNKNOWN_CLIENT_KEY, [T0, ...Array(f - 1).fill(T0 + 200_000)]);
+    const t = holdCalls(mApiKey.findUnique);
+    const res = Array.from({ length: 12 }, () => servers({ Authorization: `Bearer ${WRONG_KEY}` }));
+    const done = await drain(t, res, () => ({ value: null }));
+    expect(count(done, 401)).toBe(LOGIN_RATE_MAX - f);
+    const limited = done.filter((r) => r.status === 429);
+    expect(limited).toHaveLength(12 - (LOGIN_RATE_MAX - f));
+    for (const r of limited) expect(r.headers.get("Retry-After")).toBe("600");
+  });
+
+  it("middleware 429 from the acquire-time check (own Bearer spent the tenth failure) carries the exact Retry-After", async () => {
+    _setLoginFailures(UNKNOWN_CLIENT_KEY, [T0, ...Array(LOGIN_RATE_MAX - 2).fill(T0 + 100_000)]);
+    mSession.findUnique.mockResolvedValue(FAR_SESSION());
+    const res = await servers({ Authorization: "Bearer wrong", Cookie: LIVE_USER });
+    expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBe("600");
+    expect(mSession.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("middleware 429 from a granted waiter that the tightening re-check blocks carries the exact Retry-After", async () => {
+    // Eight failures: the oldest at T0, seven at T0 + 100 s. Two valid lookups take the last two slots.
+    _setLoginFailures(UNKNOWN_CLIENT_KEY, [T0, ...Array(LOGIN_RATE_MAX - 3).fill(T0 + 100_000)]);
+    const t = holdCalls(mSession.findUnique);
+    const a = servers({ Cookie: LIVE_USER });
+    const b = servers({ Cookie: LIVE_USER });
+    await until(() => t.held.length === 2);
+    const waiter = servers({ Cookie: LIVE_USER });
+    await until(() => _lookupSlotWaiters(UNKNOWN_CLIENT_KEY) === 1);
+    // a's lookup succeeds and releases its slot; the pump grants the waiter.
+    t.held.shift()!.resolve(FAR_SESSION());
+    for (let i = 0; i < 50 && _lookupSlotWaiters(UNKNOWN_CLIENT_KEY) > 0; i++) await null;
+    expect(_lookupSlotWaiters(UNKNOWN_CLIENT_KEY)).toBe(0);
+    // Two synchronous failures of other requests land before the waiter's turn.
+    recordLoginFailure(UNKNOWN_CLIENT_KEY);
+    recordLoginFailure(UNKNOWN_CLIENT_KEY);
+    const w = await waiter;
+    expect(w.status).toBe(429);
+    expect(w.headers.get("Retry-After")).toBe("600");
+    expect(w.headers.getSetCookie()).toEqual([CLEAR_USER]);
+    // The waiter never started a lookup and gave its slot back.
+    expect(mSession.findUnique).toHaveBeenCalledTimes(2);
+    t.held.shift()!.resolve(FAR_SESSION());
+    expect((await a).status).toBe(200);
+    expect((await b).status).toBe(200);
+    expect(_lookupSlotsInFlight(UNKNOWN_CLIENT_KEY)).toBe(0);
   });
 });

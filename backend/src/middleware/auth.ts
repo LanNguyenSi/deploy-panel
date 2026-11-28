@@ -139,7 +139,8 @@ export async function requireAuth(c: Context, next: Next) {
     );
   };
   // A request that got no lookup slot: blocked answers the normal 429; busy
-  // (waiter cap or wait timeout) records nothing and clears no cookie.
+  // (waiter cap or wait timeout): the lookup records nothing and the
+  // user_session cookie is not cleared.
   const refuseWithoutSlot = (r: Exclude<LookupSlotResult, { status: "acquired" }>) => {
     if (r.status === "blocked") return rateLimited(r.retryAfterSec);
     c.header("Retry-After", "1");
