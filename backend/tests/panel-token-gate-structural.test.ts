@@ -1,9 +1,10 @@
 /**
- * Structural guard for the requireAuth panel-token gate: the Bearer and the
- * panel_session cookie comparisons go through safeCompare (SHA-256 digests
- * of both values, then timingSafeEqual). A plain === returns the same
- * responses and only differs in timing, so behaviour tests cannot tell them
- * apart; the createHash spy can. If the helper changes (different digest,
+ * Structural guard for the requireAuth panel-token gate: the Bearer comparison
+ * goes through safeCompare (SHA-256 digests of both values, then
+ * timingSafeEqual), and the panel_session cookie is looked up in the admin
+ * session store by the SHA-256 digest of its value. A plain === (or a lookup
+ * by the raw cookie value) returns the same responses and only differs in
+ * timing, so behaviour tests cannot tell them apart; the createHash spy can. If the helper changes (different digest,
  * fewer digests), update the expected counts to match it, do not remove
  * the guard.
  */
@@ -38,18 +39,23 @@ vi.mock("../src/config/index.js", () => ({
 
 import { createHash } from "node:crypto";
 import { createApp } from "../src/app.js";
+import { createPanelSession } from "../src/lib/panel-session.js";
 
 const TOKEN = "panel-token-must-be-16chars";
 const app = createApp("http://localhost:3000");
 
 // requireAuth is mounted on both "/api/servers" and "/api/servers/*", so a
-// request can pass the gate twice: count at least one comparison (2 digests).
+// request can pass the gate twice: count at least one comparison (2 digests
+// for a Bearer, 1 for a cookie lookup).
 function sha256Calls(): number {
   return vi.mocked(createHash).mock.calls.filter(([alg]) => alg === "sha256").length;
 }
 
-describe("requireAuth compares the panel token through safeCompare (structural guard)", () => {
+describe("requireAuth digests every panel credential (structural guard)", () => {
+  let session = "";
+
   beforeEach(() => {
+    session = createPanelSession();
     vi.mocked(createHash).mockClear();
   });
 
@@ -59,10 +65,16 @@ describe("requireAuth compares the panel token through safeCompare (structural g
     expect(sha256Calls()).toBeGreaterThanOrEqual(2);
   });
 
-  it("the panel_session cookie path digests both values", async () => {
-    const res = await app.request("/api/servers", { headers: { Cookie: `panel_session=${TOKEN}` } });
+  it("the panel_session cookie path digests the cookie value for the session lookup", async () => {
+    const res = await app.request("/api/servers", { headers: { Cookie: `panel_session=${session}` } });
     expect(res.status).toBe(200);
-    expect(sha256Calls()).toBeGreaterThanOrEqual(2);
+    expect(sha256Calls()).toBeGreaterThanOrEqual(1);
+  });
+
+  it("a wrong panel_session cookie is still looked up through the digest", async () => {
+    const res = await app.request("/api/servers", { headers: { Cookie: `panel_session=${TOKEN}` } });
+    expect(res.status).toBe(401);
+    expect(sha256Calls()).toBeGreaterThanOrEqual(1);
   });
 
   it("a wrong Bearer is still compared through the digest (no early return)", async () => {

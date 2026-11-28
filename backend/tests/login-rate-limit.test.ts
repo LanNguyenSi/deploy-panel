@@ -145,6 +145,7 @@ describe("POST /auth/login rate limit", () => {
     const res = await login(GOOD);
     expect(res.status).toBe(200);
     expect(res.headers.get("Set-Cookie")).toContain("panel_session=");
+    expect(res.headers.get("Set-Cookie")).not.toContain(GOOD);
   });
 
   it("keeps different peers independent", async () => {

@@ -3,12 +3,11 @@
  *
  * Sessions are rows in the `sessions` table keyed by sha256(rawToken).
  * The raw token lives only in the browser's `user_session` cookie; the
- * DB never stores it plaintext. 30-day TTL mirrors the legacy
- * panel_session cookie so users have consistent "remember me" behavior
- * across auth methods.
+ * DB never stores it plaintext. 30-day TTL.
  *
- * Distinct from the existing `panel_session` cookie, which contains the
- * literal PANEL_TOKEN string — that flow stays intact for admin access.
+ * Distinct from the `panel_session` admin cookie (lib/panel-session.ts),
+ * which carries a random admin session token held in memory and is not bound
+ * to a User row.
  */
 import { randomBytes, createHash } from "node:crypto";
 import { prisma } from "./prisma.js";

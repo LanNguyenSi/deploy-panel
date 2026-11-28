@@ -4,6 +4,7 @@ import { config } from "../config/index.js";
 import { prisma } from "../lib/prisma.js";
 import { buildClearUserSessionCookie, readUserSessionCookie, validateSession } from "../lib/session.js";
 import { parsePanelSessionCookie, safeCompare } from "../lib/panel-token.js";
+import { validatePanelSession } from "../lib/panel-session.js";
 import { checkLoginBlocked, loginClientKey, recordLoginFailure } from "../lib/login-rate-limit.js";
 
 /** Set-Cookie value that clears `panel_session` (same attributes as logout). */
@@ -44,7 +45,9 @@ export function hashApiKey(key: string): string {
  * Auth middleware — checks for:
  * 1. API Key (Bearer dp_...)
  * 2. Panel token (Bearer <PANEL_TOKEN>)
- * 3. Session cookie (panel_session=<PANEL_TOKEN>)
+ * 3. Admin session cookie (panel_session=<random session token> issued by
+ *    POST /api/auth/login, lib/panel-session.ts; never the PANEL_TOKEN)
+ * 4. GitHub OAuth session cookie (user_session)
  *
  * Sets on the request context:
  *   authType     — "api_key" | "panel" | "session"
@@ -63,13 +66,15 @@ export function hashApiKey(key: string): string {
  * compared or looked up, valid ones included. Each presented credential that
  * fails records one failure: a `dp_` key that is unknown or revoked, a
  * non-`dp_` Bearer that is not the PANEL_TOKEN (also when a cookie then
- * succeeds), a `panel_session` cookie that is not the PANEL_TOKEN, and a
- * `user_session` cookie without a valid session (a malformed value
- * included). Successful presentations
+ * succeeds; an admin session token as Bearer is such a Bearer), a
+ * `panel_session` cookie that is not a live admin session (the PANEL_TOKEN
+ * itself included), and a `user_session` cookie without a valid session (a
+ * malformed value included). Successful presentations
  * never record. A failed `panel_session` or `user_session` cookie is cleared
  * with a Set-Cookie on the response (and on the 429 when the request carried
- * it), so a browser holding a stale cookie (a rotated PANEL_TOKEN, a revoked
- * or expired GitHub session) stops spending the budget. Requests already
+ * it), so a browser holding a stale cookie (an admin session the server
+ * dropped after a restart, logout or expiry, a revoked or expired GitHub
+ * session) stops spending the budget. Requests already
  * past the blocked check when the limit is reached are still evaluated, so
  * concurrent `dp_` and `user_session` lookups can each record a failure
  * beyond the limit.
@@ -149,9 +154,10 @@ export async function requireAuth(c: Context, next: Next) {
     recordLoginFailure(clientKey);
   }
 
-  // Check panel_session cookie (legacy admin path — contains raw PANEL_TOKEN).
+  // Check panel_session cookie: a live admin session from the in-memory
+  // store. The raw PANEL_TOKEN is a Bearer credential only and fails here.
   if (panelCookie !== null) {
-    if (safeCompare(panelCookie, token)) {
+    if (validatePanelSession(panelCookie)) {
       c.set("authType", "session");
       c.set("isAdmin", true);
       return next();
@@ -179,8 +185,8 @@ export async function requireAuth(c: Context, next: Next) {
 }
 
 /**
- * Admin-only gate for API key management: only the panel token or the
- * `panel_session` cookie may pass. Must be used AFTER requireAuth.
+ * Admin-only gate for API key management: only the panel token or a live
+ * `panel_session` admin session may pass. Must be used AFTER requireAuth.
  *
  * Two checks, because neither alone is enough:
  *  - `authType === "api_key"` is refused even for a legacy admin key (a key

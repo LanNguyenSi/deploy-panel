@@ -168,9 +168,9 @@ model User {
 }
 
 // Browser sessions issued by the native GitHub OAuth flow. Distinct from
-// the legacy `panel_session` cookie that carries the raw PANEL_TOKEN
-// string — those still work for admin access. A Session row is the
-// canonical proof-of-login for broker-registered users who sign in
+// the `panel_session` admin cookie, whose random session token lives in the
+// backend's memory (lib/panel-session.ts), not in this table. A Session row
+// is the canonical proof-of-login for broker-registered users who sign in
 // directly at deploy-panel.
 model Session {
   id        String   @id @default(uuid())
