@@ -311,6 +311,13 @@ authRouter.post(
       return c.json({ error: "internal" }, 500);
     }
 
+    // A 2xx answer without a usable login is a server-side fault, not a
+    // failed verification by the client.
+    if (typeof githubUser?.login !== "string" || githubUser.login === "") {
+      refundLoginFailure(registerKey);
+      return c.json({ error: "internal" }, 500);
+    }
+
     if (
       body.githubLogin &&
       normalizeGitHubLogin(body.githubLogin) !== normalizeGitHubLogin(githubUser.login)

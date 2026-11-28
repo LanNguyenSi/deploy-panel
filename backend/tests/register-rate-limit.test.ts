@@ -261,6 +261,40 @@ describe("register-from-project-pilot failure budget", () => {
       expect(_loginFailureCount(REGISTER_KEY)).toBe(0);
     });
 
+    it("LOGIN_RATE_MAX + 1 concurrent successes give exactly one 429 and leave count 0", async () => {
+      mockedFetch.mockImplementation(delayed(() => Promise.resolve(okUser)));
+      mUser.upsert.mockResolvedValue({ id: "u1" });
+      const res = await Promise.all(
+        Array.from({ length: LOGIN_RATE_MAX + 1 }, () => call({ githubAccessToken: "gho_x" })),
+      );
+      const statuses = res.map((r) => r.status);
+      expect(statuses.filter((s) => s === 429)).toHaveLength(1);
+      expect(statuses.filter((s) => s === 200)).toHaveLength(LOGIN_RATE_MAX);
+      expect(_loginFailureCount(REGISTER_KEY)).toBe(0);
+    });
+
+    it("k counted failures then several successes leave the count at k", async () => {
+      const k = 3;
+      mockedFetch.mockRejectedValue(new GitHubAuthError("bad"));
+      for (let i = 0; i < k; i++) {
+        expect((await call({ githubAccessToken: "gho_x" })).status).toBe(401);
+      }
+      mockedFetch.mockReset();
+      mockedFetch.mockResolvedValue(okUser);
+      mUser.upsert.mockResolvedValue({ id: "u1" });
+      for (let i = 0; i < 4; i++) {
+        expect((await call({ githubAccessToken: "gho_x" })).status).toBe(200);
+      }
+      expect(_loginFailureCount(REGISTER_KEY)).toBe(k);
+    });
+
+    it("a 2xx GitHub body without a login answers 500 and leaves no failure recorded", async () => {
+      mockedFetch.mockResolvedValueOnce({} as never);
+      const res = await call({ githubAccessToken: "gho_x" });
+      expect(res.status).toBe(500);
+      expect(_loginFailureCount(REGISTER_KEY)).toBe(0);
+    });
+
     it("a burst of 503s leaves no failure recorded", async () => {
       mockedFetch.mockImplementation(
         delayed(() => Promise.reject(new GitHubUnreachableError("down"))),
