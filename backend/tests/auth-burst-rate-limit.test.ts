@@ -13,7 +13,8 @@
  *   nothing is recorded, no cookie is cleared;
  * - a lookup that throws releases its slot without recording or clearing;
  * - the per-key waiter cap and the wait timeout answer 503 auth_busy with
- *   Retry-After: 1, record nothing and clear no cookie;
+ *   Retry-After: 1; the lookup records nothing and the user_session cookie
+ *   is not cleared;
  * - the slot state is empty once a burst is over.
  *
  * Lookups are held on controllable promises; direct app.request() calls have
@@ -511,6 +512,19 @@ describe("acquireLookupSlot", () => {
     expect(_lookupSlotStateSize()).toBe(0);
   });
 
+  it("release takes effect once: a later release or fail frees no second slot and records nothing", async () => {
+    const a = await acquireLookupSlot(KEY);
+    const b = await acquireLookupSlot(KEY);
+    if (a.status !== "acquired" || b.status !== "acquired") throw new Error("not acquired");
+    a.slot.release();
+    a.slot.release();
+    a.slot.fail();
+    expect(_lookupSlotsInFlight(KEY)).toBe(1);
+    expect(_loginFailureCount(KEY)).toBe(0);
+    b.slot.release();
+    expect(_lookupSlotStateSize()).toBe(0);
+  });
+
   it("answers blocked without holding a slot once the budget is spent", async () => {
     for (let i = 0; i < LOGIN_RATE_MAX; i++) recordLoginFailure(KEY);
     const r = await acquireLookupSlot(KEY);
@@ -677,6 +691,28 @@ describe("waiter verdicts and the clock", () => {
     }
   });
 
+  it("a tightened waiter's release wakes the waiter behind it at once, blocked", async () => {
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => T0);
+    try {
+      _setLoginFailures(KEY, Array(LOGIN_RATE_MAX - 1).fill(T0 - 1000));
+      const held = await acquireLookupSlot(KEY);
+      if (held.status !== "acquired") throw new Error("not acquired");
+      const settled: string[] = [];
+      void acquireLookupSlot(KEY).then((r) => settled.push(`first:${r.status}`));
+      void acquireLookupSlot(KEY).then((r) => settled.push(`second:${r.status}`));
+      // A valid lookup ends: the pump grants the first waiter (9 + 1), the second stays queued.
+      held.slot.release();
+      expect(_lookupSlotWaiters(KEY)).toBe(1);
+      // A synchronous failure of another request spends the budget before the first waiter runs.
+      recordLoginFailure(KEY);
+      for (let i = 0; i < 20; i++) await null;
+      expect(settled).toEqual(["first:blocked", "second:blocked"]);
+      expect(_lookupSlotWaiters(KEY)).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("an acquire on a spent budget answers blocked with Retry-After from the same clock read", async () => {
     let clock = T0;
     const spy = vi.spyOn(Date, "now").mockImplementation(() => clock);
@@ -713,6 +749,7 @@ describe("recentFailures: exact window count and Retry-After", () => {
       retryAfterSec: 500,
     },
     { name: "fractional remainder rounds up", stamps: [NOW - W + 1500], count: 1, retryAfterSec: 2 },
+    { name: "a remainder just above a whole second rounds up", stamps: [NOW - W + 1001], count: 1, retryAfterSec: 2 },
     { name: "exactly at now - W does not count", stamps: [NOW - W], count: 0, retryAfterSec: 0 },
     { name: "1 ms inside the window counts", stamps: [NOW - W + 1], count: 1, retryAfterSec: 1 },
     { name: "1 ms outside the window does not count", stamps: [NOW - W - 1], count: 0, retryAfterSec: 0 },
@@ -780,6 +817,14 @@ describe("exact Retry-After on every slot path (fixed clock, mixed-age stamps)",
     const got = await Promise.all(waiting);
     // Oldest T0 leaves at T0 + 900 s, now T0 + 300 s: 600 s (the newest would give 900).
     expect(got).toEqual(Array(5).fill({ status: "blocked", retryAfterSec: 600 }));
+  });
+
+  it("middleware 429 from the blocked check before any credential carries the exact Retry-After", async () => {
+    _setLoginFailures(UNKNOWN_CLIENT_KEY, [T0, ...Array(LOGIN_RATE_MAX - 1).fill(T0 + 100_000)]);
+    const res = await servers({ Authorization: "Bearer panel-token-must-be-16chars" });
+    expect(res.status).toBe(429);
+    // Oldest T0 leaves at T0 + 900 s, now T0 + 300 s: 600 s.
+    expect(res.headers.get("Retry-After")).toBe("600");
   });
 
   it("middleware 429 from a woken waiter carries the exact Retry-After", async () => {
