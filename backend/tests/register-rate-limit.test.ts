@@ -8,7 +8,9 @@ vi.mock("../src/lib/prisma.js", () => {
   return {
     prisma: {
       user: { upsert: vi.fn() },
-      apiKey,
+      apiKey: Object.assign(apiKey, { findUnique: vi.fn().mockResolvedValue(null) }),
+      server: { findMany: vi.fn().mockResolvedValue([]), findUnique: vi.fn().mockResolvedValue(null) },
+      session: { findUnique: vi.fn().mockResolvedValue(null) },
       auditLog: { create: vi.fn().mockResolvedValue({}) },
       $transaction: vi.fn().mockImplementation(async (fn: (tx: unknown) => unknown) => {
         const tx = { $executeRaw: vi.fn().mockResolvedValue(0), apiKey };
@@ -46,8 +48,10 @@ import {
   GitHubUnreachableError,
 } from "../src/lib/github.js";
 import { authRouter } from "../src/routes/auth.js";
+import { createApp } from "../src/app.js";
 import {
   LOGIN_RATE_MAX,
+  LOGIN_RATE_WINDOW_MS,
   UNKNOWN_CLIENT_KEY,
   _loginFailureCount,
   _resetLoginRateLimit,
@@ -77,6 +81,8 @@ function fill(key: string, n = LOGIN_RATE_MAX) {
 describe("register-from-project-pilot failure budget", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedFetch.mockReset();
+    mUser.upsert.mockReset();
     _resetLoginRateLimit();
     allowedLoginsMock.length = 0;
   });
@@ -85,7 +91,7 @@ describe("register-from-project-pilot failure budget", () => {
     fill(REGISTER_KEY);
     const res = await call({ githubAccessToken: "gho_x" });
     expect(res.status).toBe(429);
-    expect(Number(res.headers.get("Retry-After"))).toBeGreaterThanOrEqual(1);
+    expect(res.headers.get("Retry-After")).toBe(String(LOGIN_RATE_WINDOW_MS / 1000));
     expect(await res.json()).toMatchObject({ error: "rate_limited" });
     expect(mockedFetch).not.toHaveBeenCalled();
     expect(mUser.upsert).not.toHaveBeenCalled();
@@ -168,16 +174,35 @@ describe("register-from-project-pilot failure budget", () => {
     expect(_loginFailureCount(REGISTER_KEY)).toBe(0);
   });
 
-  it("registration failures do not block /login or spend the login budget", async () => {
-    fill(REGISTER_KEY);
-    const res = await authRouter.request("/login", {
+  it("registration failures driven through the route do not block /login, /check or a requireAuth route", async () => {
+    mockedFetch.mockRejectedValue(new GitHubAuthError("bad"));
+    for (let i = 0; i < LOGIN_RATE_MAX; i++) {
+      expect((await call({ githubAccessToken: "gho_x" })).status).toBe(401);
+    }
+    expect((await call({ githubAccessToken: "gho_x" })).status).toBe(429);
+    expect(_loginFailureCount(REGISTER_KEY)).toBe(LOGIN_RATE_MAX);
+    expect(_loginFailureCount(LOGIN_KEY)).toBe(0);
+
+    const app = createApp("http://localhost:3000");
+    const PANEL = "panel-token-must-be-16chars";
+    const login = await app.request("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: "wrong-token-value-1234" }),
+      body: JSON.stringify({ token: PANEL }),
     });
-    expect(res.status).not.toBe(429);
-    expect(_loginFailureCount(LOGIN_KEY)).toBeLessThanOrEqual(1);
-    expect(_loginFailureCount(REGISTER_KEY)).toBe(LOGIN_RATE_MAX);
+    expect(login.status).toBe(200);
+    const check = await app.request("/api/auth/check", {
+      headers: { Authorization: `Bearer ${PANEL}` },
+    });
+    expect(check.status).toBe(200);
+    const servers = await app.request("/api/servers", {
+      headers: { Authorization: `Bearer ${PANEL}` },
+    });
+    expect(servers.status).toBe(200);
+    // an unknown dp_ key is a plain 401 on the login budget, never the register 429
+    const bad = await app.request("/api/servers", { headers: { Authorization: "Bearer dp_nope" } });
+    expect(bad.status).toBe(401);
+    expect(_loginFailureCount(LOGIN_KEY)).toBe(1);
   });
 
   it("login failures do not block registration", async () => {
@@ -191,5 +216,69 @@ describe("register-from-project-pilot failure budget", () => {
     mUser.upsert.mockResolvedValueOnce({ id: "u1" });
     const res = await call({ githubAccessToken: "gho_x" });
     expect(res.status).toBe(200);
+  });
+
+  it("Retry-After counts down to the oldest failure leaving the window", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const t0 = new Date("2030-01-01T00:00:00Z").getTime();
+      vi.setSystemTime(t0);
+      fill(REGISTER_KEY);
+      vi.setSystemTime(t0 + LOGIN_RATE_WINDOW_MS - 30_000);
+      const res = await call({ githubAccessToken: "gho_x" });
+      expect(res.status).toBe(429);
+      expect(res.headers.get("Retry-After")).toBe("30");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  describe("concurrent bursts", () => {
+    const N = 50;
+    const delayed = <T,>(fn: () => Promise<T>) => () =>
+      new Promise<T>((resolve, reject) => setTimeout(() => fn().then(resolve, reject), 20));
+    const okUser = { id: 1, login: "lan", email: null, avatar_url: "" } as never;
+
+    it("a burst of failing registrations reaches GitHub at most LOGIN_RATE_MAX times", async () => {
+      mockedFetch.mockImplementation(delayed(() => Promise.reject(new GitHubAuthError("bad"))));
+      const res = await Promise.all(
+        Array.from({ length: N }, () => call({ githubAccessToken: "gho_x" })),
+      );
+      const statuses = res.map((r) => r.status);
+      expect(statuses.filter((s) => s === 401)).toHaveLength(LOGIN_RATE_MAX);
+      expect(statuses.filter((s) => s === 429)).toHaveLength(N - LOGIN_RATE_MAX);
+      expect(mockedFetch).toHaveBeenCalledTimes(LOGIN_RATE_MAX);
+      expect(_loginFailureCount(REGISTER_KEY)).toBe(LOGIN_RATE_MAX);
+    });
+
+    it("a burst of successes leaves no failure recorded", async () => {
+      mockedFetch.mockImplementation(delayed(() => Promise.resolve(okUser)));
+      mUser.upsert.mockResolvedValue({ id: "u1" });
+      const res = await Promise.all(
+        Array.from({ length: LOGIN_RATE_MAX - 1 }, () => call({ githubAccessToken: "gho_x" })),
+      );
+      expect(res.every((r) => r.status === 200)).toBe(true);
+      expect(_loginFailureCount(REGISTER_KEY)).toBe(0);
+    });
+
+    it("a burst of 503s leaves no failure recorded", async () => {
+      mockedFetch.mockImplementation(
+        delayed(() => Promise.reject(new GitHubUnreachableError("down"))),
+      );
+      const res = await Promise.all(
+        Array.from({ length: LOGIN_RATE_MAX - 1 }, () => call({ githubAccessToken: "gho_x" })),
+      );
+      expect(res.every((r) => r.status === 503)).toBe(true);
+      expect(_loginFailureCount(REGISTER_KEY)).toBe(0);
+    });
+
+    it("a burst of 500s leaves no failure recorded", async () => {
+      mockedFetch.mockImplementation(delayed(() => Promise.reject(new Error("boom"))));
+      const res = await Promise.all(
+        Array.from({ length: LOGIN_RATE_MAX - 1 }, () => call({ githubAccessToken: "gho_x" })),
+      );
+      expect(res.every((r) => r.status === 500)).toBe(true);
+      expect(_loginFailureCount(REGISTER_KEY)).toBe(0);
+    });
   });
 });

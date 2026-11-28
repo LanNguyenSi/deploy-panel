@@ -209,6 +209,19 @@ export function recordLoginFailure(key: string, now: number = Date.now()): void 
   failureHistory.set(key, recent);
 }
 
+/**
+ * Take back the most recent failure recorded for `key` (no-op when none is
+ * tracked). For a caller that records a provisional failure before an await,
+ * so parallel requests cannot all pass the check first, and gives it back when
+ * the outcome turns out not to be the client's fault.
+ */
+export function refundLoginFailure(key: string): void {
+  const stamps = failureHistory.get(key);
+  if (!stamps) return;
+  stamps.pop();
+  if (stamps.length === 0) failureHistory.delete(key);
+}
+
 /** Test-only: drop all recorded failures. */
 export function _resetLoginRateLimit(): void {
   failureHistory.clear();
