@@ -175,6 +175,20 @@ describe("panel session store", () => {
     expect(store.validate(live)).toBe(true);
   });
 
+  it("a default-cap store holds at most PANEL_SESSION_MAX_ENTRIES sessions and evicts the oldest", () => {
+    let t = 1_000_000;
+    const store = createPanelSessionStore({ now: () => t });
+    const tokens: string[] = [];
+    for (let i = 0; i <= PANEL_SESSION_MAX_ENTRIES; i++) {
+      tokens.push(store.create());
+      t += 1;
+    }
+    expect(store.size()).toBe(PANEL_SESSION_MAX_ENTRIES);
+    expect(store.validate(tokens[0])).toBe(false);
+    expect(store.validate(tokens[1])).toBe(true);
+    expect(store.validate(tokens[tokens.length - 1])).toBe(true);
+  });
+
   it("clear forgets every session", () => {
     const store = createPanelSessionStore();
     const token = store.create();

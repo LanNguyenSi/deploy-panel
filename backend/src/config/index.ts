@@ -5,7 +5,7 @@ import { trimTrailingSlashes } from "../lib/origin.js";
 const configSchema = z.object({
   PORT: z.coerce.number().default(3001),
   // Reserved: nothing reads it today (GitHub sessions are random tokens
-  // stored hashed in the DB, the admin cookie carries PANEL_TOKEN). Startup
+  // stored hashed in the DB, the admin cookie carries a random session token held in memory). Startup
   // no longer requires it; an empty value counts as unset (compose forwards
   // an unset host variable as ""), and a non-empty value still needs 16+
   // characters so a future signing use cannot start from a weak secret.
